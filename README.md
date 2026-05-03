@@ -21,23 +21,41 @@ Logical at its core, bold in its vision: An AI for invention.
 
 - Core C: Leap Core（飛躍）
 
-1. 基盤コア / 実行基盤
-CausalOS_v5_3_full.py
-app.py
-autonomous_growth_executor_addonly.py
-self_growth_loop.py
-causal_s_tools.py
+### ファイル
+1. app.py
+GUI
 
-2. benchmark / 評価系
-transparent_causal_benchmark_suite_addonly__20260330_145410__23766b__b4a5d9a0.py
-novel_discovery_benchmark_addonly.py
+2. causal_engine.py
+因果の理解
+発想の筋道
 
-3. symbolic / mathematical support
-symbolic_causal_abstraction_addonly__20260331_123533__16293b__3dcb3be8.py
-mathematical_reasoning_addonly__20260331_123533__5862b__e9b23627.py
+3. growth_engine.py
+Universal Symbolic Regression、数式による表現の拡張
+自己進化
 
-4. UniversalSymbolicRegressor 統合系
-autonomous_growth_executor_usr_patch.py
-causalos_usr_data_collector.py
-causalos_usr_regressor.py
-causalos_usr_integrator.py
+4. leap_engine.py
+潜在空間の演算処理
+視点の変更、飛躍、ひらめき
+
+### 全体アーキテクチャ
+#### 発明
+ 
+- Input  
+↓  
+- Idea Phase 
+  - 内部マイクロ分岐（hidden branching）
+  - 複数素案生成  
+↓  
+- Rationalize Phase  
+  - 因果・S行列による制約付与
+  - 意味づけ（ノード群単位）  
+↓  
+- Check Phase  
+  - 論理・物理・観測可能性チェック
+  - PASS / FAIL / INDETERMINATE  
+↓  
+- Decide Phase 
+  - 集約しない
+  - 推奨検討順序・理由を提示  
+↓  
+- Human Judgment / Real Experiment  
