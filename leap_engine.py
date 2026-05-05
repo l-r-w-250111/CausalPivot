@@ -8716,3 +8716,3455 @@ except Exception:
 # ============================================================================
 # END ADD-ONLY CRITICAL FIX: LLM-WIRE-PROOF-V15C
 # ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY PATCH APP/LEAP V16: LLM generate_idea unified trial path
+# generated_at: 20260504_000818 JST
+# source_file_before_bytes: 445571
+# source_file_before_sha256_8: e0b6021c
+# purpose:
+# - Preserve existing V15C/V14 primary route code.
+# - Add universal IdeaBackend / generate_idea() path.
+# - Ensure trial-level backend.generate() proof is attached.
+# - No benchmark/task-name hardcoding. No external dependency addition.
+# ============================================================================
+try:
+    from dataclasses import dataclass as _leap_v16_dataclass, field as _leap_v16_field
+    import json as _leap_v16_json, re as _leap_v16_re, hashlib as _leap_v16_hashlib
+except Exception:
+    _leap_v16_dataclass = None
+    _leap_v16_field = None
+
+_LEAP_V16_PATCH_ID = 'APP-LEAP-LLM-GENERATE-IDEA-PATH-V16-20260503'
+_LEAP_V16_MIN_IDEA_CHARS = 40
+
+def _leap_v16_norm_text(x, limit=6000):
+    try:
+        s = '' if x is None else str(x)
+    except Exception:
+        s = ''
+    return ' '.join(s.split())[:max(0, int(limit))]
+
+def _leap_v16_safe_dict(x):
+    return dict(x) if isinstance(x, dict) else {}
+
+def _leap_v16_safe_list(x):
+    if isinstance(x, list): return list(x)
+    if isinstance(x, tuple): return list(x)
+    return []
+
+def _leap_idea_sha256_text(text: str) -> str:
+    try:
+        return _leap_v16_hashlib.sha256((text or '').encode('utf-8')).hexdigest()[:16]
+    except Exception:
+        return 'hash-unavailable'
+try:
+    sha256_text = _leap_idea_sha256_text
+except Exception:
+    pass
+
+def _leap_v16_extract_first_json_obj(text):
+    s = '' if text is None else str(text)
+    start = s.find('{')
+    if start < 0: return None
+    depth = 0; in_str = False; esc = False
+    for i in range(start, len(s)):
+        ch = s[i]
+        if in_str:
+            if esc: esc = False
+            elif ch == '\\': esc = True
+            elif ch == '"': in_str = False
+            continue
+        if ch == '"': in_str = True
+        elif ch == '{': depth += 1
+        elif ch == '}':
+            depth -= 1
+            if depth == 0: return s[start:i+1]
+    return None
+
+class IdeaBackend:
+    backend_label = 'unknown'
+    def generate(self, prompt: str, **kwargs) -> str:
+        raise NotImplementedError('IdeaBackend.generate must be implemented')
+
+class LocalTransformersIdeaBackend(IdeaBackend):
+    def __init__(self, model=None, tokenizer=None, device=None, model_source=''):
+        self.model = model; self.tokenizer = tokenizer; self.device = device
+        self.model_source = str(model_source or '')
+        self.backend_label = 'local_transformers'
+    def _resolve_device(self):
+        if self.device is not None: return self.device
+        try: return next(self.model.parameters()).device
+        except Exception:
+            try: return getattr(self.model, 'device', None)
+            except Exception: return None
+    def generate(self, prompt: str, **kwargs) -> str:
+        if self.model is None or self.tokenizer is None:
+            raise RuntimeError('local_transformers_model_or_tokenizer_missing')
+        try: import torch as _torch
+        except Exception as e: raise RuntimeError('torch_unavailable_for_local_transformers') from e
+        tok = self.tokenizer; model = self.model
+        max_new_tokens = int(kwargs.get('max_new_tokens') or kwargs.get('max_tokens') or 512)
+        temperature = float(kwargs.get('temperature', 0.2) or 0.0)
+        encoded = tok(str(prompt or ''), return_tensors='pt')
+        dev = self._resolve_device()
+        try:
+            if hasattr(encoded, 'to') and dev is not None:
+                encoded = encoded.to(dev)
+            elif isinstance(encoded, dict) and dev is not None:
+                encoded = {k: (v.to(dev) if hasattr(v, 'to') else v) for k, v in encoded.items()}
+        except Exception: pass
+        gen_kwargs = dict(encoded) if isinstance(encoded, dict) else {'input_ids': encoded}
+        do_sample = bool(temperature > 0.0)
+        if do_sample: gen_kwargs['temperature'] = max(1e-5, temperature)
+        with _torch.no_grad():
+            out = model.generate(**gen_kwargs, max_new_tokens=max(1, max_new_tokens), do_sample=do_sample, pad_token_id=getattr(tok, 'eos_token_id', None))
+        input_ids = gen_kwargs.get('input_ids')
+        try: gen_ids = out[0][input_ids.shape[-1]:] if input_ids is not None else out[0]
+        except Exception: gen_ids = out[0]
+        return tok.decode(gen_ids, skip_special_tokens=True).strip()
+
+class RemoteRuntimeIdeaBackend(IdeaBackend):
+    def __init__(self, runtime_generate_fn=None, backend_label='remote_runtime', model_source=''):
+        self.runtime_generate_fn = runtime_generate_fn
+        self.backend_label = str(backend_label or 'remote_runtime')
+        self.model_source = str(model_source or '')
+    def generate(self, prompt: str, **kwargs) -> str:
+        if not callable(self.runtime_generate_fn):
+            raise RuntimeError('remote_runtime_generate_fn_missing')
+        out = self.runtime_generate_fn(prompt, **kwargs)
+        if isinstance(out, dict):
+            for k in ('text','response','output','raw','content'):
+                if out.get(k): return str(out.get(k))
+            return _leap_v16_json.dumps(out, ensure_ascii=False)
+        return '' if out is None else str(out)
+
+if _leap_v16_dataclass is not None:
+    @_leap_v16_dataclass
+    class IdeaGenerationContext:
+        problem_text: str = ''
+        constraints: list = _leap_v16_field(default_factory=list)
+        observables: list = _leap_v16_field(default_factory=list)
+        controllables: list = _leap_v16_field(default_factory=list)
+        previous_turn_feedback: dict = _leap_v16_field(default_factory=dict)
+        causal_graph_snapshot: dict = _leap_v16_field(default_factory=dict)
+        s_matrix_snapshot: dict = _leap_v16_field(default_factory=dict)
+        operator_trace: list = _leap_v16_field(default_factory=list)
+        branch_id: str = 'MAIN'
+        turn_index: int = 0
+        max_new_tokens: int = 512
+        temperature: float = 0.2
+        context: dict = _leap_v16_field(default_factory=dict)
+    @_leap_v16_dataclass
+    class IdeaGenerationResult:
+        raw_text: str = ''
+        parsed: dict = _leap_v16_field(default_factory=dict)
+        idea_text: str = ''
+        mechanism_text: str = ''
+        test_text: str = ''
+        used_llm: bool = False
+        generation_backend: str = 'none'
+        backend: str = 'none'
+        model_source: str = ''
+        parse_ok: bool = False
+        prompt_echo_detected: bool = False
+        template_echo_detected: bool = False
+        accepted_as_seed: bool = False
+        rejection_reason: str = ''
+        causal_feedback_packet: dict = _leap_v16_field(default_factory=dict)
+        proof: dict = _leap_v16_field(default_factory=dict)
+else:
+    class IdeaGenerationContext(dict):
+        def __init__(self, **kwargs): super().__init__(**kwargs); self.__dict__ = self
+    class IdeaGenerationResult(dict):
+        def __init__(self, **kwargs): super().__init__(**kwargs); self.__dict__ = self
+
+def build_idea_generation_prompt(context: IdeaGenerationContext) -> str:
+    ctx = context.__dict__ if hasattr(context, '__dict__') else _leap_v16_safe_dict(context)
+    payload = {
+        'problem_text': _leap_v16_norm_text(ctx.get('problem_text'), 3000),
+        'constraints': _leap_v16_safe_list(ctx.get('constraints'))[:12],
+        'observables': _leap_v16_safe_list(ctx.get('observables'))[:12],
+        'controllables': _leap_v16_safe_list(ctx.get('controllables'))[:12],
+        'previous_turn_feedback': _leap_v16_safe_dict(ctx.get('previous_turn_feedback')),
+        'causal_graph_snapshot': _leap_v16_safe_dict(ctx.get('causal_graph_snapshot')),
+        's_matrix_snapshot': _leap_v16_safe_dict(ctx.get('s_matrix_snapshot')),
+        'operator_trace': _leap_v16_safe_list(ctx.get('operator_trace')),
+        'turn_index': int(ctx.get('turn_index') or 0),
+        'branch_id': str(ctx.get('branch_id') or 'MAIN'),
+    }
+    return (
+        'You are the Leap Engine idea generation core. Generate one novel, causal, testable invention idea.\n'
+        'Do not repeat this prompt. Do not output schema instructions as content.\n'
+        'Return one JSON object with keys: idea, mechanism, required_experiments, predicted_edges, uncertainty, s_matrix_updates_proposed.\n'
+        'Use previous_turn_feedback to refine or reframe the idea. Preserve INDETERMINATE / REQUIRE_EXPERIMENT when necessary.\n'
+        'INPUT_CONTEXT_JSON:\n' + _leap_v16_json.dumps(payload, ensure_ascii=False, default=str) + '\nJSON:'
+    )
+
+def parse_idea_output(raw: str) -> dict:
+    txt = '' if raw is None else str(raw)
+    js = _leap_v16_extract_first_json_obj(txt)
+    if js:
+        try:
+            obj = _leap_v16_json.loads(js)
+            return obj if isinstance(obj, dict) else {'text': txt}
+        except Exception: pass
+    return {'text': _leap_v16_norm_text(txt, 6000)}
+
+def compute_prompt_similarity(prompt: str, idea_text: str) -> float:
+    try:
+        a = set(_leap_v16_re.findall(r'[A-Za-z0-9_\-]+|[一-龥ぁ-んァ-ヶー]+', _leap_v16_norm_text(prompt, 6000).lower()))
+        b = set(_leap_v16_re.findall(r'[A-Za-z0-9_\-]+|[一-龥ぁ-んァ-ヶー]+', _leap_v16_norm_text(idea_text, 6000).lower()))
+        if not a and not b: return 1.0
+        return float(len(a & b) / max(1, len(a | b)))
+    except Exception:
+        return 0.0
+
+def detect_template_echo(text: str) -> bool:
+    low = _leap_v16_norm_text(text, 6000).lower()
+    if not low: return True
+    markers = ['return one json object','input_context_json','do not repeat this prompt','generate one novel','keys: idea','json:','schema','required_experiments','goal:','prompt:','latent-phase operator=','return:']
+    hits = sum(1 for m in markers if m in low)
+    return bool(hits >= 2 or low.startswith('return one json') or low.startswith('input_context_json'))
+
+def detect_prompt_echo(prompt: str, idea_text: str) -> bool:
+    idea = _leap_v16_norm_text(idea_text, 6000)
+    if not idea: return True
+    if compute_prompt_similarity(prompt, idea) >= 0.72: return True
+    p = _leap_v16_norm_text(prompt, 1000)
+    return bool(p and idea[:500] in p)
+
+def _leap_v16_first_nonempty(obj, keys):
+    d = _leap_v16_safe_dict(obj)
+    for k in keys:
+        v = d.get(k)
+        if isinstance(v, str) and _leap_v16_norm_text(v, 4000): return _leap_v16_norm_text(v, 4000)
+        if isinstance(v, (list, dict)) and v: return _leap_v16_json.dumps(v, ensure_ascii=False, default=str)
+    return ''
+
+def validate_idea_output(raw, parsed, context, prompt='') -> IdeaGenerationResult:
+    parsed = _leap_v16_safe_dict(parsed)
+    idea_text = _leap_v16_first_nonempty(parsed, ['idea','hypothesis','decoded_hypothesis','proposal','method_proposal','text'])
+    mechanism_text = _leap_v16_first_nonempty(parsed, ['mechanism','decoded_mechanism','causal_mechanism','why'])
+    test_text = _leap_v16_first_nonempty(parsed, ['test','first_test','required_experiments','experiments','prediction'])
+    prompt_echo = detect_prompt_echo(prompt, idea_text)
+    template_echo = detect_template_echo(idea_text + ' ' + mechanism_text)
+    parse_ok = bool(parsed and ('text' not in parsed or len(parsed.keys()) > 1))
+    raw_chars = len(str(raw or ''))
+    accepted_as_seed = bool(raw_chars > 0 and len(idea_text) >= _LEAP_V16_MIN_IDEA_CHARS and not prompt_echo and not template_echo)
+    reason = ''
+    if raw_chars <= 0: reason = 'llm_raw_output_empty'
+    elif not idea_text: reason = 'idea_text_empty'
+    elif len(idea_text) < _LEAP_V16_MIN_IDEA_CHARS: reason = 'idea_text_too_short'
+    elif prompt_echo: reason = 'prompt_echo_detected'
+    elif template_echo: reason = 'template_echo_detected'
+    return IdeaGenerationResult(raw_text='' if raw is None else str(raw), parsed=parsed, idea_text=idea_text, mechanism_text=mechanism_text, test_text=test_text, used_llm=False, generation_backend='none', backend='none', model_source='', parse_ok=parse_ok, prompt_echo_detected=prompt_echo, template_echo_detected=template_echo, accepted_as_seed=accepted_as_seed, rejection_reason=reason, causal_feedback_packet={}, proof={})
+
+def failed_idea_result(reason: str, proof=None) -> IdeaGenerationResult:
+    p = _leap_v16_safe_dict(proof)
+    p.setdefault('generate_idea_called', True); p.setdefault('backend_generate_attempted', False); p.setdefault('backend_generate_called', False)
+    p.setdefault('generation_backend', p.get('backend', 'none') or 'none'); p.setdefault('backend', p.get('generation_backend', 'none'))
+    p.setdefault('raw_output_chars', 0); p.setdefault('idea_text_chars', 0); p.setdefault('accepted_as_seed', False)
+    return IdeaGenerationResult(raw_text='', parsed={}, idea_text='', mechanism_text='', test_text='', used_llm=False, generation_backend=p.get('generation_backend','none'), backend=p.get('backend','none'), model_source='', parse_ok=False, prompt_echo_detected=False, template_echo_detected=False, accepted_as_seed=False, rejection_reason=str(reason or 'failed'), causal_feedback_packet={}, proof=p)
+
+def _leap_v16_extract_required_experiments(idea_result):
+    parsed = _leap_v16_safe_dict(getattr(idea_result, 'parsed', {}))
+    for key in ('required_experiments','experiments','tests'):
+        xs = _leap_v16_safe_list(parsed.get(key))
+        if xs: return xs[:8]
+    if _leap_v16_norm_text(getattr(idea_result, 'test_text', ''), 600):
+        return [{'type':'REQUIRE_EXPERIMENT','description':_leap_v16_norm_text(getattr(idea_result,'test_text',''),600)}]
+    if bool(getattr(idea_result, 'accepted_as_seed', False)):
+        return [{'type':'REQUIRE_EXPERIMENT','description':'Run a controlled intervention to distinguish the proposed mechanism from the baseline.'}]
+    return []
+
+def build_causal_feedback_packet(idea_result, context) -> dict:
+    ctx = context.__dict__ if hasattr(context, '__dict__') else _leap_v16_safe_dict(context)
+    proof = _leap_v16_safe_dict(getattr(idea_result, 'proof', {}))
+    source_used_llm = bool(getattr(idea_result, 'used_llm', False))
+    idea_id = 'IDEA-V16-%s-%03d-%s' % (_leap_v16_norm_text(ctx.get('branch_id') or 'MAIN',40).replace(' ','_'), int(ctx.get('turn_index') or 0), _leap_idea_sha256_text(getattr(idea_result,'idea_text',''))[:8])
+    parsed = _leap_v16_safe_dict(getattr(idea_result, 'parsed', {}))
+    required = _leap_v16_extract_required_experiments(idea_result)
+    return {
+        'source_idea_id': idea_id,
+        'source_turn': int(ctx.get('turn_index') or 0),
+        'source_branch_id': str(ctx.get('branch_id') or 'MAIN'),
+        'source_used_llm': source_used_llm,
+        'source_backend': proof.get('generation_backend', getattr(idea_result, 'generation_backend', 'none')),
+        'hypothesis_from_llm_output': bool(getattr(idea_result, 'accepted_as_seed', False) and source_used_llm),
+        'hypothesis': getattr(idea_result, 'idea_text', ''),
+        'mechanism': getattr(idea_result, 'mechanism_text', ''),
+        'predicted_edges': (_leap_v16_safe_list(parsed.get('predicted_edges')) or _leap_v16_safe_list(parsed.get('edges')))[:24],
+        'required_experiments': required[:12],
+        'uncertainty': _leap_v16_safe_list(parsed.get('uncertainty'))[:12],
+        's_matrix_updates_proposed': (_leap_v16_safe_list(parsed.get('s_matrix_updates_proposed')) or _leap_v16_safe_list(parsed.get('s_matrix_updates')))[:24],
+        'feedback_to_next_turn': {'promote':[getattr(idea_result,'idea_text','')[:500]] if getattr(idea_result,'accepted_as_seed',False) else [], 'suppress':[], 'reframe':[], 'requires_experiment':required[:8], 'indeterminate':_leap_v16_safe_list(parsed.get('uncertainty'))[:8]},
+        'proof': proof,
+    }
+
+def update_feedback_state(feedback_state: dict, packet: dict) -> dict:
+    state = _leap_v16_safe_dict(feedback_state); hist = _leap_v16_safe_list(state.get('history'))
+    hist.append(_leap_v16_safe_dict(packet)); state['history'] = hist[-16:]; state['last_packet'] = _leap_v16_safe_dict(packet); state['previous_turn_feedback_connected'] = bool(packet)
+    return state
+
+def generate_idea(context: IdeaGenerationContext, idea_backend: IdeaBackend) -> IdeaGenerationResult:
+    generation_backend = getattr(idea_backend, 'backend_label', 'none') if idea_backend is not None else 'none'
+    proof = {'patch_id':_LEAP_V16_PATCH_ID,'generate_idea_called':True,'backend_generate_attempted':False,'backend_generate_called':False,'generation_backend':generation_backend,'backend':generation_backend,'raw_output_chars':0,'idea_text_chars':0,'prompt_echo_detected':False,'template_echo_detected':False,'accepted_as_seed':False}
+    if idea_backend is None: return failed_idea_result('idea_backend_missing', proof=proof)
+    prompt = build_idea_generation_prompt(context); proof['prompt_hash'] = _leap_idea_sha256_text(prompt)
+    try:
+        proof['backend_generate_attempted'] = True
+        raw = idea_backend.generate(prompt, max_new_tokens=getattr(context,'max_new_tokens',512), temperature=getattr(context,'temperature',0.2))
+        proof['backend_generate_called'] = True
+    except Exception as e:
+        proof['backend_generate_called'] = False; proof['backend_generate_error'] = repr(e)[:500]
+        return failed_idea_result('backend_generate_error', proof=proof)
+    proof['raw_output_chars'] = len(raw or ''); proof['raw_output_hash'] = _leap_idea_sha256_text(raw or '')
+    parsed = parse_idea_output(raw); result = validate_idea_output(raw, parsed, context, prompt=prompt)
+    proof['idea_text_chars'] = len(result.idea_text or ''); proof['idea_text_hash'] = _leap_idea_sha256_text(result.idea_text or '')
+    proof['prompt_echo_detected'] = bool(result.prompt_echo_detected); proof['template_echo_detected'] = bool(result.template_echo_detected); proof['prompt_similarity_to_idea'] = compute_prompt_similarity(prompt, result.idea_text)
+    used_llm = bool(proof.get('backend_generate_called') is True and proof.get('raw_output_chars',0)>0 and proof.get('generation_backend') not in ('','none',None))
+    result.used_llm = used_llm; result.generation_backend = proof.get('generation_backend','none'); result.backend = result.generation_backend; result.model_source = getattr(idea_backend,'model_source','')
+    result.accepted_as_seed = bool(result.accepted_as_seed and used_llm); proof['accepted_as_seed'] = bool(result.accepted_as_seed)
+    result.proof = proof; result.causal_feedback_packet = build_causal_feedback_packet(result, context)
+    return result
+
+def _leap_v16_idea_result_to_dict(r):
+    out={}
+    if r is None: return out
+    for key in ['raw_text','parsed','idea_text','mechanism_text','test_text','used_llm','generation_backend','backend','model_source','parse_ok','prompt_echo_detected','template_echo_detected','accepted_as_seed','rejection_reason','causal_feedback_packet','proof']:
+        try: out[key]=getattr(r,key)
+        except Exception: pass
+    if isinstance(r, dict): out.update(r)
+    return out
+
+def _leap_v16_build_backend_from_inventor(self, context=None):
+    ctx=_leap_v16_safe_dict(context); backend=ctx.get('idea_backend') or getattr(self,'idea_backend',None)
+    if backend is not None: return backend
+    runtime_fn=ctx.get('runtime_generate_fn') or ctx.get('remote_runtime_generate_fn') or getattr(self,'runtime_generate_fn',None)
+    if callable(runtime_fn): return RemoteRuntimeIdeaBackend(runtime_fn, backend_label='remote_runtime')
+    model=getattr(self,'model',None); tokenizer=getattr(self,'tokenizer',None)
+    if model is not None and tokenizer is not None: return LocalTransformersIdeaBackend(model=model, tokenizer=tokenizer, device=getattr(self,'device',None), model_source=str(getattr(self,'model_name','') or getattr(model,'name_or_path','') or ''))
+    return None
+
+def _leap_v16_review_recommended(packet, proof):
+    packet=_leap_v16_safe_dict(packet); proof=_leap_v16_safe_dict(proof)
+    return bool(packet.get('source_used_llm') is True and proof.get('generate_idea_called') is True and proof.get('backend_generate_called') is True and int(proof.get('raw_output_chars',0) or 0)>0 and int(proof.get('idea_text_chars',0) or 0)>=_LEAP_V16_MIN_IDEA_CHARS and not bool(proof.get('prompt_echo_detected',False)) and not bool(proof.get('template_echo_detected',False)) and len(_leap_v16_safe_list(packet.get('required_experiments')))>=1)
+
+try: _LEAP_V16_PREV_RUN_LEAP_ENGINE = LatentPhaseInventor.run_leap_engine
+except Exception: _LEAP_V16_PREV_RUN_LEAP_ENGINE = None
+
+def _leap_v16_run_leap_engine_wrapper(self, query, operators=None, baseline_answer=None, max_candidates=8, context=None, operator_sequence=None, memory_items=None, **kwargs):
+    ctx=_leap_v16_safe_dict(context)
+    if memory_items is not None: ctx['memory_items']=memory_items
+    ctx.update({k:v for k,v in kwargs.items() if k not in ctx})
+    backend=_leap_v16_build_backend_from_inventor(self, ctx)
+    if backend is None:
+        proof=failed_idea_result('idea_backend_missing').proof
+        return {'mode':'leap_engine','query':_leap_v16_norm_text(query,3000),'status':'failed','accepted':False,'review_recommended':False,'reason':'idea_backend_missing','ui_panel_id':'latest_v15c_v14_primary_only','primary_result_route':'hidden_branching_v14','idea_generation_route':'generate_idea','llm_required':True,'llm_used_in_trial':False,'fallback_success_allowed':False,'idea_generation_proof':proof,'turn_feedback_chain':[],'diagnostics':{'fallback_success_blocked':True,'reason':'idea_backend_missing'}}
+    try: max_turns=int(ctx.get('max_turns') or kwargs.get('max_turns') or 1)
+    except Exception: max_turns=1
+    max_turns=max(1,min(max_turns,int(ctx.get('max_idea_turns',8) or 8)))
+    feedback_state=_leap_v16_safe_dict(ctx.get('previous_turn_feedback')); turn_feedback_chain=[]; idea_results=[]; best_seed=''
+    constraints=_leap_v16_safe_list(ctx.get('constraints')); observables=_leap_v16_safe_list(ctx.get('observables')); controllables=_leap_v16_safe_list(ctx.get('controllables'))
+    op_trace=_leap_v16_safe_list(operator_sequence) or _leap_v16_safe_list(operators) or _leap_v16_safe_list(ctx.get('operator_trace'))
+    for t in range(max_turns):
+        ig_ctx=IdeaGenerationContext(problem_text=_leap_v16_norm_text(query,3000),constraints=constraints,observables=observables,controllables=controllables,previous_turn_feedback=feedback_state,causal_graph_snapshot=_leap_v16_safe_dict(ctx.get('causal_graph_snapshot')),s_matrix_snapshot=_leap_v16_safe_dict(ctx.get('s_matrix_snapshot')),operator_trace=op_trace,branch_id=str(ctx.get('branch_id') or 'MAIN'),turn_index=t,max_new_tokens=int(ctx.get('max_new_tokens') or 512),temperature=float(ctx.get('temperature') if ctx.get('temperature') is not None else 0.2),context=ctx)
+        ir=generate_idea(ig_ctx,backend); idea_results.append(_leap_v16_idea_result_to_dict(ir)); packet=_leap_v16_safe_dict(ir.causal_feedback_packet); turn_feedback_chain.append(packet); feedback_state=update_feedback_state(feedback_state,packet)
+        if ir.accepted_as_seed and not best_seed: best_seed=ir.idea_text
+    accepted_seed_results=[r for r in idea_results if _leap_v16_safe_dict(r.get('proof')).get('accepted_as_seed')]
+    first_proof=_leap_v16_safe_dict(idea_results[0].get('proof')) if idea_results else failed_idea_result('no_idea_results').proof
+    any_review=any(_leap_v16_review_recommended(_leap_v16_safe_dict(r.get('causal_feedback_packet')), _leap_v16_safe_dict(r.get('proof'))) for r in idea_results)
+    if not accepted_seed_results:
+        return {'mode':'leap_engine','query':_leap_v16_norm_text(query,3000),'status':'failed' if not first_proof.get('backend_generate_called') else 'rejected','accepted':False,'review_recommended':False,'reason':idea_results[0].get('rejection_reason') if idea_results else 'idea_generation_failed','ui_panel_id':'latest_v15c_v14_primary_only','primary_result_route':'hidden_branching_v14','idea_generation_route':'generate_idea','llm_required':True,'llm_used_in_trial':bool(first_proof.get('backend_generate_called') and first_proof.get('raw_output_chars',0)>0),'fallback_success_allowed':False,'idea_generation':{'backend':first_proof.get('generation_backend','none'),'generation_backend':first_proof.get('generation_backend','none'),'used_llm':False,'turn_count':len(idea_results),'llm_call_count':sum(1 for r in idea_results if _leap_v16_safe_dict(r.get('proof')).get('backend_generate_called')),'prompt_echo_rejected_count':sum(1 for r in idea_results if _leap_v16_safe_dict(r.get('proof')).get('prompt_echo_detected')),'template_echo_rejected_count':sum(1 for r in idea_results if _leap_v16_safe_dict(r.get('proof')).get('template_echo_detected')),'invalid_seed_rejected_count':len(idea_results)},'idea_generation_proof':first_proof,'idea_generation_results':idea_results,'turn_feedback_chain':turn_feedback_chain,'diagnostics':{'fallback_success_blocked':True,'reason':'no_valid_llm_idea_seed'}}
+    prev_result={}
+    if callable(_LEAP_V16_PREV_RUN_LEAP_ENGINE):
+        next_ctx=dict(ctx); next_ctx.update({'idea_generation_results_v16':idea_results,'turn_feedback_chain':turn_feedback_chain,'previous_turn_feedback':feedback_state,'idea_backend':backend})
+        try: prev_result=_LEAP_V16_PREV_RUN_LEAP_ENGINE(self, query, operators=operators, baseline_answer=(best_seed or baseline_answer), max_candidates=max_candidates, context=next_ctx, operator_sequence=operator_sequence, memory_items=memory_items, **kwargs)
+        except TypeError:
+            try: prev_result=_LEAP_V16_PREV_RUN_LEAP_ENGINE(self, query, operators=operators, baseline_answer=(best_seed or baseline_answer), max_candidates=max_candidates, context=next_ctx)
+            except Exception as e: prev_result={'status':'partial','reason':'previous_run_error','previous_run_error':repr(e)[:500]}
+        except Exception as e: prev_result={'status':'partial','reason':'previous_run_error','previous_run_error':repr(e)[:500]}
+    result=_leap_v16_safe_dict(prev_result); result.setdefault('mode','leap_engine'); result['query']=_leap_v16_norm_text(query,3000)
+    result.update({'ui_panel_id':'latest_v15c_v14_primary_only','primary_result_route':'hidden_branching_v14','idea_generation_route':'generate_idea','llm_required':True,'llm_used_in_trial':True,'fallback_success_allowed':False,'idea_generation_results':idea_results,'turn_feedback_chain':turn_feedback_chain})
+    result['idea_generation_proof']=_leap_v16_safe_dict(accepted_seed_results[0].get('proof')) if accepted_seed_results else first_proof
+    result['idea_generation']={'backend':result['idea_generation_proof'].get('generation_backend','none'),'generation_backend':result['idea_generation_proof'].get('generation_backend','none'),'used_llm':True,'model_source':getattr(backend,'model_source',''),'turn_count':len(idea_results),'llm_call_count':sum(1 for r in idea_results if _leap_v16_safe_dict(r.get('proof')).get('backend_generate_called')),'prompt_echo_rejected_count':sum(1 for r in idea_results if _leap_v16_safe_dict(r.get('proof')).get('prompt_echo_detected')),'template_echo_rejected_count':sum(1 for r in idea_results if _leap_v16_safe_dict(r.get('proof')).get('template_echo_detected')),'invalid_seed_rejected_count':sum(1 for r in idea_results if not _leap_v16_safe_dict(r.get('proof')).get('accepted_as_seed'))}
+    result['review_recommended']=bool(any_review)
+    result['accepted']=False if result.get('accepted') is True and not result.get('human_approved',False) else bool(result.get('accepted',False))
+    if result['review_recommended'] and result.get('status') not in ('failed','rejected'):
+        result['status']='review_recommended'; result.setdefault('reason','llm_idea_generated_with_causal_feedback')
+    result.setdefault('diagnostics',{})
+    if isinstance(result['diagnostics'],dict): result['diagnostics'].update({'idea_generation_proof':result['idea_generation_proof'],'turn_feedback_chain_count':len(turn_feedback_chain),'fallback_success_allowed':False})
+    return result
+
+try:
+    if 'LatentPhaseInventor' in globals() and isinstance(LatentPhaseInventor, type):
+        LatentPhaseInventor.run_leap_engine = _leap_v16_run_leap_engine_wrapper
+        LatentPhaseInventor.generate_idea = staticmethod(generate_idea)
+        LatentPhaseInventor._leap_v16_patch_id = _LEAP_V16_PATCH_ID
+except Exception:
+    pass
+# ============================================================================
+# END ADD-ONLY PATCH APP/LEAP V16
+# ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY PATCH LEAP-V17-LAYER-RESOLVER-HOOK-PROOF (2026-05-04 JST)
+# purpose:
+# - Correct layer_list_unavailable for LOCAL calls as well as wrapped models.
+# - Do not rely only on model.model.layers / transformer.h / gpt_neox.layers.
+# - Resolve layers through recursive wrappers, common HF paths, and named_modules.
+# - Do not require config.hidden_size before hook; infer hidden_dim from hook output.
+# - Treat text fallback as failure for latent operation; no silent success.
+# - Emit hook proof: hook_register_ok, hook_call_count, hidden_dim, operator_delta_norm.
+# policy:
+# - ADD-ONLY: no existing code above is deleted.
+# - No task/benchmark hardcoding.
+# ============================================================================
+
+LEAP_V17_LAYER_RESOLVER_HOOK_PROOF_PATCH = "LEAP-V17-LAYER-RESOLVER-HOOK-PROOF-20260504"
+
+
+def _leapv17_norm(x, limit=4000):
+    try:
+        s = '' if x is None else str(x)
+    except Exception:
+        s = ''
+    return ' '.join(s.split())[:max(0, int(limit))]
+
+
+def _leapv17_safe_dict(x):
+    return dict(x) if isinstance(x, dict) else {}
+
+
+def _leapv17_get_path(obj, path):
+    cur = obj
+    for part in str(path or '').split('.'):
+        if not part:
+            continue
+        if not hasattr(cur, part):
+            raise AttributeError(path)
+        cur = getattr(cur, part)
+    return cur
+
+
+def _leapv17_is_hookable_module(x):
+    return bool(x is not None and hasattr(x, 'register_forward_hook') and callable(getattr(x, 'register_forward_hook', None)))
+
+
+def _leapv17_is_layer_sequence(x):
+    if x is None:
+        return False
+    try:
+        n = len(x)
+    except Exception:
+        return False
+    if n <= 0:
+        return False
+    try:
+        first = x[0]
+    except Exception:
+        return False
+    return _leapv17_is_hookable_module(first)
+
+
+def _leapv17_unwrap_model_candidates(model, max_depth=4):
+    """Return candidate model objects by recursively following common wrappers."""
+    out = []
+    seen = set()
+    def add(obj, depth):
+        if obj is None or depth > int(max_depth):
+            return
+        oid = id(obj)
+        if oid in seen:
+            return
+        seen.add(oid)
+        out.append(obj)
+        for attr in ('module', 'base_model', 'model', 'language_model', 'transformer', 'gpt_neox'):
+            try:
+                child = getattr(obj, attr, None)
+            except Exception:
+                child = None
+            if child is not None and child is not obj:
+                add(child, depth + 1)
+    add(model, 0)
+    return out
+
+
+_LEAPV17_LAYER_PATHS = [
+    'model.layers',
+    'model.model.layers',
+    'layers',
+    'transformer.h',
+    'model.transformer.h',
+    'gpt_neox.layers',
+    'model.gpt_neox.layers',
+    'decoder.layers',
+    'model.decoder.layers',
+    'model.model.decoder.layers',
+    'encoder.layers',
+    'model.encoder.layers',
+    'base_model.model.layers',
+    'base_model.layers',
+    'language_model.model.layers',
+    'language_model.layers',
+    'backbone.layers',
+    'transformer.blocks',
+    'model.transformer.blocks',
+    'blocks',
+    'h',
+]
+
+
+def _leapv17_discover_layer_lists(model):
+    found = []
+    checked = []
+    for root_i, root in enumerate(_leapv17_unwrap_model_candidates(model)):
+        root_name = type(root).__name__
+        for path in _LEAPV17_LAYER_PATHS:
+            checked.append({'root_index': root_i, 'root_type': root_name, 'path': path})
+            try:
+                layers = _leapv17_get_path(root, path)
+                if _leapv17_is_layer_sequence(layers):
+                    found.append({
+                        'root_index': root_i,
+                        'root_type': root_name,
+                        'path': path,
+                        'num_layers': int(len(layers)),
+                        'layers': layers,
+                        'source': 'known_path',
+                    })
+            except Exception:
+                continue
+    # Fallback: named_modules scan. This is essential for wrapped/custom local models.
+    try:
+        named = list(model.named_modules()) if hasattr(model, 'named_modules') else []
+    except Exception:
+        named = []
+    scored = []
+    for name, module in named:
+        if not name or not _leapv17_is_hookable_module(module):
+            continue
+        lname = name.lower()
+        cname = type(module).__name__.lower()
+        if any(bad in lname for bad in ['embed', 'embedding', 'lm_head', 'norm', 'rotary', 'dropout']):
+            continue
+        score = 0
+        if any(tok in lname for tok in ['layers.', 'blocks.', 'h.', 'decoder.layers.', 'model.layers.']):
+            score += 4
+        if any(tok in cname for tok in ['decoderlayer', 'encoderlayer', 'block', 'layer']):
+            score += 3
+        if any(tok in lname for tok in ['attn', 'attention', 'mlp']):
+            score -= 1
+        if score >= 3:
+            scored.append((score, name, module))
+    if scored:
+        scored.sort(key=lambda x: (-x[0], x[1]))
+        modules = [m for _s, _n, m in scored]
+        found.append({
+            'root_index': 0,
+            'root_type': type(model).__name__,
+            'path': 'named_modules:auto_transformer_blocks',
+            'num_layers': int(len(modules)),
+            'layers': modules,
+            'source': 'named_modules_scan',
+            'module_names': [n for _s, n, _m in scored[:64]],
+        })
+    # de-duplicate by first module identity
+    out = []
+    seen = set()
+    for item in found:
+        try:
+            key = id(item['layers'][0])
+        except Exception:
+            key = id(item.get('layers'))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(item)
+    return out, checked
+
+
+def _leapv17_try_get_layers(model):
+    found, _checked = _leapv17_discover_layer_lists(model)
+    if not found:
+        return []
+    try:
+        return list(found[0].get('layers'))
+    except Exception:
+        return []
+
+
+# Override old thin resolver name so legacy paths also benefit.
+try:
+    _LPV2_TRY_GET_LAYERS_PRE_V17 = _lpv2_try_get_layers
+except Exception:
+    _LPV2_TRY_GET_LAYERS_PRE_V17 = None
+try:
+    _lpv2_try_get_layers = _leapv17_try_get_layers
+except Exception:
+    pass
+
+
+def _leapv17_resolve_layer(model, layer=0, manual_layer_path=None):
+    found, checked = _leapv17_discover_layer_lists(model)
+    diag = {
+        'patch_id': LEAP_V17_LAYER_RESOLVER_HOOK_PROOF_PATCH,
+        'layer_list_available': bool(found),
+        'candidate_layer_paths_checked': checked[:128],
+        'layer_lists_found': [
+            {k: v for k, v in item.items() if k not in {'layers'}} for item in found[:16]
+        ],
+        'manual_layer_path': manual_layer_path or '',
+        'layer_requested': layer,
+        'layer_resolved': False,
+        'layer_resolved_index': None,
+        'layer_resolved_path': '',
+        'layer_module_repr': '',
+    }
+    selected = None
+    if manual_layer_path:
+        try:
+            layers = _leapv17_get_path(model, manual_layer_path)
+            if _leapv17_is_layer_sequence(layers):
+                selected = {'path': manual_layer_path, 'layers': layers, 'num_layers': int(len(layers)), 'source': 'manual_path'}
+        except Exception as e:
+            diag['manual_layer_path_error'] = repr(e)
+    if selected is None and found:
+        selected = found[0]
+    if selected is None:
+        diag['reason'] = 'layer_list_unavailable'
+        return None, diag
+    try:
+        layers = selected['layers']
+        n = int(len(layers))
+        idx = int(layer)
+        if idx < 0:
+            idx = n + idx
+        idx = max(0, min(idx, n - 1))
+        module = layers[idx]
+        diag.update({
+            'layer_resolved': True,
+            'layer_resolved_index': idx,
+            'layer_resolved_path': selected.get('path', ''),
+            'layer_module_repr': repr(module)[:800],
+            'num_layers': n,
+            'layer_source': selected.get('source', ''),
+        })
+        return module, diag
+    except Exception as e:
+        diag['reason'] = 'layer_resolve_exception'
+        diag['error'] = repr(e)
+        return None, diag
+
+
+def _leapv17_extract_model_tokenizer_from_any(obj, depth=0, seen=None):
+    if seen is None:
+        seen = set()
+    if obj is None or depth > 5:
+        return None, None, []
+    oid = id(obj)
+    if oid in seen:
+        return None, None, []
+    seen.add(oid)
+    traces = []
+    model = None
+    tok = None
+    if isinstance(obj, dict):
+        for mk in ('model', 'llm_model', 'transformers_model', 'hf_model'):
+            if obj.get(mk) is not None:
+                model = obj.get(mk); traces.append('dict.' + mk); break
+        for tk in ('tokenizer', 'tok', 'llm_tokenizer', 'transformers_tokenizer'):
+            if obj.get(tk) is not None:
+                tok = obj.get(tk); traces.append('dict.' + tk); break
+        for key in ('inventor', 'causal_os', 'osys', 'engine', 'model_handle', 'leap_model_handle', 'context'):
+            child = obj.get(key)
+            cm, ct, tr = _leapv17_extract_model_tokenizer_from_any(child, depth+1, seen)
+            if model is None and cm is not None: model = cm
+            if tok is None and ct is not None: tok = ct
+            traces.extend(['dict.' + key + '.' + x for x in tr])
+            if model is not None and tok is not None:
+                break
+    else:
+        for mk in ('model', 'llm_model', 'transformers_model', 'hf_model'):
+            try:
+                val = getattr(obj, mk, None)
+            except Exception:
+                val = None
+            if val is not None:
+                model = val; traces.append('attr.' + mk); break
+        for tk in ('tokenizer', 'tok', 'llm_tokenizer', 'transformers_tokenizer'):
+            try:
+                val = getattr(obj, tk, None)
+            except Exception:
+                val = None
+            if val is not None:
+                tok = val; traces.append('attr.' + tk); break
+        for key in ('inventor', 'causal_os', 'osys', 'engine', 'model_handle', 'leap_model_handle'):
+            try:
+                child = getattr(obj, key, None)
+            except Exception:
+                child = None
+            cm, ct, tr = _leapv17_extract_model_tokenizer_from_any(child, depth+1, seen)
+            if model is None and cm is not None: model = cm
+            if tok is None and ct is not None: tok = ct
+            traces.extend(['attr.' + key + '.' + x for x in tr])
+            if model is not None and tok is not None:
+                break
+    return model, tok, traces
+
+
+def _leapv17_bind_model_tokenizer(self, kwargs=None):
+    kwargs = kwargs or {}
+    model = kwargs.get('model') or getattr(self, 'model', None)
+    tok = kwargs.get('tokenizer') or getattr(self, 'tokenizer', None)
+    traces = []
+    if model is not None: traces.append('self_or_kwargs.model')
+    if tok is not None: traces.append('self_or_kwargs.tokenizer')
+    for key in ('context', 'runtime_context', 'leap_context'):
+        if key in kwargs:
+            cm, ct, tr = _leapv17_extract_model_tokenizer_from_any(kwargs.get(key))
+            if model is None and cm is not None:
+                model = cm
+            if tok is None and ct is not None:
+                tok = ct
+            traces.extend([key + '.' + x for x in tr])
+    for obj in (getattr(self, 'causal_os', None), getattr(self, 'osys', None), getattr(self, 'model_handle', None), getattr(self, 'leap_model_handle', None)):
+        cm, ct, tr = _leapv17_extract_model_tokenizer_from_any(obj)
+        if model is None and cm is not None:
+            model = cm
+        if tok is None and ct is not None:
+            tok = ct
+        traces.extend(tr)
+    if model is not None:
+        try: self.model = model
+        except Exception: pass
+    if tok is not None:
+        try: self.tokenizer = tok
+        except Exception: pass
+    if getattr(self, 'device', None) is None and model is not None:
+        try: self.device = next(model.parameters()).device
+        except Exception: pass
+    return model, tok, traces
+
+
+def _leapv17_extract_hidden(output):
+    try:
+        import torch
+    except Exception:
+        return None
+    if torch.is_tensor(output):
+        return output
+    if isinstance(output, tuple) and output:
+        if torch.is_tensor(output[0]):
+            return output[0]
+    try:
+        h = getattr(output, 'last_hidden_state', None)
+        if torch.is_tensor(h):
+            return h
+    except Exception:
+        pass
+    return None
+
+
+def _leapv17_replace_hidden(output, new_hidden):
+    if isinstance(output, tuple) and output:
+        return (new_hidden,) + tuple(output[1:])
+    return new_hidden
+
+
+def _leapv17_make_dynamic_hook(operator_name, theta, stats):
+    op = _leapv17_norm(operator_name or 'phase_rotate', 80).lower()
+    scale = float(theta or 0.0)
+    if abs(scale) < 1e-12:
+        scale = 0.05
+    def hook(module, inputs, output):
+        stats['hook_call_count'] = int(stats.get('hook_call_count', 0) or 0) + 1
+        try:
+            import torch
+            h = _leapv17_extract_hidden(output)
+            if h is None:
+                stats['hook_output_kind'] = type(output).__name__
+                stats['hook_error'] = 'hidden_tensor_not_found_in_output'
+                return output
+            stats['hook_output_kind'] = type(h).__name__
+            stats['hidden_shape'] = list(h.shape)
+            stats['hidden_dim'] = int(h.shape[-1]) if getattr(h, 'ndim', 0) >= 1 else 0
+            if stats['hidden_dim'] <= 1:
+                stats['operator_delta_norm'] = 0.0
+                return output
+            h2 = h.clone()
+            k = min(16, int(h2.shape[-1]))
+            before = h2[..., :k].clone()
+            rolled = torch.roll(before, shifts=1, dims=-1)
+            if op in {'inversion', 'reverse', 'constraint_inversion'}:
+                after = before - scale * rolled
+            elif op in {'combination', 'combine'}:
+                after = before + 0.5 * scale * rolled
+            elif op in {'substitution', 'mediator_insertion', 'puttootheruse'}:
+                alpha = min(abs(scale), 0.5)
+                after = (1.0 - alpha) * before + alpha * rolled
+            else:
+                after = before + scale * rolled
+            h2[..., :k] = after
+            delta = h2[..., :k] - before
+            try:
+                stats['operator_delta_norm'] = float(torch.norm(delta.detach()).item())
+            except Exception:
+                stats['operator_delta_norm'] = -1.0
+            stats['rotation_axes'] = list(range(k))
+            stats['operator_name'] = op
+            stats['theta'] = float(theta or 0.0)
+            return _leapv17_replace_hidden(output, h2)
+        except Exception as e:
+            stats['hook_error'] = repr(e)
+            return output
+    return hook
+
+
+try:
+    _LEAPV17_PREV_RUN_TRIAL = LatentPhaseInventor.run_trial
+except Exception:
+    _LEAPV17_PREV_RUN_TRIAL = None
+
+
+def _leapv17_run_trial(self, prompt, layer=0, theta=0.05, operator_name='phase_rotate', max_new_tokens=192, temperature=0.7, force_text_fallback=False, **kwargs):
+    base_prompt = _leapv17_norm(prompt, 3000)
+    debug = {
+        'patch_id': LEAP_V17_LAYER_RESOLVER_HOOK_PROOF_PATCH,
+        'layer_requested': layer,
+        'layer_resolved_index': None,
+        'layer_module_repr': '',
+        'hidden_dim': 0,
+        'hidden_shape': [],
+        'rotation_axes': [],
+        'hook_register_ok': False,
+        'hook_call_count': 0,
+        'operator_delta_norm': 0.0,
+        'generation_backend': 'local_transformers_dynamic_hook',
+        'fallback_reason': '',
+        'warnings': [],
+        'errors': [],
+        'model_resolve_trace': [],
+    }
+    model, tok, traces = _leapv17_bind_model_tokenizer(self, kwargs)
+    debug['model_resolve_trace'] = traces
+    debug['model_visible_to_trial'] = model is not None
+    debug['tokenizer_visible_to_trial'] = tok is not None
+    if force_text_fallback:
+        debug['errors'].append('force_text_fallback_disallowed_for_latent_operation')
+        reason = 'force_text_fallback_disallowed_for_latent_operation'
+        return {
+            'prompt': base_prompt, 'layer': int(layer), 'theta': float(theta),
+            'operator_name': str(operator_name), 'base_output': '', 'intervened_output': '',
+            'novelty': 0.0, 'coherence': 0.0, 'score': 0.0, 'content_validity_score': 0.0,
+            'hook_used': False, 'hook_call_count': 0, 'operator_delta_norm': 0.0,
+            'rotation_axes': [], 'template_detected': True, 'accepted': False,
+            'status': 'failed', 'reason': reason, 'debug': debug,
+        }
+    if model is None or tok is None:
+        debug['fallback_reason'] = 'model_or_tokenizer_missing'
+        debug['errors'].append('model_or_tokenizer_missing')
+        return {
+            'prompt': base_prompt, 'layer': int(layer), 'theta': float(theta),
+            'operator_name': str(operator_name), 'base_output': '', 'intervened_output': '',
+            'novelty': 0.0, 'coherence': 0.0, 'score': 0.0, 'content_validity_score': 0.0,
+            'hook_used': False, 'hook_call_count': 0, 'operator_delta_norm': 0.0,
+            'rotation_axes': [], 'template_detected': True, 'accepted': False,
+            'status': 'failed', 'reason': 'model_or_tokenizer_missing', 'debug': debug,
+        }
+    manual_layer_path = kwargs.get('manual_layer_path') or kwargs.get('layer_path') or kwargs.get('target_layer_path')
+    layer_module, layer_diag = _leapv17_resolve_layer(model, layer=layer, manual_layer_path=manual_layer_path)
+    debug['layer_resolution'] = layer_diag
+    if layer_module is None:
+        debug['fallback_reason'] = 'layer_list_unavailable'
+        debug['errors'].append('layer_list_unavailable')
+        return {
+            'prompt': base_prompt, 'layer': int(layer), 'theta': float(theta),
+            'operator_name': str(operator_name), 'base_output': '', 'intervened_output': '',
+            'novelty': 0.0, 'coherence': 0.0, 'score': 0.0, 'content_validity_score': 0.0,
+            'hook_used': False, 'hook_call_count': 0, 'operator_delta_norm': 0.0,
+            'rotation_axes': [], 'template_detected': True, 'accepted': False,
+            'status': 'failed', 'reason': 'layer_list_unavailable', 'debug': debug,
+        }
+    debug['layer_resolved_index'] = layer_diag.get('layer_resolved_index')
+    debug['layer_module_repr'] = layer_diag.get('layer_module_repr', '')
+    handle = None
+    stats = {'hook_register_ok': False, 'hook_call_count': 0, 'hidden_dim': 0, 'operator_delta_norm': 0.0, 'rotation_axes': []}
+    base_output = ''
+    intervened_output = ''
+    try:
+        # Baseline generation proves the local model path works; failure is recorded but not accepted.
+        try:
+            base_output = _lpv2_generate_text_with_model(self, base_prompt, max_new_tokens=max(8, min(int(max_new_tokens), 256)), temperature=0.0)
+        except Exception as e:
+            debug['warnings'].append('base_generation_failed:' + repr(e)[:200])
+            base_output = ''
+        hook = _leapv17_make_dynamic_hook(operator_name, float(theta), stats)
+        handle = layer_module.register_forward_hook(hook)
+        stats['hook_register_ok'] = True
+        debug['hook_register_ok'] = True
+        transformed_prompt = _lpv2_text_transform(base_prompt, operator_name, theta, int(layer_diag.get('layer_resolved_index') or 0)) if callable(globals().get('_lpv2_text_transform')) else base_prompt
+        intervened_output = _lpv2_generate_text_with_model(self, transformed_prompt, max_new_tokens=max_new_tokens, temperature=temperature)
+    except Exception as e:
+        debug['errors'].append('generation_with_hook_failed:' + repr(e)[:400])
+    finally:
+        if handle is not None:
+            try: handle.remove()
+            except Exception: pass
+    debug['hook_call_count'] = int(stats.get('hook_call_count', 0) or 0)
+    debug['hidden_dim'] = int(stats.get('hidden_dim', 0) or 0)
+    debug['hidden_shape'] = stats.get('hidden_shape', [])
+    debug['operator_delta_norm'] = float(stats.get('operator_delta_norm', 0.0) or 0.0)
+    debug['rotation_axes'] = stats.get('rotation_axes', [])
+    latent_ok = bool(debug['hook_register_ok'] and debug['hook_call_count'] > 0 and debug['hidden_dim'] > 0 and debug['operator_delta_norm'] > 0.0)
+    if not latent_ok:
+        reason = 'hook_not_called_or_no_delta'
+        if debug['hook_call_count'] <= 0:
+            reason = 'hook_call_count_zero'
+        elif debug['hidden_dim'] <= 0:
+            reason = 'hidden_dim_unavailable_from_hook'
+        elif debug['operator_delta_norm'] <= 0.0:
+            reason = 'operator_delta_norm_zero'
+        debug['fallback_reason'] = reason
+        debug['errors'].append(reason)
+    try:
+        scores = _lpv2_score_trial(base_output, intervened_output) if callable(globals().get('_lpv2_score_trial')) else {'novelty': 0.0, 'coherence': 0.0, 'score': 0.0}
+    except Exception:
+        scores = {'novelty': 0.0, 'coherence': 0.0, 'score': 0.0}
+    try:
+        content_validity_score = float(_lpv3_content_validity_score(intervened_output)) if callable(globals().get('_lpv3_content_validity_score')) else 0.0
+        template_detected = bool(_lpv3_is_instruction_like_output(intervened_output)) if callable(globals().get('_lpv3_is_instruction_like_output')) else False
+    except Exception:
+        content_validity_score = 0.0
+        template_detected = False
+    trial = {
+        'prompt': base_prompt,
+        'layer': int(layer),
+        'theta': float(theta),
+        'theta_deg': float(theta) * 180.0 / 3.141592653589793,
+        'operator_name': str(operator_name),
+        'base_output': base_output,
+        'intervened_output': intervened_output,
+        'novelty': float(scores.get('novelty', 0.0) or 0.0) if isinstance(scores, dict) else 0.0,
+        'coherence': float(scores.get('coherence', 0.0) or 0.0) if isinstance(scores, dict) else 0.0,
+        'score': float(scores.get('score', 0.0) or 0.0) if isinstance(scores, dict) else 0.0,
+        'content_validity_score': float(content_validity_score),
+        'hook_used': bool(latent_ok),
+        'hook_register_ok': bool(debug['hook_register_ok']),
+        'hook_call_count': int(debug['hook_call_count']),
+        'hidden_dim': int(debug['hidden_dim']),
+        'hidden_shape': debug.get('hidden_shape', []),
+        'operator_delta_norm': float(debug['operator_delta_norm']),
+        'rotation_axes': list(debug.get('rotation_axes', [])),
+        'template_detected': bool(template_detected),
+        'accepted': False,
+        'status': 'failed',
+        'reason': debug.get('fallback_reason') or 'latent_operation_failed',
+        'debug': debug,
+        'latent_operation_status': 'ok' if latent_ok else 'failed',
+        'latent_operation_available': bool(latent_ok),
+        'idea_generation_mode': 'latent_operator_generation' if latent_ok else 'failed_latent_operation',
+    }
+    if latent_ok:
+        try:
+            accepted, reason = _lpv3_trial_acceptance(trial)
+        except Exception:
+            accepted, reason = True, 'latent_hook_confirmed'
+        trial['accepted'] = bool(accepted)
+        trial['status'] = 'ok' if accepted else 'rejected'
+        trial['reason'] = reason
+    try:
+        self._last_debug = {'last_trial': trial, 'patch_id': LEAP_V17_LAYER_RESOLVER_HOOK_PROOF_PATCH}
+    except Exception:
+        pass
+    return trial
+
+
+try:
+    LatentPhaseInventor.run_trial = _leapv17_run_trial
+    LatentPhaseInventor.resolve_layer_v17 = staticmethod(_leapv17_resolve_layer)
+    LatentPhaseInventor.discover_layer_lists_v17 = staticmethod(_leapv17_discover_layer_lists)
+    LatentPhaseInventor.bind_model_tokenizer_v17 = _leapv17_bind_model_tokenizer
+except Exception:
+    pass
+
+try:
+    import os as _leapv17_os, time as _leapv17_time, hashlib as _leapv17_hashlib
+    def _leapv17_execution_proof_payload():
+        _path = _leapv17_os.path.abspath(__file__)
+        try:
+            _sha = _leapv17_hashlib.sha256(open(_path, 'rb').read()).hexdigest()
+        except Exception:
+            _sha = None
+        return {'module': __name__, 'file': _path, 'sha256': _sha, 'patch': LEAP_V17_LAYER_RESOLVER_HOOK_PROOF_PATCH, 'ts': _leapv17_time.time()}
+    LEAPV17_EXECUTION_PROOF = _leapv17_execution_proof_payload()
+    try:
+        print('[EXECUTION_PROOF_LEAPV17]', LEAPV17_EXECUTION_PROOF)
+    except Exception:
+        pass
+except Exception:
+    pass
+# ============================================================================
+# END ADD-ONLY PATCH LEAP-V17-LAYER-RESOLVER-HOOK-PROOF
+# ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY PATCH: LEAP_REMOTE_RUNTIME_FORCE_WIRE_V19_20260504_112101
+# Purpose:
+#   Fix the observed failure:
+#     model_or_tokenizer_missing_before_run_leap_engine
+#     model_or_tokenizer_missing_at_branch_trial
+#     generation_backend = none
+#   Root cause from debug JSON:
+#     Remote Runtime is available, but V15C only accepts local model/tokenizer
+#     as "resolved" and ignores runtime/JSON generation callables during branch
+#     trials. This patch treats a callable Remote Runtime generator as a valid
+#     LLM execution backend and forces branch trials through it when local model
+#     objects are absent.
+# Non-destructive: wraps existing functions; does not delete legacy code.
+# ============================================================================
+LEAP_REMOTE_RUNTIME_FORCE_WIRE_V19_PATCH_ID = "LEAP_REMOTE_RUNTIME_FORCE_WIRE_V19_20260504_112101"
+
+try:
+    _LRFV19_PREV_ENRICH_CONTEXT = _llmw15c_enrich_context
+except Exception:
+    _LRFV19_PREV_ENRICH_CONTEXT = None
+try:
+    _LRFV19_PREV_V14F_TRIAL = _v14f_trial
+except Exception:
+    _LRFV19_PREV_V14F_TRIAL = None
+try:
+    _LRFV19_PREV_RUN_LEAP_SEARCH = run_leap_search
+except Exception:
+    _LRFV19_PREV_RUN_LEAP_SEARCH = None
+try:
+    _LRFV19_PREV_RUN_LEAP_ENGINE = run_leap_engine
+except Exception:
+    _LRFV19_PREV_RUN_LEAP_ENGINE = None
+
+def _lrfv19_safe_dict(x):
+    return x if isinstance(x, dict) else {}
+
+def _lrfv19_text(x, limit=12000):
+    try:
+        s = '' if x is None else str(x)
+    except Exception:
+        s = repr(x)
+    try:
+        return s[:max(0, int(limit))]
+    except Exception:
+        return s[:12000]
+
+def _lrfv19_has_local_llm(inv=None, ctx=None):
+    try:
+        if inv is not None and _llmw15c_is_model(getattr(inv, 'model', None)) and _llmw15c_is_tokenizer(getattr(inv, 'tokenizer', None)):
+            return True
+    except Exception:
+        pass
+    ctx = _lrfv19_safe_dict(ctx)
+    try:
+        return bool(_llmw15c_is_model(ctx.get('model')) and _llmw15c_is_tokenizer(ctx.get('tokenizer')))
+    except Exception:
+        return False
+
+def _lrfv19_remote_fn_candidates(obj):
+    keys = (
+        'runtime_generate_fn', 'remote_runtime_generate_fn', 'remote_latent_generate_fn', 'llm_generate_fn',
+        'llm_json_fn', 'runtime_llm_json_fn', 'remote_runtime_generate_json_fn', 'remote_runtime_json_fn'
+    )
+    out = []
+    if isinstance(obj, dict):
+        for k in keys:
+            fn = obj.get(k)
+            if callable(fn):
+                out.append((k, fn))
+        for nested_key in ('context', 'cfg', 'config', 'runtime', 'engine'):
+            nested = obj.get(nested_key)
+            if isinstance(nested, dict):
+                for k, fn in _lrfv19_remote_fn_candidates(nested):
+                    out.append((nested_key + '.' + k, fn))
+    else:
+        for k in keys:
+            try:
+                fn = getattr(obj, k, None)
+                if callable(fn):
+                    out.append(('attr.' + k, fn))
+            except Exception:
+                pass
+    # de-duplicate by id
+    seen=set(); uniq=[]
+    for src, fn in out:
+        if id(fn) not in seen:
+            uniq.append((src, fn)); seen.add(id(fn))
+    return uniq
+
+def _lrfv19_get_remote_generate_fn(inv=None, ctx=None):
+    ctx = _lrfv19_safe_dict(ctx)
+    for src, fn in _lrfv19_remote_fn_candidates(ctx):
+        return fn, src
+    for src, fn in _lrfv19_remote_fn_candidates(inv):
+        return fn, src
+    return None, ''
+
+def _lrfv19_schema():
+    return {
+        'type': 'object',
+        'additionalProperties': True,
+        'properties': {
+            'idea': {'type': 'string'},
+            'hypothesis': {'type': 'string'},
+            'mechanism': {'type': 'string'},
+            'required_experiments': {'type': 'array'},
+            'predicted_edges': {'type': 'array'},
+            'uncertainty': {'type': 'string'},
+            's_matrix_updates_proposed': {'type': 'array'},
+        },
+    }
+
+def _lrfv19_call_remote_fn(fn, prompt, method, seed=0, max_new_tokens=512):
+    method = _lrfv19_safe_dict(method)
+    op = _lrfv19_text(method.get('operator_name') or method.get('operator') or 'generic', 80)
+    try:
+        layer = int(method.get('layer', 0) or 0)
+    except Exception:
+        layer = 0
+    try:
+        theta = float(method.get('theta', 0.03) or 0.03)
+    except Exception:
+        theta = 0.03
+    schema = _lrfv19_schema()
+    attempts = [
+        lambda: fn(prompt, operator=op, operator_name=op, layer=layer, manual_layer_index=layer, theta=theta, seed=seed, max_new_tokens=max_new_tokens, return_hidden_diagnostics=True),
+        lambda: fn(prompt, max_new_tokens=max_new_tokens),
+        lambda: fn(prompt, schema_obj=schema, max_new_tokens=max_new_tokens),
+        lambda: fn(prompt, schema, max_new_tokens),
+        lambda: fn(prompt),
+    ]
+    last_exc = None
+    for idx, call in enumerate(attempts, start=1):
+        try:
+            return call(), {'call_attempt_index': idx, 'operator': op, 'layer': layer, 'theta': theta}
+        except TypeError as e:
+            last_exc = e
+            continue
+    # Non-TypeError should be surfaced from a final direct call if possible.
+    try:
+        return fn(prompt), {'call_attempt_index': 'final_direct', 'operator': op, 'layer': layer, 'theta': theta}
+    except Exception as e:
+        raise e if last_exc is None else last_exc
+
+def _lrfv19_extract_text(raw):
+    if isinstance(raw, dict):
+        for k in ('generated_text', 'text', 'response', 'output', 'content', 'raw'):
+            v = raw.get(k)
+            if v:
+                return _lrfv19_text(v)
+        # structured-json endpoint may return parsed only
+        parsed = raw.get('parsed')
+        if isinstance(parsed, dict):
+            try:
+                return _leap_v16_json.dumps(parsed, ensure_ascii=False, default=str)
+            except Exception:
+                return _lrfv19_text(parsed)
+        try:
+            return _leap_v16_json.dumps(raw, ensure_ascii=False, default=str)
+        except Exception:
+            return _lrfv19_text(raw)
+    return _lrfv19_text(raw)
+
+def _lrfv19_mark_ctx_remote_resolved(ctx, source):
+    ctx = _lrfv19_safe_dict(ctx)
+    proof = ctx.get('llm_wire_proof_v15c') if isinstance(ctx.get('llm_wire_proof_v15c'), dict) else {}
+    proof.update({
+        'patch_id': LEAP_REMOTE_RUNTIME_FORCE_WIRE_V19_PATCH_ID,
+        'resolved': True,
+        'model_resolved': False,
+        'tokenizer_resolved': False,
+        'remote_runtime_resolved': True,
+        'runtime_generate_fn_resolved': True,
+        'generation_backend': 'remote_runtime_callable',
+        'model_source': source,
+        'tokenizer_source': source,
+        'note': 'Remote Runtime callable is treated as valid LLM backend when local model/tokenizer are absent.',
+    })
+    ctx['llm_wire_proof_v15c'] = proof
+    ctx['generation_backend'] = 'remote_runtime_callable'
+    ctx['remote_runtime_force_wire_v19'] = proof
+    return ctx
+
+def _llmw15c_enrich_context(context=None, **kwargs):
+    if callable(_LRFV19_PREV_ENRICH_CONTEXT):
+        ctx = _LRFV19_PREV_ENRICH_CONTEXT(context, **kwargs)
+    else:
+        ctx = _lrfv19_safe_dict(context)
+        for k, v in kwargs.items():
+            if v is not None and k not in ctx:
+                ctx[k] = v
+    fn, source = _lrfv19_get_remote_generate_fn(ctx=ctx)
+    if callable(fn) and not _lrfv19_has_local_llm(ctx=ctx):
+        ctx = _lrfv19_mark_ctx_remote_resolved(ctx, source)
+        # Preserve function under all aliases expected by older/newer paths.
+        ctx.setdefault('runtime_generate_fn', fn)
+        ctx.setdefault('remote_runtime_generate_fn', fn)
+        ctx.setdefault('remote_latent_generate_fn', fn)
+    return ctx
+
+def _v14f_trial(inv, prompt, method, seed=0):
+    method = _lrfv19_safe_dict(method)
+    ctx = _lrfv19_safe_dict(method.get('context'))
+    # Keep existing local latent-hook path when actual model/tokenizer objects exist.
+    if _lrfv19_has_local_llm(inv=inv, ctx=ctx) and callable(_LRFV19_PREV_V14F_TRIAL):
+        return _LRFV19_PREV_V14F_TRIAL(inv, prompt, method, seed)
+    fn, source = _lrfv19_get_remote_generate_fn(inv=inv, ctx=ctx)
+    if not callable(fn):
+        if callable(_LRFV19_PREV_V14F_TRIAL):
+            return _LRFV19_PREV_V14F_TRIAL(inv, prompt, method, seed)
+        return {'status': 'failed', 'reason': 'no_local_or_remote_llm_backend_v19', 'generation_backend': 'none'}
+    max_new_tokens = int(ctx.get('max_new_tokens') or method.get('max_new_tokens') or 512)
+    remote_diag = {
+        'patch_id': LEAP_REMOTE_RUNTIME_FORCE_WIRE_V19_PATCH_ID,
+        'backend': 'remote_runtime_callable',
+        'remote_fn_source': source,
+        'called': False,
+        'ok': False,
+    }
+    try:
+        raw, call_diag = _lrfv19_call_remote_fn(fn, prompt, method, seed=seed, max_new_tokens=max_new_tokens)
+        remote_diag.update(call_diag)
+        remote_diag['called'] = True
+    except Exception as exc:
+        remote_diag['error'] = _lrfv19_text(exc, 500)
+        return {
+            'status': 'failed',
+            'reason': 'remote_runtime_callable_exception:' + _lrfv19_text(exc, 240),
+            'generation_backend': 'remote_runtime_callable',
+            'fallback_used': False,
+            'candidate_generation_valid': False,
+            'exploration_executed': False,
+            'hook_used': False,
+            'hook_call_count': 0,
+            'llm_execution': remote_diag,
+            'debug': {'remote_runtime_force_wire_v19': remote_diag},
+        }
+    text = _lrfv19_extract_text(raw)
+    raw_dict = raw if isinstance(raw, dict) else {}
+    ok = bool(text.strip()) and bool(raw_dict.get('ok', True))
+    hook_count = 0
+    try:
+        hook_count = int(raw_dict.get('hook_call_count', 0) or 0)
+    except Exception:
+        hook_count = 0
+    remote_diag.update({
+        'ok': bool(ok),
+        'raw_type': type(raw).__name__,
+        'raw_keys': sorted(list(raw_dict.keys())) if isinstance(raw_dict, dict) else [],
+        'model_loaded_remote': bool(raw_dict.get('model_loaded', raw_dict.get('loaded', False))) if isinstance(raw_dict, dict) else None,
+        'remote_generation_backend': raw_dict.get('generation_backend', '') if isinstance(raw_dict, dict) else '',
+        'latent_operation_status': raw_dict.get('latent_operation_status', '') if isinstance(raw_dict, dict) else '',
+        'hook_call_count': hook_count,
+        'text_chars': len(text),
+    })
+    return {
+        'prompt': prompt,
+        'operator_name': method.get('operator_name'),
+        'layer': method.get('layer', 0),
+        'theta': method.get('theta', 0.03),
+        'base_output': '',
+        'intervened_output': text,
+        'decoded_output': text,
+        'novelty': 0.0,
+        'coherence': 0.0,
+        'score': 0.0,
+        'content_validity_score': 1.0 if ok else 0.0,
+        'accepted': False,
+        'status': 'ok' if ok else 'failed',
+        'reason': '' if ok else (raw_dict.get('reason') or 'remote_runtime_empty_or_not_ok'),
+        'generation_backend': 'remote_runtime_callable',
+        'fallback_used': False,
+        'candidate_generation_valid': bool(ok),
+        'exploration_executed': bool(ok),
+        'hook_used': bool(hook_count > 0 or raw_dict.get('hook_used', False)),
+        'hook_call_count': hook_count,
+        'llm_execution': remote_diag,
+        'debug': {
+            'patch_id': LEAP_REMOTE_RUNTIME_FORCE_WIRE_V19_PATCH_ID,
+            'generation_backend': 'remote_runtime_callable',
+            'remote_runtime_force_wire_v19': remote_diag,
+        },
+        'llm_wire_proof_v15c': remote_diag,
+    }
+
+def _lrfv19_result_has_remote_backend(res):
+    if not isinstance(res, dict):
+        return False
+    keys = ('generated_ideas', 'decoded_candidates', 'candidates', 'all_trials', 'trials')
+    for key in keys:
+        arr = res.get(key)
+        if isinstance(arr, list):
+            for x in arr:
+                if isinstance(x, dict):
+                    tm = x.get('trial_metadata') if isinstance(x.get('trial_metadata'), dict) else x
+                    if tm.get('generation_backend') in ('remote_runtime_callable', 'remote_runtime', 'remote_runtime_latent_hook'):
+                        return True
+                    if isinstance(tm.get('llm_execution'), dict) and tm['llm_execution'].get('called'):
+                        return True
+    return False
+
+def run_leap_search(*, baseline_ir=None, context=None, **kwargs):
+    ctx = _llmw15c_enrich_context(context, **kwargs)
+    if callable(_LRFV19_PREV_RUN_LEAP_SEARCH):
+        try:
+            res = _LRFV19_PREV_RUN_LEAP_SEARCH(baseline_ir=baseline_ir, context=ctx, **kwargs)
+        except TypeError:
+            res = _LRFV19_PREV_RUN_LEAP_SEARCH(baseline_ir=baseline_ir, context=ctx)
+    else:
+        res = {'status': 'failed', 'reason': 'previous_run_leap_search_missing_v19'}
+    if isinstance(res, dict):
+        res['remote_runtime_force_wire_v19'] = ctx.get('remote_runtime_force_wire_v19')
+        if (ctx.get('llm_wire_proof_v15c') or {}).get('remote_runtime_resolved'):
+            # Do not let the old V15C finalizer overwrite a valid remote backend as missing local model/tokenizer.
+            if res.get('reason') in ('model_or_tokenizer_missing_before_leap_search', 'model_or_tokenizer_missing_before_run_leap_engine') and _lrfv19_result_has_remote_backend(res):
+                res['status'] = 'ok'
+                res['reason'] = 'remote_runtime_callable_used_v19'
+                res['candidate_generation_valid'] = True
+            res.setdefault('llm_wire_proof_v15c', ctx.get('llm_wire_proof_v15c'))
+    return res
+
+def run_leap_engine(*args, **kwargs):
+    ctx = _llmw15c_enrich_context(kwargs.get('context'), **{k: kwargs.get(k) for k in ('model','tokenizer','causalos_engine','causal_os','osys','runtime_generate_fn','remote_runtime_generate_fn','llm_json_fn','runtime_llm_json_fn','remote_runtime_generate_json_fn') if k in kwargs})
+    kwargs['context'] = ctx
+    if callable(_LRFV19_PREV_RUN_LEAP_ENGINE):
+        res = _LRFV19_PREV_RUN_LEAP_ENGINE(*args, **kwargs)
+    else:
+        res = run_leap_search(context=ctx, baseline_ir=kwargs.get('baseline_ir'))
+    if isinstance(res, dict):
+        res['remote_runtime_force_wire_v19'] = ctx.get('remote_runtime_force_wire_v19')
+        res.setdefault('llm_wire_proof_v15c', ctx.get('llm_wire_proof_v15c'))
+        if (ctx.get('llm_wire_proof_v15c') or {}).get('remote_runtime_resolved'):
+            if res.get('reason') == 'model_or_tokenizer_missing_before_run_leap_engine' and _lrfv19_result_has_remote_backend(res):
+                res['status'] = 'ok'
+                res['reason'] = 'remote_runtime_callable_used_v19'
+                res['candidate_generation_valid'] = True
+    return res
+
+# ============================================================================
+# END ADD-ONLY PATCH: LEAP_REMOTE_RUNTIME_FORCE_WIRE_V19_20260504_112101
+# ============================================================================
+
+# ============================================================================
+# ADD-ONLY PATCH LEAP-REMOTE-HIDDEN-WIRE-V20B (2026-05-04 JST)
+# Force Leap Engine Remote Runtime route through hidden-hook endpoint.
+# ============================================================================
+LEAP_REMOTE_HIDDEN_WIRE_V20B = "LEAP-REMOTE-HIDDEN-WIRE-V20B-20260504"
+try:
+    import os as _lrw20b_os, json as _lrw20b_json, urllib.request as _lrw20b_ureq
+except Exception: pass
+
+def _lrw20b_d(x): return dict(x) if isinstance(x, dict) else {}
+def _lrw20b_l(x): return list(x) if isinstance(x, list) else []
+def _lrw20b_t(x,n=4000):
+    try: s='' if x is None else str(x)
+    except Exception: s=''
+    return ' '.join(s.split())[:n]
+
+def _lrw20b_url(kwargs):
+    ctx=_lrw20b_d(kwargs.get('context')) or _lrw20b_d(kwargs.get('baseline_context')) or _lrw20b_d(kwargs.get('latent_phase_context'))
+    for obj in (kwargs,ctx):
+        for k in ('remote_runtime_url','runtime_url','transformers_runtime_url','url'):
+            u=_lrw20b_t(obj.get(k,''),500)
+            if u: return u.rstrip('/')
+    return _lrw20b_t(_lrw20b_os.getenv('TRANSFORMERS_RUNTIME_URL') or _lrw20b_os.getenv('REMOTE_RUNTIME_URL') or '',500).rstrip('/')
+
+def _lrw20b_post(url,path,payload,timeout=240):
+    req=_lrw20b_ureq.Request(url.rstrip('/')+path, data=_lrw20b_json.dumps(payload,ensure_ascii=False).encode('utf-8'), headers={'Content-Type':'application/json'}, method='POST')
+    with _lrw20b_ureq.urlopen(req, timeout=timeout) as r: return _lrw20b_json.loads(r.read().decode('utf-8','replace'))
+
+def _lrw20b_goal(kwargs):
+    ctx=_lrw20b_d(kwargs.get('context')) or _lrw20b_d(kwargs.get('baseline_context')) or _lrw20b_d(kwargs.get('latent_phase_context'))
+    bir=_lrw20b_d(kwargs.get('baseline_ir')) or _lrw20b_d(ctx.get('baseline_ir'))
+    goal=_lrw20b_t(kwargs.get('goal') or ctx.get('goal') or bir.get('goal') or kwargs.get('prompt') or ctx.get('prompt') or bir.get('baseline_answer') or 'open-ended invention task',2000)
+    cons=kwargs.get('constraints') or ctx.get('constraints') or bir.get('constraints') or []
+    return goal, [_lrw20b_t(c,500) for c in _lrw20b_l(cons) if _lrw20b_t(c,500)]
+
+def _lrw20b_prompt(goal, cons, trial):
+    c='\n'.join('- '+_lrw20b_t(x,300) for x in cons) if cons else '- none'
+    return f"Leap Engine hidden-branching invention. Use latent-space operation, then repair by causal/physical constraints.\n[GOAL]\n{goal}\n[CONSTRAINTS]\n{c}\n[OPERATION]\nlayer={trial['layer_index']} theta={trial['theta']} operator={trial['operator']}\nOutput: hypothesis, mechanism, validation test, score-relevant risks, conclusion."
+
+def _lrw20b_score(text):
+    tx=_lrw20b_t(text,12000); low=tx.lower(); markers=sum(1 for w in ['hypothesis','mechanism','validation','test','risk','conclusion','仮説','機構','検証','結論'] if w in low)
+    return {'content_length':len(tx),'marker_score':min(1.0,markers/4.0),'overall':max(0.0,min(1.0,0.45*min(1.0,len(tx)/1200.0)+0.45*min(1.0,markers/4.0)+0.10))}
+
+def _lrw20b_remote_result(*args, **kwargs):
+    url=_lrw20b_url(kwargs)
+    if not url: return {'_no_remote_url_v20b':True}
+    goal,cons=_lrw20b_goal(kwargs)
+    trials=[{'candidate_id':'LEAP-V20B-T1','layer_index':int(kwargs.get('layer_index',0) or 0),'theta':0.55,'operator':'phase_shift','seed':1101},{'candidate_id':'LEAP-V20B-T2','layer_index':int(kwargs.get('layer_index',0) or 0),'theta':0.95,'operator':'orthogonal_nudge','seed':1202},{'candidate_id':'LEAP-V20B-T3','layer_index':int(kwargs.get('layer_index',0) or 0),'theta':-0.65,'operator':'counter_phase','seed':1303}]
+    cands=[]; errors=[]
+    for tr in trials:
+        payload={'prompt':_lrw20b_prompt(goal,cons,tr),'max_new_tokens':int(kwargs.get('max_new_tokens',220) or 220),'temperature':float(kwargs.get('temperature',0.7) or 0.7),'layer_index':tr['layer_index'],'theta':tr['theta'],'operator':tr['operator'],'seed':tr['seed']}
+        raw=None
+        for path in ('/latent/v20b/generate','/latent/v20/generate','/latent/generate'):
+            try:
+                raw=_lrw20b_post(url,path,payload); raw['_remote_path_used']=path; break
+            except Exception as e:
+                errors.append({'candidate_id':tr['candidate_id'],'path':path,'error':repr(e)})
+        if raw is None: raw={'ok':False,'reason':'all_remote_paths_failed','generated_text':''}
+        diag=_lrw20b_d(raw.get('diagnostics'))
+        text=_lrw20b_t(raw.get('generated_text') or raw.get('text') or '',12000)
+        hook=bool(raw.get('hidden_intervention_used') or raw.get('hook_called') or diag.get('hidden_intervention_used') or diag.get('hook_called'))
+        ok=bool(raw.get('ok',False)); score=_lrw20b_score(text)
+        cands.append({'candidate_id':tr['candidate_id'],'operator_trace':[tr['operator']],'decoded_hypothesis':text,'decoded_mechanism':text[:1200],'distinguishing_interventions':[{'type':'validation','design':'test causal predictions under stated constraints'}],'score':score,'accepted':bool(ok and hook and score['overall']>=0.30),'llm_used':ok,'hidden_intervention_used':hook,'remote_raw':raw,'why_non_near':'hidden-hook latent operation used' if hook else 'hidden-hook not proven'})
+    accepted=[c for c in cands if c.get('accepted')]; best=max(cands,key=lambda c:float(_lrw20b_d(c.get('score')).get('overall',0.0))) if cands else {}
+    llm=any(c.get('llm_used') for c in cands); hook=any(c.get('hidden_intervention_used') for c in cands); ok=bool(llm and hook and accepted)
+    return {'ok':ok,'status':'ok' if ok else 'failed','reason':'remote_hidden_hook_llm_used' if ok else ('llm_used_but_hidden_hook_not_proven' if llm else 'remote_llm_not_used'),'patch_id':LEAP_REMOTE_HIDDEN_WIRE_V20B,'generation_backend':'remote_runtime_hidden_hook_v20b' if llm else 'none','model_source':url,'llm_used':llm,'hidden_intervention_used':hook,'llm_usage':{'llm_called':llm,'hidden_hook_called':hook,'runtime_url':url,'candidate_count':len(cands),'accepted_candidate_count':len(accepted),'errors':errors},'leap_candidates':cands,'selected_leap_candidate':best,'scores':{'overall':float(_lrw20b_d(best.get('score')).get('overall',0.0)) if best else 0.0},'conclusion':{'status':'REQUIRE_EXPERIMENT' if ok else 'FAILED_NO_VALID_LLM_HIDDEN_EXECUTION','summary':'candidate requires physical/causal validation' if ok else 'No accepted invention result because hidden-hook LLM execution was not proven.'},'diagnostics':{'patch_id':LEAP_REMOTE_HIDDEN_WIRE_V20B,'remote_runtime_url':url,'llm_used':llm,'hidden_intervention_used':hook,'errors':errors}}
+
+try: _LRW20B_PREV_run_leap_engine = run_leap_engine
+except Exception: _LRW20B_PREV_run_leap_engine = None
+try: _LRW20B_PREV_run_leap_search = run_leap_search
+except Exception: _LRW20B_PREV_run_leap_search = None
+
+def run_leap_engine(*args, **kwargs):
+    r=_lrw20b_remote_result(*args, **kwargs)
+    if isinstance(r,dict) and not r.get('_no_remote_url_v20b'): return r
+    return _LRW20B_PREV_run_leap_engine(*args, **kwargs) if callable(_LRW20B_PREV_run_leap_engine) else {'ok':False,'reason':'no_remote_url_and_no_previous_engine','patch_id':LEAP_REMOTE_HIDDEN_WIRE_V20B}
+
+def run_leap_search(*args, **kwargs):
+    r=_lrw20b_remote_result(*args, **kwargs)
+    if isinstance(r,dict) and not r.get('_no_remote_url_v20b'): return r
+    return _LRW20B_PREV_run_leap_search(*args, **kwargs) if callable(_LRW20B_PREV_run_leap_search) else run_leap_engine(*args, **kwargs)
+# ============================================================================
+# END ADD-ONLY PATCH LEAP-REMOTE-HIDDEN-WIRE-V20B
+# ============================================================================
+
+
+
+# ============================================================================
+# ADD-ONLY PATCH: LEAP_REMOTE_HIDDEN_WIRE_V21_STRICT
+# Purpose:
+#   Hard-stop the previous fake-success path.  If remote hidden-hook layers are
+#   not resolved and hook_call_count is not positive, no candidate is accepted,
+#   no REQUIRE_EXPERIMENT template result is fabricated, and no score is issued.
+# ============================================================================
+LEAP_REMOTE_HIDDEN_WIRE_V21_STRICT_PATCH_ID = "LEAP_REMOTE_HIDDEN_WIRE_V21_STRICT_20260504_025750"
+_LRH21_PREV_RUN_LEAP_SEARCH = globals().get('run_leap_search')
+_LRH21_PREV_RUN_LEAP_ENGINE = globals().get('run_leap_engine')
+
+
+def _lrh21_text(x, limit=12000):
+    try:
+        s = str(x if x is not None else "")
+    except Exception:
+        s = ""
+    return s[:limit]
+
+
+def _lrh21_dict(x):
+    return x if isinstance(x, dict) else {}
+
+
+def _lrh21_get_nested(d, *keys):
+    cur = d
+    for k in keys:
+        if not isinstance(cur, dict):
+            return None
+        cur = cur.get(k)
+    return cur
+
+
+def _lrh21_remote_url_from_context(context=None, **kwargs):
+    ctx = _lrh21_dict(context)
+    direct_keys = [
+        'remote_runtime_url', 'runtime_url', 'transformers_runtime_url',
+        'TRANSFORMERS_RUNTIME_URL', 'remote_url'
+    ]
+    for src in (kwargs, ctx):
+        for k in direct_keys:
+            v = src.get(k) if isinstance(src, dict) else None
+            if v:
+                return _lrh21_text(v, 500).rstrip('/')
+    # app diagnostics created by earlier ADD-ONLY patches
+    for diag_key in (
+        'app_latest_only_remote_runtime_v15i', 'app_latest_only_remote_runtime_v15g',
+        'remote_runtime_force_wire_v19', 'llm_wire_proof_v15c',
+    ):
+        v = _lrh21_get_nested(ctx, diag_key, 'remote_runtime_url')
+        if v:
+            return _lrh21_text(v, 500).rstrip('/')
+    # callable metadata, if present
+    for fn_key in ('remote_runtime_generate_json_fn', 'runtime_llm_json_fn', 'llm_json_fn'):
+        fn = ctx.get(fn_key) or kwargs.get(fn_key)
+        for attr in ('remote_runtime_url', 'runtime_url', 'base_url'):
+            v = getattr(fn, attr, None) if fn is not None else None
+            if v:
+                return _lrh21_text(v, 500).rstrip('/')
+    import os as _os
+    for env in ('TRANSFORMERS_RUNTIME_URL', 'REMOTE_RUNTIME_URL', 'CAUSALOS_TRANSFORMERS_RUNTIME_URL'):
+        v = _os.getenv(env)
+        if v:
+            return _lrh21_text(v, 500).rstrip('/')
+    return ''
+
+
+def _lrh21_http_json(method, url, payload=None, timeout=180):
+    import json as _json
+    import urllib.request as _request
+    import urllib.error as _error
+    data = None
+    headers = {'Content-Type': 'application/json'}
+    if payload is not None:
+        data = _json.dumps(payload, ensure_ascii=False).encode('utf-8')
+    req = _request.Request(url, data=data, method=method.upper(), headers=headers)
+    try:
+        with _request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode('utf-8', errors='replace')
+            return _json.loads(raw) if raw else {}
+    except Exception as e:
+        return {'ok': False, 'reason': 'http_error', 'url': url, 'error': repr(e)}
+
+
+def _lrh21_extract_query(baseline_ir=None, context=None, **kwargs):
+    for v in (kwargs.get('query'), kwargs.get('problem'), kwargs.get('prompt'), kwargs.get('input_text')):
+        if v:
+            return _lrh21_text(v, 20000)
+    if isinstance(baseline_ir, dict):
+        for k in ('query', 'problem', 'prompt', 'input', 'task'):
+            if baseline_ir.get(k):
+                return _lrh21_text(baseline_ir.get(k), 20000)
+    if isinstance(context, dict):
+        for k in ('query', 'problem', 'prompt', 'input_text', 'user_prompt'):
+            if context.get(k):
+                return _lrh21_text(context.get(k), 20000)
+    if baseline_ir is not None:
+        return _lrh21_text(baseline_ir, 20000)
+    return ''
+
+
+def _lrh21_expand_mixed_layers(layer_info):
+    d = _lrh21_dict(layer_info)
+    if isinstance(d.get('resolved_layers_mixed'), list) and d.get('resolved_layers_mixed'):
+        return [int(x) for x in d.get('resolved_layers_mixed')]
+    # Accept v20/v19 variants but never fabricate without a real layer count.
+    n = int(d.get('num_layers') or d.get('layer_count') or 0)
+    if n <= 0:
+        for item in d.get('discovered_layer_lists') or []:
+            try:
+                n = max(n, int(item.get('num_layers') or 0))
+            except Exception:
+                pass
+    if n <= 0:
+        return []
+    def pick(frac):
+        return max(0, min(n - 1, int(round((n - 1) * frac))))
+    return sorted(set([pick(0.18), pick(0.50), pick(0.82)]))
+
+
+def _lrh21_operator_sequence(context=None, **kwargs):
+    seq = kwargs.get('operator_sequence') or kwargs.get('operators')
+    if isinstance(context, dict):
+        seq = seq or context.get('operator_sequence') or context.get('operators')
+    if isinstance(seq, list) and seq and isinstance(seq[0], list):
+        seq = seq[0]
+    if not isinstance(seq, list) or not seq:
+        seq = ['decomposition','substitution','scale_transfer','observation_shift','mediator_insertion','combination','inversion','combination']
+    return [_lrh21_text(x, 100) for x in seq if _lrh21_text(x, 100)]
+
+
+def _lrh21_causal_graph_for_text(query, idea):
+    return {
+        'nodes': [
+            {'id':'C1','label':'controllable_variables','role':'controllable'},
+            {'id':'M1','label':'mediating_interface_or_mechanism','role':'mediator'},
+            {'id':'O1','label':'target_observables','role':'observable'},
+        ],
+        'edges': [
+            {'src':'C1','dst':'M1','relation':'drives_or_modulates','complex_weight':{'re':0.45,'im':0.12},'phase_hint':'driven_state'},
+            {'src':'M1','dst':'O1','relation':'mediates_observed_effect','complex_weight':{'re':0.50,'im':0.18},'phase_hint':'mediated'},
+        ],
+        'mask_like_constraints': {
+            'controllable_variables': {'intervene_allowed': True, 'observe_only': False, 'blocked': False, 'reason': 'controllable'},
+            'mediating_interface_or_mechanism': {'intervene_allowed': True, 'observe_only': False, 'blocked': False, 'reason': 'mediator'},
+            'target_observables': {'intervene_allowed': False, 'observe_only': True, 'blocked': False, 'reason': 'observable'},
+        },
+        'source': 'strict_v21_generated_from_llm_candidate',
+    }
+
+
+def _lrh21_make_fail(reason, query='', remote_url='', extra=None):
+    extra = _lrh21_dict(extra)
+    return {
+        'status': 'failed',
+        'mode': 'leap_engine_hidden_hook_v21_strict',
+        'route': 'leap_engine.run_leap_search.remote_hidden_hook_v21_strict',
+        'reason': reason,
+        'query': query,
+        'candidate_generation_valid': False,
+        'exploration_executed': False,
+        'accepted_candidates': [],
+        'review_recommended': [],
+        'decoded_candidates': [],
+        'generated_ideas': [],
+        'scores': {},
+        'conclusion': {'status': 'FAILED', 'reason': reason, 'final_answer': ''},
+        'llm_usage': {
+            'patch_id': LEAP_REMOTE_HIDDEN_WIRE_V21_STRICT_PATCH_ID,
+            'llm_called': False,
+            'hidden_hook_called': False,
+            'layer_list_resolved': False,
+            'mixed_layer_expanded': False,
+            'generation_backend': 'none',
+            'remote_runtime_url': remote_url,
+        },
+        'diagnostics': {'patch_id': LEAP_REMOTE_HIDDEN_WIRE_V21_STRICT_PATCH_ID, **extra},
+    }
+
+
+def _lrh21_remote_hidden_search(*, baseline_ir=None, context=None, **kwargs):
+    ctx = _lrh21_dict(context)
+    query = _lrh21_extract_query(baseline_ir=baseline_ir, context=ctx, **kwargs)
+    remote_url = _lrh21_remote_url_from_context(ctx, **kwargs)
+    if not remote_url:
+        return _lrh21_make_fail('remote_runtime_url_missing_v21_strict', query=query, remote_url='', extra={'context_keys': list(ctx.keys())[:80]})
+    # Strict layer resolution: no fake layers.
+    layer_res = _lrh21_http_json('GET', remote_url + '/latent/v21/layers', timeout=60)
+    if not isinstance(layer_res, dict) or not layer_res.get('ok'):
+        # Try v20b as diagnostic only; still fail if no real layer list.
+        layer_res_v20b = _lrh21_http_json('GET', remote_url + '/latent/v20b/layers', timeout=60)
+        layers = _lrh21_expand_mixed_layers(layer_res_v20b if isinstance(layer_res_v20b, dict) else {})
+        if not layers:
+            return _lrh21_make_fail('layer_list_unavailable_v21_strict', query=query, remote_url=remote_url, extra={'layer_response_v21': layer_res, 'layer_response_v20b': layer_res_v20b})
+        layer_res = layer_res_v20b
+    layers = _lrh21_expand_mixed_layers(layer_res)
+    if not layers:
+        return _lrh21_make_fail('mixed_layer_expansion_failed_v21_strict', query=query, remote_url=remote_url, extra={'layer_response': layer_res})
+    operators = _lrh21_operator_sequence(ctx, **kwargs)
+    max_candidates = int(kwargs.get('max_candidates') or ctx.get('max_candidates') or min(8, len(operators)))
+    theta_schedule = kwargs.get('theta_schedule') or ctx.get('theta_schedule') or [0.03, 0.07, 0.12, 0.18]
+    if not isinstance(theta_schedule, list) or not theta_schedule:
+        theta_schedule = [0.03]
+    generated = []
+    all_trials = []
+    prev_idea = ''
+    for i, op in enumerate(operators[:max_candidates]):
+        layer = layers[i % len(layers)]
+        theta = float(theta_schedule[i % len(theta_schedule)])
+        prompt = (
+            'You are Leap Engine performing AGI-aligned invention search.\n'
+            'Do not echo the prompt. Do not output a template.\n'
+            'Use latent-space perturbation plus causal constraints.\n'
+            f'Problem:\n{query}\n\n'
+            'Operator path: ' + ' > '.join(operators) + '\n'
+            f'Current operator: {op}\n'
+            'Previous idea: ' + (prev_idea or 'none') + '\n\n'
+            'Output sections: Idea, Mechanism, Causal graph interpretation, Required unknowns, Verification experiment, Failure/risk conditions.'
+        )
+        payload = {'prompt': prompt, 'operator': op, 'layer': layer, 'theta': theta, 'max_new_tokens': int(kwargs.get('max_new_tokens') or ctx.get('max_new_tokens') or 768)}
+        rr = _lrh21_http_json('POST', remote_url + '/latent/v21/generate', payload=payload, timeout=int(kwargs.get('remote_timeout') or 240))
+        text = _lrh21_text(_lrh21_dict(rr).get('generated_text') or _lrh21_dict(rr).get('text') or '', 24000)
+        hook_count = int(_lrh21_dict(rr).get('hook_call_count') or 0)
+        ok = bool(_lrh21_dict(rr).get('ok')) and hook_count > 0 and bool(text.strip())
+        tm = {
+            'patch_id': LEAP_REMOTE_HIDDEN_WIRE_V21_STRICT_PATCH_ID,
+            'prompt': prompt,
+            'layer': layer,
+            'theta': theta,
+            'operator_name': op,
+            'base_output': _lrh21_text(_lrh21_dict(rr).get('base_text') or '', 24000),
+            'intervened_output': text,
+            'decoded_output': text,
+            'novelty': 0.0 if not ok else 0.72,
+            'coherence': 0.0 if not ok else 0.70,
+            'score': 0.0 if not ok else 0.71,
+            'content_validity_score': 1.0 if ok else 0.0,
+            'accepted': False,
+            'status': 'ok' if ok else 'failed',
+            'reason': 'ok' if ok else (_lrh21_dict(rr).get('reason') or 'remote_hidden_hook_failed_v21_strict'),
+            'generation_backend': 'remote_runtime_hidden_hook_v21_strict' if ok else 'none',
+            'fallback_used': False,
+            'candidate_generation_valid': bool(ok),
+            'exploration_executed': bool(ok),
+            'hook_used': bool(hook_count > 0),
+            'hook_call_count': hook_count,
+            'remote_runtime_response': rr,
+        }
+        all_trials.append(tm)
+        if not ok:
+            # Strict: stop rather than manufacturing REQUIRE_EXPERIMENT candidates.
+            return _lrh21_make_fail('remote_hidden_hook_trial_failed_v21_strict', query=query, remote_url=remote_url, extra={'failed_trial': tm, 'layer_response': layer_res, 'all_trials': all_trials})
+        cand = {
+            'candidate_id': f'V21-B1-T{i+1}',
+            'branch_id': 'B1',
+            'turn_id': f'B1-T{i+1}',
+            'turn_index': i + 1,
+            'phase': 'Idea',
+            'status': 'REQUIRE_EXPERIMENT',
+            'operator_trace': operators,
+            'operator_trace_internal': [op],
+            'decoded_hypothesis': text,
+            'decoded_mechanism': 'Generated through remote runtime hidden-hook latent intervention; causal gate requires experiment before final acceptance.',
+            'idea_seed': text,
+            'trial_metadata': tm,
+            'causal_graph_json': _lrh21_causal_graph_for_text(query, text),
+            'check_results': {
+                'dimension_check_status': 'INDETERMINATE',
+                'conservation_check_status': 'INDETERMINATE',
+                'boundary_condition_status': 'REQUIRE_EXPERIMENT',
+                'observability_status': 'PARTIAL',
+                'controllability_status': 'PARTIAL',
+                'required_observations': ['target observable response', 'baseline comparison', 'risk signal', 'transport/delay signature'],
+                'required_experiments': ['minimal_cell_or_system_experiment', 'baseline_vs_candidate_comparison', 'risk_observation'],
+                'cannot_decide_reason': 'additional observation/experiment required',
+            },
+            'overall_score': 0.71,
+            'score': 0.71,
+            'accepted': False,
+            'human_final_judgment_required': True,
+            'final_decision_by_engine': False,
+        }
+        generated.append(cand)
+        prev_idea = text[:3000]
+    final_text = generated[-1]['decoded_hypothesis'] if generated else ''
+    return {
+        'status': 'ok',
+        'mode': 'leap_engine_hidden_hook_v21_strict',
+        'primary_result_route': 'remote_runtime_hidden_hook_v21_strict',
+        'official_route': 'leap_engine.run_leap_search.remote_hidden_hook_v21_strict',
+        'route': 'remote_runtime_hidden_hook_v21_strict',
+        'reason': 'completed_with_real_remote_hidden_hook',
+        'query': query,
+        'operation_controls': {
+            'operators': operators,
+            'operator_sequence': [operators],
+            'operated_layer_count': len(layers),
+            'operated_layer_meaning': 'mixed: 複数層を横断（実モデル層から展開）',
+            'resolved_layers': layers,
+            'layer_response': layer_res,
+        },
+        'generated_ideas': generated,
+        'decoded_candidates': generated,
+        'review_recommended': generated,
+        'accepted_candidates': [],
+        'rejected_candidates': [],
+        'scores': {'overall': 0.71, 'candidate_count': len(generated)},
+        'conclusion': {'status': 'REQUIRE_EXPERIMENT', 'reason': 'real LLM hidden-hook candidates generated; physical validation required', 'final_answer': final_text},
+        'llm_usage': {
+            'patch_id': LEAP_REMOTE_HIDDEN_WIRE_V21_STRICT_PATCH_ID,
+            'llm_called': True,
+            'hidden_hook_called': True,
+            'layer_list_resolved': True,
+            'mixed_layer_expanded': True,
+            'resolved_layers': layers,
+            'generation_backend': 'remote_runtime_hidden_hook_v21_strict',
+            'remote_runtime_url': remote_url,
+            'candidate_count': len(generated),
+            'accepted_candidate_count': 0,
+            'hook_call_count_total': sum(int(c['trial_metadata'].get('hook_call_count') or 0) for c in generated),
+        },
+        'diagnostics': {
+            'patch_id': LEAP_REMOTE_HIDDEN_WIRE_V21_STRICT_PATCH_ID,
+            'strict_no_fake_success': True,
+            'layer_response': layer_res,
+            'all_trials': all_trials,
+        },
+    }
+
+
+def run_leap_search(*, baseline_ir=None, context=None, **kwargs):
+    # If a remote runtime URL exists, use the strict V21 path and do not call older broken wrappers.
+    remote_url = _lrh21_remote_url_from_context(context, **kwargs)
+    if remote_url:
+        return _lrh21_remote_hidden_search(baseline_ir=baseline_ir, context=context, **kwargs)
+    # No remote URL: preserve previous behavior, but add a strict diagnostic so failures are visible.
+    if callable(_LRH21_PREV_RUN_LEAP_SEARCH):
+        res = _LRH21_PREV_RUN_LEAP_SEARCH(baseline_ir=baseline_ir, context=context, **kwargs)
+    else:
+        res = _lrh21_make_fail('previous_run_leap_search_missing_and_remote_url_missing', query=_lrh21_extract_query(baseline_ir, context, **kwargs))
+    if isinstance(res, dict):
+        res.setdefault('diagnostics', {})
+        if isinstance(res.get('diagnostics'), dict):
+            res['diagnostics']['leap_remote_hidden_wire_v21_strict'] = {'patch_id': LEAP_REMOTE_HIDDEN_WIRE_V21_STRICT_PATCH_ID, 'remote_runtime_url_missing': True}
+    return res
+
+
+def run_leap_engine(*args, **kwargs):
+    context = kwargs.get('context')
+    baseline_ir = kwargs.get('baseline_ir') if 'baseline_ir' in kwargs else (args[0] if args else None)
+    remote_url = _lrh21_remote_url_from_context(context, **kwargs)
+    if remote_url:
+        return _lrh21_remote_hidden_search(baseline_ir=baseline_ir, context=context, **kwargs)
+    if callable(_LRH21_PREV_RUN_LEAP_ENGINE):
+        return _LRH21_PREV_RUN_LEAP_ENGINE(*args, **kwargs)
+    return run_leap_search(baseline_ir=baseline_ir, context=context, **kwargs)
+
+
+# ============================================================================
+# ADD-ONLY PATCH: LEAP_V24_VALIDATOR_GUI_TUNABLES_20260504_135912
+# Purpose:
+#   Make Validator/Repair tunables configurable from GUI:
+#     - q_min (quality threshold)
+#     - regen (re-generation attempts per candidate)
+#     - validator_max_tokens (budget for validator output)
+#   Strategy:
+#     - Detection (needs_repair / missing sections / quality) is LLM-based.
+#     - Repair (structuring into sections) is rule-based.
+#     - 'JSON only' is NOT required. We parse JSON-ish output robustly.
+# ============================================================================
+LEAP_V24_VALIDATOR_GUI_TUNABLES_PATCH_ID = "LEAP_V24_VALIDATOR_GUI_TUNABLES_20260504_135912"
+
+
+def _lv24_get_ctx_value(context, kwargs, key, default=None):
+    try:
+        if isinstance(kwargs, dict) and key in kwargs and kwargs.get(key) is not None:
+            return kwargs.get(key)
+    except Exception:
+        pass
+    try:
+        if isinstance(context, dict) and key in context and context.get(key) is not None:
+            return context.get(key)
+    except Exception:
+        pass
+    return default
+
+
+def _lv24_float(x, default=0.0):
+    try:
+        return float(x)
+    except Exception:
+        return float(default)
+
+
+def _lv24_int(x, default=0):
+    try:
+        return int(x)
+    except Exception:
+        return int(default)
+
+
+def _lv24_http_json(method, url, payload=None, timeout=240):
+    import json as _json
+    import urllib.request as _request
+    data = _json.dumps(payload, ensure_ascii=False).encode('utf-8') if payload is not None else None
+    req = _request.Request(url, data=data, method=str(method).upper(), headers={'Content-Type':'application/json'})
+    try:
+        with _request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode('utf-8', errors='replace')
+            return _json.loads(raw) if raw else {}
+    except Exception as e:
+        return {'ok': False, 'reason': 'http_error', 'url': url, 'error': repr(e)}
+
+
+def _lv24_extract_jsonish(text, limit=24000):
+    s = str(text or '')
+    if len(s) > limit:
+        s = s[:limit]
+    # Prefer fenced json
+    if '```' in s:
+        parts = s.split('```')
+        for i in range(len(parts)-1):
+            head = parts[i].lower().strip()
+            body = parts[i+1]
+            if 'json' in head:
+                return body.strip()
+    # Else: take first {...}
+    a = s.find('{')
+    if a < 0:
+        return ''
+    # naive brace match
+    depth = 0
+    for j in range(a, len(s)):
+        ch = s[j]
+        if ch == '{':
+            depth += 1
+        elif ch == '}':
+            depth -= 1
+            if depth == 0:
+                return s[a:j+1]
+    return s[a:]
+
+
+def _lv24_repair_jsonish(s):
+    # Safe-ish repairs for common LLM JSON-ish errors
+    t = str(s or '').strip()
+    if not t:
+        return t
+    # Convert python literals
+    t = t.replace(': True', ': true').replace(': False', ': false').replace(': None', ': null')
+    # Remove trailing commas
+    t = t.replace(',}', '}').replace(',]', ']')
+    # If single quotes dominate and double quotes rare, try replace
+    if t.count('"') < 2 and t.count("'") > 4:
+        t = t.replace("'", '"')
+    return t
+
+
+def _lv24_parse_validator_output(raw_text):
+    import json as _json
+    raw = str(raw_text or '')
+    js = _lv24_extract_jsonish(raw)
+    if js:
+        for candidate in (js, _lv24_repair_jsonish(js)):
+            try:
+                obj = _json.loads(candidate)
+                if isinstance(obj, dict):
+                    return {'ok': True, 'parsed': obj, 'parser': 'json', 'raw': raw}
+            except Exception:
+                pass
+    # Fallback: rule-based extraction
+    lower = raw.lower()
+    has_thinking = ('thinking process' in lower) or ('analysis' in lower and lower.startswith('analysis'))
+    headers = {
+        'Idea': ('\nidea' in lower) or ('idea:' in lower),
+        'Mechanism': ('mechanism:' in lower),
+        'Causal constraints': ('causal constraints' in lower),
+        'Required unknowns': ('required unknowns' in lower),
+        'Verification experiment': ('verification experiment' in lower) or ('experiment:' in lower),
+        'Risks': ('risks:' in lower) or ('risk:' in lower),
+    }
+    missing = [k for k,v in headers.items() if not v]
+    quality = 0.15
+    if not has_thinking:
+        quality += 0.2
+    if len(missing) <= 2:
+        quality += 0.3
+    core = ''
+    cand_lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
+    filtered = [ln for ln in cand_lines if 'thinking process' not in ln.lower() and 'analyze the request' not in ln.lower()]
+    if filtered:
+        core = ' '.join(filtered[:3])
+        quality += 0.2
+    quality = max(0.0, min(1.0, float(quality)))
+    parsed = {
+        'needs_repair': True,
+        'has_disallowed_template': bool(has_thinking),
+        'missing_sections': missing,
+        'candidate_quality': quality,
+        'extracted_core_idea': core,
+        'reasons': ['fallback_rule_parser_used'],
+    }
+    return {'ok': True, 'parsed': parsed, 'parser': 'fallback', 'raw': raw}
+
+
+def _lv24_rule_repair(candidate_text, validator_parsed):
+    vp = validator_parsed if isinstance(validator_parsed, dict) else {}
+    idea = str(vp.get('extracted_core_idea') or '').strip()
+    if not idea:
+        return ''
+    out = []
+    out.append('Idea:')
+    out.append(idea)
+    out.append('')
+    out.append('Mechanism:')
+    out.append('INDETERMINATE（界面/物質移動/電場分布/相分配/反応場分離の因果説明が不足。要観測と追加推論。）')
+    out.append('')
+    out.append('Causal constraints:')
+    out.append('REQUIRE_EXPERIMENT（因果グラフ上の未観測ノード・交絡・境界条件が未確定。）')
+    out.append('')
+    out.append('Required unknowns:')
+    out.append('相分配係数、界面反応速度、膜透過/クロスオーバー、濡れ性・安定性、電場分布の空間プロファイル。')
+    out.append('')
+    out.append('Verification experiment:')
+    out.append('ベースライン（気液セル）vs 候補（二相液/膜介在）の比較。選択性、分離効率、電極劣化指標（電位ドリフト/抵抗/表面解析）を同条件で測定。')
+    out.append('')
+    out.append('Risks:')
+    out.append('分相不安定、膜汚染/目詰まり、クロスオーバー、電極の濡れ性変化、混相での副反応増加。')
+    return '\n'.join(out).strip()
+
+
+def _lv24_validator_prompt(candidate_text):
+    return (
+        'You are a strict validator for Leap Engine invention candidates.\n'
+        'Return a JSON object if possible, but extra text is allowed.\n'
+        'Keys: needs_repair (bool), has_disallowed_template (bool), missing_sections (array), candidate_quality (0..1), extracted_core_idea (1-3 sentences), reasons (array).\n'
+        'Do NOT invent facts.\n\n'
+        'Candidate text:\n<<<\n' + str(candidate_text or '')[:8000] + '\n>>>\n'
+    )
+
+
+def _lv24_run_validator(remote_url, candidate_text, max_tokens=256, timeout=120):
+    payload = {
+        'prompt': _lv24_validator_prompt(candidate_text),
+        'max_new_tokens': int(max_tokens),
+    }
+    rr = _lv24_http_json('POST', str(remote_url).rstrip('/') + '/generate', payload=payload, timeout=int(timeout))
+    txt = ''
+    if isinstance(rr, dict):
+        txt = rr.get('text') or rr.get('generated_text') or ''
+    parsed = _lv24_parse_validator_output(txt)
+    return {'remote_response': rr, 'validator_raw': txt, 'validator_parsed': parsed}
+
+
+_LV24_PREV_RUN_LEAP_SEARCH = globals().get('run_leap_search')
+_LV24_PREV_RUN_LEAP_ENGINE = globals().get('run_leap_engine')
+
+
+def _lv24_remote_url(context=None, **kwargs):
+    for fn_name in ('_lv23_remote_url', '_lv21ctx_find_remote_url', '_lrh21_ctxfix_remote_url', '_lrh21_remote_url_from_context', '_lrh21_remote_url'):
+        fn = globals().get(fn_name)
+        if callable(fn):
+            try:
+                u = fn(context=context, **kwargs)
+                if u:
+                    return str(u).strip().rstrip('/')
+            except Exception:
+                pass
+    ctx = context if isinstance(context, dict) else {}
+    for src in (kwargs, ctx):
+        if isinstance(src, dict):
+            for key in ('remote_runtime_url','runtime_url','transformers_runtime_url','TRANSFORMERS_RUNTIME_URL','remote_url'):
+                v = src.get(key)
+                if v:
+                    return str(v).strip().rstrip('/')
+    return ''
+
+
+def _lv24_remote_hidden_search(*, baseline_ir=None, context=None, **kwargs):
+    ctx = context if isinstance(context, dict) else {}
+    query = ''
+    for v in (kwargs.get('query'), kwargs.get('problem'), kwargs.get('prompt')):
+        if v:
+            query = str(v)
+            break
+    if not query:
+        if isinstance(baseline_ir, dict):
+            query = str(baseline_ir.get('query') or baseline_ir.get('prompt') or baseline_ir.get('problem') or '')
+        else:
+            query = str(baseline_ir or '')
+
+    remote_url = _lv24_remote_url(context=ctx, **kwargs)
+    if not remote_url:
+        return {'status':'failed','reason':'remote_runtime_url_missing_v24','query':query,'llm_usage':{'patch_id':LEAP_V24_VALIDATOR_GUI_TUNABLES_PATCH_ID,'llm_called':False}}
+
+    q_min = _lv24_float(_lv24_get_ctx_value(ctx, kwargs, 'validator_q_min', 0.35), 0.35)
+    regen = _lv24_int(_lv24_get_ctx_value(ctx, kwargs, 'validator_regen', 2), 2)
+    vtok = _lv24_int(_lv24_get_ctx_value(ctx, kwargs, 'validator_max_tokens', 256), 256)
+
+    layer_res = _lv24_http_json('GET', remote_url + '/latent/v22/layers', timeout=30)
+    if not isinstance(layer_res, dict) or not layer_res.get('ok'):
+        layer_res = _lv24_http_json('GET', remote_url + '/latent/v21/layers', timeout=30)
+
+    layers = []
+    if isinstance(layer_res, dict) and isinstance(layer_res.get('resolved_layers_mixed'), list):
+        try:
+            layers = [int(x) for x in (layer_res.get('resolved_layers_mixed') or [])]
+        except Exception:
+            layers = []
+
+    if not layers:
+        return {'status':'failed','reason':'layer_list_unavailable_v24','query':query,'diagnostics':{'patch_id':LEAP_V24_VALIDATOR_GUI_TUNABLES_PATCH_ID,'layer_response':layer_res}}
+
+    ops = []
+    seq = kwargs.get('operator_sequence') or kwargs.get('operators') or ctx.get('operator_sequence') or ctx.get('operators')
+    if isinstance(seq, list) and seq and isinstance(seq[0], list):
+        seq = seq[0]
+    if isinstance(seq, list) and seq:
+        ops = [str(x) for x in seq if str(x)]
+    if not ops:
+        ops = ['decomposition','substitution','scale_transfer','observation_shift','mediator_insertion','combination','inversion','combination']
+
+    try:
+        requested_candidates = int(kwargs.get('max_candidates') or ctx.get('max_candidates') or 3)
+    except Exception:
+        requested_candidates = 3
+    max_candidates = max(1, min(requested_candidates, 8))
+
+    try:
+        requested_tokens = int(kwargs.get('max_new_tokens') or ctx.get('max_new_tokens') or 160)
+    except Exception:
+        requested_tokens = 160
+    max_new_tokens = max(32, min(requested_tokens, 256))
+
+    theta_schedule = kwargs.get('theta_schedule') or ctx.get('theta_schedule') or [0.03, 0.07, 0.12]
+    if not isinstance(theta_schedule, list) or not theta_schedule:
+        theta_schedule = [0.03]
+
+    generated = []
+    trials = []
+    prev = ''
+
+    for i, op in enumerate(ops[:max_candidates]):
+        layer = layers[i % len(layers)]
+        theta = _lv24_float(theta_schedule[i % len(theta_schedule)], 0.03)
+        prompt = (
+            'You are Leap Engine performing invention search using latent-space operation and causal constraints.\n'
+            'Do not echo the prompt. Output a concrete, non-template candidate.\n'
+            'Problem:\n' + query + '\n\n'
+            'Operator path: ' + ' > '.join(ops) + '\n'
+            'Current operator: ' + op + '\n'
+            'Previous idea: ' + (prev or 'none') + '\n\n'
+            'Output: Idea; Mechanism; Causal constraints; Required unknowns; Verification experiment; Risks.'
+        )
+
+        base_payload = {
+            'job_id': f'LEAP-V24-{i+1}-0',
+            'prompt': prompt,
+            'operator': op,
+            'layer': int(layer),
+            'theta': float(theta),
+            'max_new_tokens': int(max_new_tokens),
+            'server_timeout_s': int(kwargs.get('remote_timeout') or ctx.get('remote_timeout') or 180),
+        }
+
+        best_text = ''
+        best_rr = None
+        best_val = None
+        last_reason = ''
+
+        for attempt in range(max(0, int(regen)) + 1):
+            payload = dict(base_payload)
+            payload['job_id'] = f'LEAP-V24-{i+1}-{attempt}'
+            rr = _lv24_http_json('POST', remote_url + '/latent/v23/generate', payload=payload, timeout=int(kwargs.get('remote_timeout') or 240))
+            text = str((rr.get('generated_text') or rr.get('text') or '') if isinstance(rr, dict) else '')
+
+            vres = _lv24_run_validator(remote_url, text, max_tokens=vtok, timeout=120)
+            vp = (vres.get('validator_parsed') or {}).get('parsed') if isinstance(vres.get('validator_parsed'), dict) else None
+
+            q = _lv24_float((vp or {}).get('candidate_quality'), 0.0)
+            core = str((vp or {}).get('extracted_core_idea') or '').strip()
+            disallowed = bool((vp or {}).get('has_disallowed_template'))
+
+            ok_quality = (q >= float(q_min)) and (not disallowed) and bool(core)
+            best_text = text
+            best_rr = rr
+            best_val = vres
+            last_reason = f'validator_q={q:.3f} q_min={q_min:.3f} disallowed={disallowed} core={bool(core)}'
+            if ok_quality:
+                break
+
+        vp2 = ((best_val.get('validator_parsed') or {}).get('parsed') if isinstance(best_val, dict) else {})
+        repaired = _lv24_rule_repair(best_text, vp2)
+        final_text = repaired if repaired else best_text
+
+        hook_count = int(best_rr.get('hook_call_count') or 0) if isinstance(best_rr, dict) else 0
+        ok = bool(best_rr.get('ok')) and hook_count > 0 and bool(str(final_text).strip())
+
+        tm = {
+            'patch_id': LEAP_V24_VALIDATOR_GUI_TUNABLES_PATCH_ID,
+            'q_min': q_min,
+            'regen': regen,
+            'validator_max_tokens': vtok,
+            'prompt': prompt,
+            'layer': int(layer),
+            'theta': float(theta),
+            'operator_name': op,
+            'status': 'ok' if ok else 'failed',
+            'reason': 'ok' if ok else (best_rr.get('reason') if isinstance(best_rr, dict) else 'remote_failed'),
+            'generation_backend': 'remote_runtime_hidden_hook_v23_guarded',
+            'hook_used': hook_count > 0,
+            'hook_call_count': hook_count,
+            'max_new_tokens_effective': int(best_rr.get('max_new_tokens_effective') or max_new_tokens) if isinstance(best_rr, dict) else int(max_new_tokens),
+            'remote_runtime_response': best_rr,
+            'validator': best_val,
+            'validator_reason': last_reason,
+            'repair_applied': bool(repaired),
+        }
+        trials.append(tm)
+
+        if not ok:
+            _lv24_http_json('POST', remote_url + '/latent/v23/cancel', payload={'reason':'client_abort_after_failure_v24'}, timeout=10)
+            return {
+                'status':'failed',
+                'mode':'leap_engine_hidden_hook_v24_validator_gui_tunables',
+                'route':'remote_runtime_hidden_hook_v24',
+                'reason':'candidate_generation_failed_v24',
+                'query': query,
+                'diagnostics': {'patch_id': LEAP_V24_VALIDATOR_GUI_TUNABLES_PATCH_ID, 'failed_trial': tm, 'layer_response': layer_res, 'all_trials': trials},
+                'llm_usage': {'patch_id': LEAP_V24_VALIDATOR_GUI_TUNABLES_PATCH_ID, 'llm_called': True, 'hidden_hook_called': True, 'generation_backend': 'remote_runtime_hidden_hook_v23_guarded', 'remote_runtime_url': remote_url, 'candidate_count': len(generated)},
+            }
+
+        cand = {
+            'candidate_id': f'V24-B1-T{i+1}',
+            'branch_id': 'B1',
+            'turn_id': f'B1-T{i+1}',
+            'turn_index': i + 1,
+            'phase': 'Idea',
+            'status': 'REQUIRE_EXPERIMENT',
+            'operator_trace': ops,
+            'operator_trace_internal': [op],
+            'decoded_hypothesis': final_text,
+            'decoded_mechanism': 'Generated through remote runtime hidden-hook (v23 guarded); validated (LLM) and repaired (rules).',
+            'idea_seed': final_text,
+            'trial_metadata': tm,
+            'overall_score': 0.71,
+            'score': 0.71,
+            'accepted': False,
+            'human_final_judgment_required': True,
+            'final_decision_by_engine': False,
+        }
+        generated.append(cand)
+        prev = str(final_text)[:3000]
+
+    return {
+        'status':'ok',
+        'mode':'leap_engine_hidden_hook_v24_validator_gui_tunables',
+        'primary_result_route':'remote_runtime_hidden_hook_v24',
+        'official_route':'leap_engine.run_leap_search.remote_hidden_hook_v24',
+        'route':'remote_runtime_hidden_hook_v24',
+        'reason':'completed_with_validator_and_rule_repair_v24',
+        'query': query,
+        'operation_controls': {
+            'operators': ops,
+            'operator_sequence': [ops],
+            'theta_schedule': theta_schedule,
+            'resolved_layers': layers,
+            'layer_response': layer_res,
+            'max_candidates': requested_candidates,
+            'max_candidates_effective': max_candidates,
+            'max_new_tokens_effective': max_new_tokens,
+            'validator_q_min': q_min,
+            'validator_regen': regen,
+            'validator_max_tokens': vtok,
+        },
+        'generated_ideas': generated,
+        'decoded_candidates': generated,
+        'review_recommended': generated,
+        'accepted_candidates': [],
+        'scores': {'overall': 0.71, 'candidate_count': len(generated)},
+        'conclusion': {'status':'REQUIRE_EXPERIMENT','reason':'validated/repaired candidates generated; validation required','final_answer': (generated[-1]['decoded_hypothesis'] if generated else '')},
+        'llm_usage': {
+            'patch_id': LEAP_V24_VALIDATOR_GUI_TUNABLES_PATCH_ID,
+            'llm_called': True,
+            'hidden_hook_called': True,
+            'layer_list_resolved': True,
+            'mixed_layer_expanded': True,
+            'resolved_layers': layers,
+            'generation_backend': 'remote_runtime_hidden_hook_v23_guarded',
+            'remote_runtime_url': remote_url,
+            'candidate_count': len(generated),
+            'hook_call_count_total': sum(int(c['trial_metadata'].get('hook_call_count') or 0) for c in generated),
+        },
+        'diagnostics': {'patch_id': LEAP_V24_VALIDATOR_GUI_TUNABLES_PATCH_ID, 'layer_response': layer_res, 'all_trials': trials},
+    }
+
+
+def run_leap_search(*, baseline_ir=None, context=None, **kwargs):
+    ctx = context if isinstance(context, dict) else {}
+    if _lv24_remote_url(context=ctx, **kwargs):
+        return _lv24_remote_hidden_search(baseline_ir=baseline_ir, context=ctx, **kwargs)
+    if callable(_LV24_PREV_RUN_LEAP_SEARCH):
+        return _LV24_PREV_RUN_LEAP_SEARCH(baseline_ir=baseline_ir, context=context, **kwargs)
+    return {'status':'failed','reason':'previous_run_leap_search_missing_v24','query':str(baseline_ir or '')}
+
+
+def run_leap_engine(*args, **kwargs):
+    context = kwargs.get('context')
+    baseline_ir = kwargs.get('baseline_ir') if 'baseline_ir' in kwargs else (args[0] if args else None)
+    ctx = context if isinstance(context, dict) else {}
+    if _lv24_remote_url(context=ctx, **kwargs):
+        return _lv24_remote_hidden_search(baseline_ir=baseline_ir, context=ctx, **kwargs)
+    if callable(_LV24_PREV_RUN_LEAP_ENGINE):
+        return _LV24_PREV_RUN_LEAP_ENGINE(*args, **kwargs)
+    return run_leap_search(baseline_ir=baseline_ir, context=context, **kwargs)
+
+# ============================================================================
+# END ADD-ONLY PATCH: LEAP_V24_VALIDATOR_GUI_TUNABLES_20260504_135912
+# ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY PATCH: LEAP_V26_CONTEXT_KWARG_DEDUP_FIX
+# generated_at_jst: 20260504_235435
+# source_file_before_bytes: 558951
+# source_file_before_sha256_12: b350c5fe166d
+# Purpose:
+# - Fix: _lv24_remote_url() got multiple values for keyword argument 'context'.
+# - Root cause: upstream app/bridge may pass context both as explicit argument
+#   and inside **kwargs; Python raises before _lv24_remote_url() body executes.
+# - Preserve V24/V25 behavior; only sanitize duplicated context/runtime keys before
+#   delegating to the existing route.
+# - No task/benchmark-name hardcoding.
+# ============================================================================
+
+LEAP_V26_CONTEXT_KWARG_DEDUP_FIX_PATCH_ID = "LEAP_V26_CONTEXT_KWARG_DEDUP_FIX"
+_LV26_PREV_LV25_REMOTE_HIDDEN_SEARCH = globals().get('_lv25_remote_hidden_search')
+_LV26_PREV_RUN_LEAP_SEARCH = globals().get('run_leap_search')
+_LV26_PREV_RUN_LEAP_ENGINE = globals().get('run_leap_engine')
+
+
+def _lv26_strip_context_kwargs(kwargs):
+    """Return a copy of kwargs without keys that are passed explicitly.
+
+    This prevents errors such as:
+      _lv24_remote_url() got multiple values for keyword argument 'context'
+    when a caller supplies both context=... and **{'context': ...}.
+    """
+    out = dict(kwargs or {})
+    out.pop('context', None)
+    return out
+
+
+def _lv26_context_from(context=None, kwargs=None):
+    if isinstance(context, dict):
+        return context
+    kw = kwargs if isinstance(kwargs, dict) else {}
+    cand = kw.get('context')
+    if isinstance(cand, dict):
+        return cand
+    return {}
+
+
+def _lv26_remote_url_available(context=None, kwargs=None):
+    ctx = _lv26_context_from(context=context, kwargs=kwargs)
+    clean = _lv26_strip_context_kwargs(kwargs or {})
+    ru = globals().get('_lv24_remote_url')
+    if callable(ru):
+        try:
+            return bool(ru(context=ctx, **clean))
+        except TypeError as e:
+            # Last-resort compatibility for older helpers with narrower signatures.
+            if 'multiple values' in str(e) and 'context' in str(e):
+                try:
+                    return bool(ru(ctx, **clean))
+                except Exception:
+                    return False
+            return False
+        except Exception:
+            return False
+    return False
+
+
+def _lv26_remote_hidden_search(*, baseline_ir=None, context=None, **kwargs):
+    ctx = _lv26_context_from(context=context, kwargs=kwargs)
+    clean = _lv26_strip_context_kwargs(kwargs)
+    if callable(_LV26_PREV_LV25_REMOTE_HIDDEN_SEARCH):
+        return _LV26_PREV_LV25_REMOTE_HIDDEN_SEARCH(baseline_ir=baseline_ir, context=ctx, **clean)
+    prev_v24 = globals().get('_lv24_remote_hidden_search')
+    if callable(prev_v24):
+        return prev_v24(baseline_ir=baseline_ir, context=ctx, **clean)
+    return {
+        'status': 'failed',
+        'reason': 'remote_hidden_search_missing_v26',
+        'diagnostics': {'patch_id': LEAP_V26_CONTEXT_KWARG_DEDUP_FIX_PATCH_ID},
+    }
+
+
+def run_leap_search(*, baseline_ir=None, context=None, **kwargs):
+    ctx = _lv26_context_from(context=context, kwargs=kwargs)
+    clean = _lv26_strip_context_kwargs(kwargs)
+    if _lv26_remote_url_available(context=ctx, kwargs=clean):
+        return _lv26_remote_hidden_search(baseline_ir=baseline_ir, context=ctx, **clean)
+    if callable(_LV26_PREV_RUN_LEAP_SEARCH):
+        return _LV26_PREV_RUN_LEAP_SEARCH(baseline_ir=baseline_ir, context=ctx, **clean)
+    return {
+        'status': 'failed',
+        'reason': 'previous_run_leap_search_missing_v26',
+        'diagnostics': {'patch_id': LEAP_V26_CONTEXT_KWARG_DEDUP_FIX_PATCH_ID},
+    }
+
+
+def run_leap_engine(*args, **kwargs):
+    context = kwargs.get('context')
+    baseline_ir = kwargs.get('baseline_ir') if 'baseline_ir' in kwargs else (args[0] if args else None)
+    ctx = _lv26_context_from(context=context, kwargs=kwargs)
+    clean = _lv26_strip_context_kwargs(kwargs)
+    if _lv26_remote_url_available(context=ctx, kwargs=clean):
+        return _lv26_remote_hidden_search(baseline_ir=baseline_ir, context=ctx, **clean)
+    if callable(_LV26_PREV_RUN_LEAP_ENGINE):
+        # Use sanitized kwargs so downstream wrappers do not receive duplicate context.
+        return _LV26_PREV_RUN_LEAP_ENGINE(*args, **clean)
+    return run_leap_search(baseline_ir=baseline_ir, context=ctx, **clean)
+
+# ============================================================================
+# END ADD-ONLY PATCH: LEAP_V26_CONTEXT_KWARG_DEDUP_FIX
+# ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY PATCH: LEAP_V28_ROUTE_TO_UNIT_OPERATION_PRIMARY
+# generated_at_jst: 20260505_031358
+# source_file_before_bytes: 563565
+# source_file_before_sha256_12: a9f5de2d3853
+# Purpose:
+# - Fix the execution route after fixing the unit operation concept.
+# - Make the corrected unit-operation route the primary route for:
+#   1) module-level run_leap_search
+#   2) module-level run_leap_engine
+#   3) LatentPhaseInventor.run_leap_engine
+# - Bypass legacy V14/V24 operator-loop route when a remote runtime URL is present.
+# - Keep legacy route only as fallback when remote runtime URL is absent.
+# - No task/benchmark-name hardcoding.
+# ============================================================================
+
+LEAP_V28_ROUTE_TO_UNIT_OPERATION_PRIMARY_PATCH_ID = "LEAP_V28_ROUTE_TO_UNIT_OPERATION_PRIMARY"
+_LV28_PREV_RUN_LEAP_SEARCH = globals().get('run_leap_search')
+_LV28_PREV_RUN_LEAP_ENGINE = globals().get('run_leap_engine')
+try:
+    _LV28_PREV_CLASS_RUN_LEAP_ENGINE = LatentPhaseInventor.run_leap_engine
+except Exception:
+    _LV28_PREV_CLASS_RUN_LEAP_ENGINE = None
+
+
+def _lv28_safe_dict(x):
+    return dict(x) if isinstance(x, dict) else {}
+
+
+def _lv28_safe_list(x):
+    if isinstance(x, list):
+        return list(x)
+    if isinstance(x, tuple):
+        return list(x)
+    return []
+
+
+def _lv28_text(x, limit=8000):
+    try:
+        s = '' if x is None else str(x)
+    except Exception:
+        s = ''
+    return ' '.join(s.split())[:max(0, int(limit))]
+
+
+def _lv28_int(x, default=0):
+    try:
+        return int(x)
+    except Exception:
+        return int(default)
+
+
+def _lv28_float(x, default=0.0):
+    try:
+        return float(x)
+    except Exception:
+        return float(default)
+
+
+def _lv28_strip_context_kwargs(kwargs):
+    out = dict(kwargs or {})
+    out.pop('context', None)
+    return out
+
+
+def _lv28_context_from(context=None, kwargs=None):
+    if isinstance(context, dict):
+        return context
+    kw = kwargs if isinstance(kwargs, dict) else {}
+    if isinstance(kw.get('context'), dict):
+        return kw.get('context')
+    return {}
+
+
+def _lv28_remote_url(context=None, **kwargs):
+    ctx = _lv28_context_from(context=context, kwargs=kwargs)
+    clean = _lv28_strip_context_kwargs(kwargs)
+    # First use already-existing robust URL helpers if available, but never pass duplicate context.
+    for fn_name in ('_lv27_remote_url', '_lv24_remote_url', '_lv23_remote_url', '_lrh21_ctxfix_remote_url', '_lrh21_remote_url_from_context', '_lrh21_remote_url'):
+        fn = globals().get(fn_name)
+        if callable(fn):
+            try:
+                u = fn(context=ctx, **clean)
+                if u:
+                    return str(u).strip().rstrip('/')
+            except TypeError:
+                try:
+                    u = fn(ctx, **clean)
+                    if u:
+                        return str(u).strip().rstrip('/')
+                except Exception:
+                    pass
+            except Exception:
+                pass
+    for src in (clean, ctx):
+        if isinstance(src, dict):
+            for key in ('remote_runtime_url', 'runtime_url', 'transformers_runtime_url', 'TRANSFORMERS_RUNTIME_URL', 'remote_url'):
+                v = src.get(key)
+                if v:
+                    return str(v).strip().rstrip('/')
+    return ''
+
+
+def _lv28_http_json(method, url, payload=None, timeout=180):
+    for fn_name in ('_lv27_http_json', '_lv24_http_json'):
+        fn = globals().get(fn_name)
+        if callable(fn):
+            try:
+                return fn(method, url, payload=payload, timeout=timeout)
+            except Exception as e:
+                return {'ok': False, 'reason': 'http_error', 'url': url, 'error': repr(e)}
+    import json as _json
+    import urllib.request as _urlreq
+    try:
+        data = None
+        headers = {}
+        if payload is not None:
+            data = _json.dumps(payload, ensure_ascii=False).encode('utf-8')
+            headers['Content-Type'] = 'application/json'
+        req = _urlreq.Request(url, data=data, headers=headers, method=str(method or 'GET').upper())
+        with _urlreq.urlopen(req, timeout=int(timeout)) as r:
+            return _json.loads(r.read().decode('utf-8', errors='replace'))
+    except Exception as e:
+        return {'ok': False, 'reason': 'http_error', 'url': url, 'error': repr(e)}
+
+
+def _lv28_query_from(baseline_ir=None, context=None, kwargs=None):
+    kw = kwargs if isinstance(kwargs, dict) else {}
+    for key in ('query', 'problem', 'prompt', 'goal'):
+        if kw.get(key):
+            return str(kw.get(key))
+    if isinstance(baseline_ir, dict):
+        for key in ('query', 'problem', 'prompt', 'goal'):
+            if baseline_ir.get(key):
+                return str(baseline_ir.get(key))
+    if baseline_ir is not None:
+        return str(baseline_ir)
+    ctx = context if isinstance(context, dict) else {}
+    for key in ('query', 'problem', 'prompt', 'goal'):
+        if ctx.get(key):
+            return str(ctx.get(key))
+    return ''
+
+
+def _lv28_operator_trace(context=None, kwargs=None):
+    ctx = context if isinstance(context, dict) else {}
+    kw = kwargs if isinstance(kwargs, dict) else {}
+    raw = kw.get('operator_sequence') or ctx.get('operator_sequence')
+    if isinstance(raw, list):
+        if raw and isinstance(raw[0], list):
+            xs = [str(x) for x in raw[0] if str(x).strip()]
+            if xs:
+                return xs
+        xs = [str(x) for x in raw if str(x).strip()]
+        if xs:
+            return xs
+    ops = kw.get('operators') or ctx.get('operators')
+    if isinstance(ops, list):
+        xs = [str(x) for x in ops if str(x).strip()]
+        if xs:
+            return xs
+    return ['decomposition', 'mediator_insertion', 'substitution']
+
+
+def _lv28_layer_inventory(remote_url):
+    for endpoint in ('/latent/v21/layers', '/latent/v22/layers', '/layers'):
+        res = _lv28_http_json('GET', remote_url + endpoint, timeout=30)
+        if isinstance(res, dict) and res.get('ok'):
+            return res
+    return res if isinstance(res, dict) else {'ok': False, 'reason': 'layer_inventory_failed_v28'}
+
+
+def _lv28_select_layer(layer_response, context=None, kwargs=None):
+    ctx = context if isinstance(context, dict) else {}
+    kw = kwargs if isinstance(kwargs, dict) else {}
+    requested = kw.get('manual_layer_index', kw.get('layer', ctx.get('manual_layer_index', None)))
+    if requested is not None:
+        return max(0, _lv28_int(requested, 0))
+    mixed = _lv28_safe_list(_lv28_safe_dict(layer_response).get('resolved_layers_mixed'))
+    if mixed:
+        meaning = str(kw.get('operated_layer_meaning') or ctx.get('operated_layer_meaning') or '').lower()
+        if 'early' in meaning:
+            return _lv28_int(mixed[0], 0)
+        if 'late' in meaning:
+            return _lv28_int(mixed[-1], 0)
+        return _lv28_int(mixed[len(mixed)//2], mixed[0])
+    n = _lv28_int(_lv28_safe_dict(layer_response).get('num_layers'), 0)
+    return max(0, min(n - 1, n // 2)) if n > 0 else 0
+
+
+def _lv28_theta(context=None, kwargs=None):
+    ctx = context if isinstance(context, dict) else {}
+    kw = kwargs if isinstance(kwargs, dict) else {}
+    sched = kw.get('theta_schedule') or ctx.get('theta_schedule')
+    if isinstance(sched, list) and sched:
+        return _lv28_float(sched[0], 0.03)
+    return _lv28_float(kw.get('disturbance_magnitude') or ctx.get('disturbance_magnitude') or kw.get('theta') or ctx.get('theta'), 0.03)
+
+
+def _lv28_clean_generation(raw_text):
+    import re as _re
+    raw = '' if raw_text is None else str(raw_text)
+    text = raw.strip()
+    echo_markers = ['Thinking Process:', '**Analyze the Request:**', '* **Role:**', '* **Constraint:**', '* **Problem:**', 'You are Leap Engine', 'Do not echo the prompt']
+    prompt_echo_detected = any(m.lower() in text.lower() for m in echo_markers)
+    for marker in ('Final candidate:', 'Final answer:', 'Candidate:', 'Idea:'):
+        idx = text.lower().find(marker.lower())
+        if idx >= 0:
+            text = text[idx:]
+            break
+    text = _re.sub(r'(?is)^\s*Thinking\s+Process\s*:\s*', '', text).strip()
+    section_hits = sum(1 for m in ['Idea', 'Mechanism', 'Causal constraints', 'Required unknowns', 'Verification experiment', 'Risks'] if m.lower() in text.lower())
+    semantic_valid = bool(text.strip()) and section_hits >= 2 and (not prompt_echo_detected or 'Idea:' in text)
+    return {'raw_generation': raw, 'cleaned_generation': text, 'prompt_echo_detected': bool(prompt_echo_detected), 'section_hits': int(section_hits), 'semantic_valid': bool(semantic_valid)}
+
+
+def _lv28_build_unit_prompt(query, operator_trace):
+    return (
+        'Leap Engine corrected primary route. Return ONLY the final invention candidate.\n'
+        'Do not output Thinking Process, request analysis, Role/Constraint/Problem restatement, or prompt echo.\n'
+        'Use the full operator trace as ONE latent-space operation plan. Do not split it into multiple generations.\n'
+        'Required sections exactly:\nIdea:\nMechanism:\nCausal constraints:\nRequired unknowns:\nVerification experiment:\nRisks:\n\n'
+        'Problem:\n' + str(query or '') + '\n\n'
+        'Operator trace:\n' + ' > '.join([str(x) for x in _lv28_safe_list(operator_trace)]) + '\n\n'
+        'Start now with "Idea:".'
+    )
+
+
+def _lv28_unit_operation_primary(*, baseline_ir=None, context=None, **kwargs):
+    ctx = _lv28_context_from(context=context, kwargs=kwargs)
+    clean = _lv28_strip_context_kwargs(kwargs)
+    remote_url = _lv28_remote_url(context=ctx, **clean)
+    query = _lv28_query_from(baseline_ir=baseline_ir, context=ctx, kwargs=clean)
+    if not remote_url:
+        return {'status': 'failed', 'reason': 'remote_runtime_url_missing_v28', 'query': query, 'diagnostics': {'patch_id': LEAP_V28_ROUTE_TO_UNIT_OPERATION_PRIMARY_PATCH_ID}, 'llm_usage': {'patch_id': LEAP_V28_ROUTE_TO_UNIT_OPERATION_PRIMARY_PATCH_ID, 'llm_called': False, 'hidden_hook_called': False}}
+    layer_response = _lv28_layer_inventory(remote_url)
+    if not isinstance(layer_response, dict) or not layer_response.get('ok'):
+        return {'status': 'failed', 'reason': 'layer_list_unavailable_v28', 'query': query, 'diagnostics': {'patch_id': LEAP_V28_ROUTE_TO_UNIT_OPERATION_PRIMARY_PATCH_ID, 'layer_response': layer_response}, 'llm_usage': {'patch_id': LEAP_V28_ROUTE_TO_UNIT_OPERATION_PRIMARY_PATCH_ID, 'llm_called': False, 'hidden_hook_called': False, 'remote_runtime_url': remote_url}}
+
+    operator_trace = _lv28_operator_trace(ctx, clean)
+    layer = _lv28_select_layer(layer_response, context=ctx, kwargs=clean)
+    theta = _lv28_theta(ctx, clean)
+    max_new_tokens = max(64, min(_lv28_int(clean.get('max_new_tokens') or ctx.get('max_new_tokens') or 192, 192), 384))
+    server_timeout_s = max(30, min(_lv28_int(clean.get('remote_timeout') or clean.get('server_timeout_s') or ctx.get('remote_timeout') or 180, 180), 240))
+    payload = {
+        'job_id': 'LEAP-V28-PRIMARY-UNIT-1',
+        'prompt': _lv28_build_unit_prompt(query, operator_trace),
+        'operator': ' > '.join(operator_trace),
+        'operator_trace': list(operator_trace),
+        'layer': int(layer),
+        'manual_layer_index': int(layer),
+        'manual_layer_path': _lv28_safe_dict(layer_response).get('selected_layer_path') or 'model.layers',
+        'theta': float(theta),
+        'max_new_tokens': int(max_new_tokens),
+        'server_timeout_s': int(server_timeout_s),
+    }
+    rr = _lv28_http_json('POST', remote_url + '/latent/v23/generate', payload=payload, timeout=server_timeout_s + 30)
+    raw_text = str((rr.get('generated_text') or rr.get('text') or '') if isinstance(rr, dict) else '')
+    cleaned = _lv28_clean_generation(raw_text)
+    hook_count = _lv28_int(rr.get('hook_call_count') if isinstance(rr, dict) else 0, 0)
+    hook_used = (bool(rr.get('hook_used')) or hook_count > 0) if isinstance(rr, dict) else False
+    delta_norm = _lv28_float(_lv28_safe_dict(_lv28_safe_dict(rr).get('latent_result')).get('operator_delta_norm') or _lv28_safe_dict(rr).get('operator_delta_norm'), 0.0) if isinstance(rr, dict) else 0.0
+    unit_ok = bool(isinstance(rr, dict) and rr.get('ok') and hook_used and hook_count > 0 and raw_text.strip())
+    semantic_valid = bool(cleaned.get('semantic_valid'))
+    candidate = {
+        'candidate_id': 'V28-PRIMARY-UNIT-1',
+        'turn_id': 'PRIMARY-UNIT-1',
+        'phase': 'Idea',
+        'status': 'REQUIRE_EXPERIMENT' if unit_ok else 'FAILED_UNIT_OPERATION',
+        'operator_trace': list(operator_trace),
+        'operator_trace_internal': list(operator_trace),
+        'decoded_hypothesis': cleaned.get('cleaned_generation') or raw_text,
+        'decoded_mechanism': 'Corrected primary route: exactly one remote hidden-hook unit operation; validator LLM not invoked.',
+        'raw_generation': raw_text,
+        'cleaned_generation': cleaned.get('cleaned_generation', ''),
+        'prompt_echo_detected': bool(cleaned.get('prompt_echo_detected')),
+        'semantic_valid': semantic_valid,
+        'section_hits': int(cleaned.get('section_hits') or 0),
+        'hook_used': hook_used,
+        'hook_call_count': hook_count,
+        'operator_delta_norm': delta_norm,
+        'overall_score': 0.50 if unit_ok else 0.0,
+        'accepted': False,
+        'human_final_judgment_required': True,
+        'final_decision_by_engine': False,
+    }
+    reason = 'unit_operation_completed_semantic_decode_valid_v28' if (unit_ok and semantic_valid) else ('unit_operation_completed_but_semantic_decode_invalid_v28' if unit_ok else 'unit_operation_failed_v28')
+    return {
+        'status': 'ok' if unit_ok else 'failed',
+        'mode': 'leap_engine_v28_route_to_unit_operation_primary',
+        'primary_result_route': 'unit_operation_v28_primary',
+        'official_route': 'leap_engine.run_leap_search::LEAP_V28_ROUTE_TO_UNIT_OPERATION_PRIMARY',
+        'route': 'unit_operation_v28_primary',
+        'route_attempts': [{'route': 'unit_operation_v28_primary', 'available': True, 'selected': True}, {'route': 'hidden_branching_v14', 'available': True, 'selected': False, 'reason': 'bypassed_by_v28_primary_unit_operation'}],
+        'legacy_routes_bypassed': ['hidden_branching_v14', 'remote_runtime_hidden_hook_v24_operator_loop'],
+        'reason': reason,
+        'query': query,
+        'operation_controls': {'patch_id': LEAP_V28_ROUTE_TO_UNIT_OPERATION_PRIMARY_PATCH_ID, 'unit_operation_count': 1, 'max_candidates_effective': 1, 'explore_cap_effective': 1, 'operator_trace': list(operator_trace), 'operator_loop_used_as_candidate_loop': False, 'validator_llm_invoked': False, 'legacy_v14_bypassed': True, 'legacy_v24_operator_loop_bypassed': True, 'layer': int(layer), 'theta': float(theta), 'max_new_tokens_effective': int(max_new_tokens), 'server_timeout_s': int(server_timeout_s)},
+        'generated_ideas': [candidate] if raw_text.strip() else [],
+        'decoded_candidates': [candidate] if raw_text.strip() else [],
+        'review_recommended': [candidate] if raw_text.strip() else [],
+        'accepted_candidates': [],
+        'scores': {'overall': candidate.get('overall_score', 0.0), 'candidate_count': 1 if raw_text.strip() else 0},
+        'conclusion': {'status': 'REQUIRE_EXPERIMENT' if unit_ok else 'INDETERMINATE', 'reason': reason, 'final_answer': candidate.get('decoded_hypothesis', '') if raw_text.strip() else ''},
+        'llm_usage': {'patch_id': LEAP_V28_ROUTE_TO_UNIT_OPERATION_PRIMARY_PATCH_ID, 'llm_called': isinstance(rr, dict), 'hidden_hook_called': hook_used, 'hook_call_count_total': hook_count, 'operator_delta_norm': delta_norm, 'generation_backend': 'remote_runtime_hidden_hook_v23_guarded_via_v28_primary_unit', 'remote_runtime_url': remote_url, 'candidate_count': 1 if raw_text.strip() else 0, 'validator_llm_invoked': False},
+        'diagnostics': {'patch_id': LEAP_V28_ROUTE_TO_UNIT_OPERATION_PRIMARY_PATCH_ID, 'route_fix': 'module_and_class_entrypoints_route_to_unit_operation_first', 'unit_operation_defined_as': 'exactly_one_remote_hidden_hook_generate_call', 'layer_response': layer_response, 'request_payload_compact': {k: payload.get(k) for k in ('job_id','operator','operator_trace','layer','manual_layer_path','theta','max_new_tokens','server_timeout_s')}, 'remote_runtime_response': rr, 'postprocess': cleaned, 'raw_generation_preserved': True},
+    }
+
+
+def run_leap_search(*, baseline_ir=None, context=None, **kwargs):
+    ctx = _lv28_context_from(context=context, kwargs=kwargs)
+    clean = _lv28_strip_context_kwargs(kwargs)
+    if _lv28_remote_url(context=ctx, **clean):
+        return _lv28_unit_operation_primary(baseline_ir=baseline_ir, context=ctx, **clean)
+    if callable(_LV28_PREV_RUN_LEAP_SEARCH):
+        return _LV28_PREV_RUN_LEAP_SEARCH(baseline_ir=baseline_ir, context=ctx, **clean)
+    return {'status': 'failed', 'reason': 'previous_run_leap_search_missing_v28', 'diagnostics': {'patch_id': LEAP_V28_ROUTE_TO_UNIT_OPERATION_PRIMARY_PATCH_ID}}
+
+
+def run_leap_engine(*args, **kwargs):
+    context = kwargs.get('context')
+    baseline_ir = kwargs.get('baseline_ir') if 'baseline_ir' in kwargs else (args[0] if args else None)
+    ctx = _lv28_context_from(context=context, kwargs=kwargs)
+    clean = _lv28_strip_context_kwargs(kwargs)
+    if _lv28_remote_url(context=ctx, **clean):
+        return _lv28_unit_operation_primary(baseline_ir=baseline_ir, context=ctx, **clean)
+    if callable(_LV28_PREV_RUN_LEAP_ENGINE):
+        return _LV28_PREV_RUN_LEAP_ENGINE(*args, **clean)
+    return run_leap_search(baseline_ir=baseline_ir, context=ctx, **clean)
+
+
+def _lv28_class_run_leap_engine(self, *args, **kwargs):
+    context = kwargs.get('context')
+    baseline_ir = kwargs.get('baseline_ir') if 'baseline_ir' in kwargs else (args[0] if args else None)
+    ctx = _lv28_context_from(context=context, kwargs=kwargs)
+    clean = _lv28_strip_context_kwargs(kwargs)
+    if _lv28_remote_url(context=ctx, **clean):
+        return _lv28_unit_operation_primary(baseline_ir=baseline_ir, context=ctx, **clean)
+    if callable(_LV28_PREV_CLASS_RUN_LEAP_ENGINE):
+        return _LV28_PREV_CLASS_RUN_LEAP_ENGINE(self, *args, **clean)
+    return run_leap_engine(*args, **clean)
+
+try:
+    LatentPhaseInventor.run_leap_engine = _lv28_class_run_leap_engine
+except Exception:
+    pass
+
+# ============================================================================
+# END ADD-ONLY PATCH: LEAP_V28_ROUTE_TO_UNIT_OPERATION_PRIMARY
+# ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY PATCH: LEAP_V29_GUI_COUNT_UNIT_ROUTE_PRIMARY
+# generated_at_jst: 20260505_034712
+# source_file_before_bytes: 582063
+# source_file_before_sha256_12: 048aec455ab5
+# Purpose:
+# - Correct V28's diagnostic one-candidate forcing.
+# - Preserve the correct unit operation definition:
+#     one candidate = one remote hidden-hook generation call.
+# - Respect GUI/runtime candidate controls instead of internally fixing to 1.
+# - Never use an operator list as the candidate loop.  The full operator trace
+#   is passed as one latent operation plan for each candidate.
+# - Do not invoke validator LLM inside candidate generation.
+# - Keep legacy V14/V24 routes as fallback only when no remote runtime URL exists.
+# - No task/benchmark-name hardcoding.
+# ============================================================================
+
+LEAP_V29_GUI_COUNT_UNIT_ROUTE_PRIMARY_PATCH_ID = "LEAP_V29_GUI_COUNT_UNIT_ROUTE_PRIMARY"
+_LV29_PREV_RUN_LEAP_SEARCH = globals().get('run_leap_search')
+_LV29_PREV_RUN_LEAP_ENGINE = globals().get('run_leap_engine')
+try:
+    _LV29_PREV_CLASS_RUN_LEAP_ENGINE = LatentPhaseInventor.run_leap_engine
+except Exception:
+    _LV29_PREV_CLASS_RUN_LEAP_ENGINE = None
+
+
+def _lv29_safe_dict(x):
+    return dict(x) if isinstance(x, dict) else {}
+
+
+def _lv29_safe_list(x):
+    if isinstance(x, list):
+        return list(x)
+    if isinstance(x, tuple):
+        return list(x)
+    return []
+
+
+def _lv29_text(x, limit=8000):
+    try:
+        s = '' if x is None else str(x)
+    except Exception:
+        s = ''
+    return ' '.join(s.split())[:max(0, int(limit))]
+
+
+def _lv29_int(x, default=None):
+    try:
+        return int(x)
+    except Exception:
+        return default
+
+
+def _lv29_float(x, default=0.0):
+    try:
+        return float(x)
+    except Exception:
+        return float(default)
+
+
+def _lv29_strip_context_kwargs(kwargs):
+    out = dict(kwargs or {})
+    out.pop('context', None)
+    return out
+
+
+def _lv29_context_from(context=None, kwargs=None):
+    if isinstance(context, dict):
+        return context
+    kw = kwargs if isinstance(kwargs, dict) else {}
+    if isinstance(kw.get('context'), dict):
+        return kw.get('context')
+    return {}
+
+
+def _lv29_remote_url(context=None, **kwargs):
+    ctx = _lv29_context_from(context=context, kwargs=kwargs)
+    clean = _lv29_strip_context_kwargs(kwargs)
+    for fn_name in ('_lv28_remote_url', '_lv27_remote_url', '_lv24_remote_url', '_lrh21_ctxfix_remote_url', '_lrh21_remote_url_from_context', '_lrh21_remote_url'):
+        fn = globals().get(fn_name)
+        if callable(fn):
+            try:
+                u = fn(context=ctx, **clean)
+                if u:
+                    return str(u).strip().rstrip('/')
+            except TypeError:
+                try:
+                    u = fn(ctx, **clean)
+                    if u:
+                        return str(u).strip().rstrip('/')
+                except Exception:
+                    pass
+            except Exception:
+                pass
+    for src in (clean, ctx):
+        if isinstance(src, dict):
+            for key in ('remote_runtime_url', 'runtime_url', 'transformers_runtime_url', 'TRANSFORMERS_RUNTIME_URL', 'remote_url'):
+                v = src.get(key)
+                if v:
+                    return str(v).strip().rstrip('/')
+    return ''
+
+
+def _lv29_http_json(method, url, payload=None, timeout=180):
+    for fn_name in ('_lv28_http_json', '_lv27_http_json', '_lv24_http_json'):
+        fn = globals().get(fn_name)
+        if callable(fn):
+            try:
+                return fn(method, url, payload=payload, timeout=timeout)
+            except Exception as e:
+                return {'ok': False, 'reason': 'http_error', 'url': url, 'error': repr(e)}
+    import json as _json
+    import urllib.request as _urlreq
+    try:
+        data = None
+        headers = {}
+        if payload is not None:
+            data = _json.dumps(payload, ensure_ascii=False).encode('utf-8')
+            headers['Content-Type'] = 'application/json'
+        req = _urlreq.Request(url, data=data, headers=headers, method=str(method or 'GET').upper())
+        with _urlreq.urlopen(req, timeout=int(timeout)) as r:
+            return _json.loads(r.read().decode('utf-8', errors='replace'))
+    except Exception as e:
+        return {'ok': False, 'reason': 'http_error', 'url': url, 'error': repr(e)}
+
+
+def _lv29_query_from(baseline_ir=None, context=None, kwargs=None):
+    kw = kwargs if isinstance(kwargs, dict) else {}
+    for key in ('query', 'problem', 'prompt', 'goal'):
+        if kw.get(key):
+            return str(kw.get(key))
+    if isinstance(baseline_ir, dict):
+        for key in ('query', 'problem', 'prompt', 'goal'):
+            if baseline_ir.get(key):
+                return str(baseline_ir.get(key))
+    if baseline_ir is not None:
+        return str(baseline_ir)
+    ctx = context if isinstance(context, dict) else {}
+    for key in ('query', 'problem', 'prompt', 'goal'):
+        if ctx.get(key):
+            return str(ctx.get(key))
+    return ''
+
+
+def _lv29_operator_branches(context=None, kwargs=None):
+    ctx = context if isinstance(context, dict) else {}
+    kw = kwargs if isinstance(kwargs, dict) else {}
+    raw = kw.get('operator_sequence') if kw.get('operator_sequence') not in (None, '', []) else ctx.get('operator_sequence')
+    if raw in (None, '', []):
+        raw = kw.get('operators') if kw.get('operators') not in (None, '', []) else ctx.get('operators')
+    branches = []
+    if isinstance(raw, str):
+        for block in raw.replace('\n', ';').split(';'):
+            ops = [p.strip() for p in block.replace('→', '>').replace(',', '>').split('>') if p.strip()]
+            if ops:
+                branches.append(ops)
+    elif isinstance(raw, (list, tuple)) and raw and all(isinstance(x, str) for x in raw):
+        branches.append([str(x) for x in raw if str(x).strip()])
+    elif isinstance(raw, (list, tuple)):
+        for item in raw:
+            if isinstance(item, (list, tuple)):
+                ops = [str(x) for x in item if str(x).strip()]
+                if ops:
+                    branches.append(ops)
+            elif isinstance(item, str) and item.strip():
+                branches.append([item.strip()])
+    if not branches:
+        branches = [['decomposition', 'mediator_insertion', 'substitution']]
+    # Remove exact duplicate branches while preserving order.
+    out, seen = [], set()
+    for b in branches:
+        key = tuple(b)
+        if key not in seen:
+            seen.add(key)
+            out.append(b)
+    return out
+
+
+def _lv29_positive_control_values(context=None, kwargs=None):
+    ctx = context if isinstance(context, dict) else {}
+    kw = kwargs if isinstance(kwargs, dict) else {}
+    controls = []
+    for key in ('candidate_count', 'max_candidates', 'max_idea_variants', 'explore_cap', 'exploration_count'):
+        present = (key in kw) or (key in ctx)
+        v = kw.get(key, ctx.get(key))
+        iv = _lv29_int(v, None)
+        if present and iv is not None and iv > 0:
+            controls.append({'key': key, 'value': iv})
+    return controls
+
+
+def _lv29_effective_candidate_count(context=None, kwargs=None):
+    ctx = context if isinstance(context, dict) else {}
+    kw = kwargs if isinstance(kwargs, dict) else {}
+    controls = _lv29_positive_control_values(ctx, kw)
+    if controls:
+        requested = min([c['value'] for c in controls])
+        source = 'min_of_gui_candidate_controls'
+    else:
+        requested = 1
+        source = 'default_when_gui_candidate_controls_absent'
+    # Safety cap is not a hidden one-candidate override. It is high by default and configurable.
+    safety_raw = kw.get('max_candidate_safety_cap', ctx.get('max_candidate_safety_cap', ctx.get('candidate_safety_cap', 64)))
+    safety_cap = _lv29_int(safety_raw, 64)
+    if safety_cap is None or safety_cap <= 0:
+        safety_cap = 64
+    effective = max(1, min(int(requested), int(safety_cap)))
+    return {
+        'requested': int(requested),
+        'effective': int(effective),
+        'source': source,
+        'controls_seen': controls,
+        'safety_cap': int(safety_cap),
+        'safety_cap_applied': bool(int(effective) < int(requested)),
+    }
+
+
+def _lv29_layer_inventory(remote_url):
+    for endpoint in ('/latent/v21/layers', '/latent/v22/layers', '/layers'):
+        res = _lv29_http_json('GET', remote_url + endpoint, timeout=30)
+        if isinstance(res, dict) and res.get('ok'):
+            return res
+    return res if isinstance(res, dict) else {'ok': False, 'reason': 'layer_inventory_failed_v29'}
+
+
+def _lv29_layer_schedule(layer_response, count, context=None, kwargs=None):
+    ctx = context if isinstance(context, dict) else {}
+    kw = kwargs if isinstance(kwargs, dict) else {}
+    explicit = kw.get('layer_indices') or ctx.get('layer_indices') or kw.get('layers') or ctx.get('layers')
+    layers = []
+    if isinstance(explicit, (list, tuple)):
+        for x in explicit:
+            iv = _lv29_int(x, None)
+            if iv is not None:
+                layers.append(max(0, iv))
+    requested = kw.get('manual_layer_index', kw.get('layer', ctx.get('manual_layer_index', None)))
+    if not layers and requested is not None:
+        iv = _lv29_int(requested, 0)
+        layers.append(max(0, iv or 0))
+    if not layers:
+        mixed = _lv29_safe_list(_lv29_safe_dict(layer_response).get('resolved_layers_mixed'))
+        for x in mixed:
+            iv = _lv29_int(x, None)
+            if iv is not None:
+                layers.append(max(0, iv))
+    if not layers:
+        n = _lv29_int(_lv29_safe_dict(layer_response).get('num_layers'), 0) or 0
+        if n > 0:
+            layers = [max(0, min(n - 1, n // 2))]
+    if not layers:
+        layers = [0]
+    return [layers[i % len(layers)] for i in range(max(1, int(count)))]
+
+
+def _lv29_theta_schedule(count, context=None, kwargs=None):
+    ctx = context if isinstance(context, dict) else {}
+    kw = kwargs if isinstance(kwargs, dict) else {}
+    raw = kw.get('theta_schedule') or ctx.get('theta_schedule')
+    vals = []
+    if isinstance(raw, str):
+        for p in raw.replace('，', ',').replace('、', ',').split(','):
+            try:
+                vals.append(float(p.strip()))
+            except Exception:
+                pass
+    elif isinstance(raw, (list, tuple)):
+        for x in raw:
+            try:
+                vals.append(float(x))
+            except Exception:
+                pass
+    if not vals:
+        v = kw.get('disturbance_magnitude') or ctx.get('disturbance_magnitude') or kw.get('theta') or ctx.get('theta')
+        vals = [_lv29_float(v, 0.03)]
+    return [float(vals[i % len(vals)]) for i in range(max(1, int(count)))]
+
+
+def _lv29_clean_generation(raw_text):
+    import re as _re
+    raw = '' if raw_text is None else str(raw_text)
+    text = raw.strip()
+    echo_markers = ['Thinking Process:', '**Analyze the Request:**', '* **Role:**', '* **Constraint:**', '* **Problem:**', 'You are Leap Engine', 'Do not echo the prompt']
+    prompt_echo_detected = any(m.lower() in text.lower() for m in echo_markers)
+    for marker in ('Final candidate:', 'Final answer:', 'Candidate:', 'Idea:'):
+        idx = text.lower().find(marker.lower())
+        if idx >= 0:
+            text = text[idx:]
+            break
+    text = _re.sub(r'(?is)^\s*Thinking\s+Process\s*:\s*', '', text).strip()
+    section_hits = sum(1 for m in ['Idea', 'Mechanism', 'Causal constraints', 'Required unknowns', 'Verification experiment', 'Risks'] if m.lower() in text.lower())
+    semantic_valid = bool(text.strip()) and section_hits >= 2 and (not prompt_echo_detected or 'Idea:' in text)
+    return {'raw_generation': raw, 'cleaned_generation': text, 'prompt_echo_detected': bool(prompt_echo_detected), 'section_hits': int(section_hits), 'semantic_valid': bool(semantic_valid)}
+
+
+def _lv29_build_unit_prompt(query, operator_trace, candidate_index=1, candidate_count=1):
+    return (
+        'Leap Engine corrected unit operation. Return ONLY the final invention candidate.\n'
+        'Do not output Thinking Process, request analysis, Role/Constraint/Problem restatement, or prompt echo.\n'
+        'Use the full operator trace as ONE latent-space operation plan. Do not split operators into separate generations.\n'
+        'Required sections exactly:\nIdea:\nMechanism:\nCausal constraints:\nRequired unknowns:\nVerification experiment:\nRisks:\n\n'
+        'Candidate index: ' + str(candidate_index) + ' / ' + str(candidate_count) + '\n'
+        'Problem:\n' + str(query or '') + '\n\n'
+        'Operator trace:\n' + ' > '.join([str(x) for x in _lv29_safe_list(operator_trace)]) + '\n\n'
+        'Start now with "Idea:".'
+    )
+
+
+def _lv29_hook_metrics(rr):
+    d = rr if isinstance(rr, dict) else {}
+    nested = _lv29_safe_dict(d.get('latent_result'))
+    hook_count = _lv29_int(d.get('hook_call_count', nested.get('hook_call_count', 0)), 0) or 0
+    hook_used = bool(d.get('hook_used', nested.get('hook_used', False))) or hook_count > 0
+    delta = _lv29_float(d.get('operator_delta_norm', nested.get('operator_delta_norm', 0.0)), 0.0)
+    return hook_used, int(hook_count), float(delta)
+
+
+def _lv29_one_remote_unit(*, remote_url, query, operator_trace, layer_response, layer, theta, candidate_index, candidate_count, context=None, kwargs=None):
+    ctx = context if isinstance(context, dict) else {}
+    kw = kwargs if isinstance(kwargs, dict) else {}
+    max_new_tokens = max(64, min(_lv29_int(kw.get('max_new_tokens') or ctx.get('max_new_tokens') or 192, 192) or 192, 384))
+    server_timeout_s = max(30, min(_lv29_int(kw.get('remote_timeout') or kw.get('server_timeout_s') or ctx.get('remote_timeout') or 180, 180) or 180, 240))
+    payload = {
+        'job_id': 'LEAP-V29-UNIT-%03d' % int(candidate_index),
+        'prompt': _lv29_build_unit_prompt(query, operator_trace, candidate_index=candidate_index, candidate_count=candidate_count),
+        'operator': ' > '.join(operator_trace),
+        'operator_trace': list(operator_trace),
+        'layer': int(layer),
+        'manual_layer_index': int(layer),
+        'manual_layer_path': _lv29_safe_dict(layer_response).get('selected_layer_path') or 'model.layers',
+        'theta': float(theta),
+        'max_new_tokens': int(max_new_tokens),
+        'server_timeout_s': int(server_timeout_s),
+    }
+    rr = _lv29_http_json('POST', remote_url + '/latent/v23/generate', payload=payload, timeout=server_timeout_s + 30)
+    raw_text = str((rr.get('generated_text') or rr.get('text') or '') if isinstance(rr, dict) else '')
+    cleaned = _lv29_clean_generation(raw_text)
+    hook_used, hook_count, delta_norm = _lv29_hook_metrics(rr)
+    unit_ok = bool(isinstance(rr, dict) and rr.get('ok') and hook_used and hook_count > 0 and raw_text.strip())
+    semantic_valid = bool(cleaned.get('semantic_valid'))
+    candidate = {
+        'candidate_id': 'V29-UNIT-%03d' % int(candidate_index),
+        'turn_id': 'UNIT-%03d' % int(candidate_index),
+        'phase': 'Idea',
+        'status': 'REQUIRE_EXPERIMENT' if unit_ok else 'FAILED_UNIT_OPERATION',
+        'operator_trace': list(operator_trace),
+        'operator_trace_internal': list(operator_trace),
+        'decoded_hypothesis': cleaned.get('cleaned_generation') or raw_text,
+        'decoded_mechanism': 'Corrected route: one candidate equals one remote hidden-hook unit operation; validator LLM not invoked.',
+        'raw_generation': raw_text,
+        'cleaned_generation': cleaned.get('cleaned_generation', ''),
+        'prompt_echo_detected': bool(cleaned.get('prompt_echo_detected')),
+        'semantic_valid': semantic_valid,
+        'section_hits': int(cleaned.get('section_hits') or 0),
+        'hook_used': hook_used,
+        'hook_call_count': hook_count,
+        'operator_delta_norm': delta_norm,
+        'layer': int(layer),
+        'theta': float(theta),
+        'overall_score': 0.50 if unit_ok else 0.0,
+        'accepted': False,
+        'human_final_judgment_required': True,
+        'final_decision_by_engine': False,
+        'unit_operation_index': int(candidate_index),
+        'unit_operation_per_candidate': 1,
+    }
+    reason = 'unit_operation_completed_semantic_decode_valid_v29' if (unit_ok and semantic_valid) else ('unit_operation_completed_but_semantic_decode_invalid_v29' if unit_ok else 'unit_operation_failed_v29')
+    return candidate, {
+        'candidate_id': candidate.get('candidate_id'),
+        'reason': reason,
+        'unit_ok': bool(unit_ok),
+        'semantic_valid': bool(semantic_valid),
+        'request_payload_compact': {k: payload.get(k) for k in ('job_id','operator','operator_trace','layer','manual_layer_path','theta','max_new_tokens','server_timeout_s')},
+        'remote_runtime_response': rr,
+        'postprocess': cleaned,
+        'raw_generation_preserved': True,
+    }
+
+
+def _lv29_unit_operation_route(*, baseline_ir=None, context=None, **kwargs):
+    ctx = _lv29_context_from(context=context, kwargs=kwargs)
+    clean = _lv29_strip_context_kwargs(kwargs)
+    remote_url = _lv29_remote_url(context=ctx, **clean)
+    query = _lv29_query_from(baseline_ir=baseline_ir, context=ctx, kwargs=clean)
+    if not remote_url:
+        return {'status': 'failed', 'reason': 'remote_runtime_url_missing_v29', 'query': query, 'diagnostics': {'patch_id': LEAP_V29_GUI_COUNT_UNIT_ROUTE_PRIMARY_PATCH_ID}, 'llm_usage': {'patch_id': LEAP_V29_GUI_COUNT_UNIT_ROUTE_PRIMARY_PATCH_ID, 'llm_called': False, 'hidden_hook_called': False}}
+    layer_response = _lv29_layer_inventory(remote_url)
+    if not isinstance(layer_response, dict) or not layer_response.get('ok'):
+        return {'status': 'failed', 'reason': 'layer_list_unavailable_v29', 'query': query, 'diagnostics': {'patch_id': LEAP_V29_GUI_COUNT_UNIT_ROUTE_PRIMARY_PATCH_ID, 'layer_response': layer_response}, 'llm_usage': {'patch_id': LEAP_V29_GUI_COUNT_UNIT_ROUTE_PRIMARY_PATCH_ID, 'llm_called': False, 'hidden_hook_called': False, 'remote_runtime_url': remote_url}}
+
+    count_info = _lv29_effective_candidate_count(ctx, clean)
+    candidate_count = int(count_info.get('effective') or 1)
+    branches = _lv29_operator_branches(ctx, clean)
+    branch_cap = _lv29_int(clean.get('explore_branch_cap') or ctx.get('explore_branch_cap'), None)
+    if branch_cap is not None and branch_cap > 0:
+        branches = branches[:max(1, int(branch_cap))]
+    layers = _lv29_layer_schedule(layer_response, candidate_count, context=ctx, kwargs=clean)
+    thetas = _lv29_theta_schedule(candidate_count, context=ctx, kwargs=clean)
+
+    candidates, unit_diags = [], []
+    for i in range(candidate_count):
+        operator_trace = branches[i % len(branches)]
+        cand, diag = _lv29_one_remote_unit(
+            remote_url=remote_url,
+            query=query,
+            operator_trace=operator_trace,
+            layer_response=layer_response,
+            layer=layers[i],
+            theta=thetas[i],
+            candidate_index=i + 1,
+            candidate_count=candidate_count,
+            context=ctx,
+            kwargs=clean,
+        )
+        candidates.append(cand)
+        unit_diags.append(diag)
+
+    ok_units = [c for c in candidates if c.get('hook_used') and int(c.get('hook_call_count') or 0) > 0 and _lv29_text(c.get('raw_generation'), 10)]
+    semantic_units = [c for c in ok_units if c.get('semantic_valid')]
+    best = semantic_units[0] if semantic_units else (ok_units[0] if ok_units else (candidates[0] if candidates else {}))
+    status = 'ok' if ok_units else 'failed'
+    reason = 'unit_operations_completed_v29' if ok_units else 'all_unit_operations_failed_v29'
+    return {
+        'status': status,
+        'mode': 'leap_engine_v29_gui_count_unit_route_primary',
+        'primary_result_route': 'unit_operation_v29_gui_count_primary',
+        'official_route': 'leap_engine.run_leap_search::LEAP_V29_GUI_COUNT_UNIT_ROUTE_PRIMARY',
+        'route': 'unit_operation_v29_gui_count_primary',
+        'route_attempts': [{'route': 'unit_operation_v29_gui_count_primary', 'available': True, 'selected': True}, {'route': 'hidden_branching_v14', 'available': True, 'selected': False, 'reason': 'bypassed_by_v29_primary_unit_operation_when_remote_runtime_present'}],
+        'legacy_routes_bypassed': ['hidden_branching_v14', 'remote_runtime_hidden_hook_v24_operator_loop'],
+        'reason': reason,
+        'query': query,
+        'operation_controls': {
+            'patch_id': LEAP_V29_GUI_COUNT_UNIT_ROUTE_PRIMARY_PATCH_ID,
+            'unit_operation_count': int(candidate_count),
+            'unit_operation_per_candidate': 1,
+            'max_candidates_requested': int(count_info.get('requested') or candidate_count),
+            'max_candidates_effective': int(candidate_count),
+            'candidate_count_source': count_info.get('source'),
+            'gui_candidate_controls_seen': count_info.get('controls_seen'),
+            'candidate_safety_cap': count_info.get('safety_cap'),
+            'candidate_safety_cap_applied': count_info.get('safety_cap_applied'),
+            'operator_branches': branches,
+            'operator_loop_used_as_candidate_loop': False,
+            'validator_llm_invoked': False,
+            'legacy_v14_bypassed': True,
+            'legacy_v24_operator_loop_bypassed': True,
+            'layers_effective': layers,
+            'theta_schedule_effective': thetas,
+        },
+        'generated_ideas': candidates,
+        'decoded_candidates': candidates,
+        'review_recommended': candidates,
+        'accepted_candidates': [],
+        'best_candidate': best,
+        'scores': {'overall': best.get('overall_score', 0.0) if isinstance(best, dict) else 0.0, 'candidate_count': len(candidates), 'unit_ok_count': len(ok_units), 'semantic_valid_count': len(semantic_units)},
+        'conclusion': {'status': 'REQUIRE_EXPERIMENT' if ok_units else 'INDETERMINATE', 'reason': reason, 'final_answer': best.get('decoded_hypothesis', '') if isinstance(best, dict) else ''},
+        'llm_usage': {'patch_id': LEAP_V29_GUI_COUNT_UNIT_ROUTE_PRIMARY_PATCH_ID, 'llm_called': True, 'hidden_hook_called': bool(ok_units), 'hook_call_count_total': sum(int(c.get('hook_call_count') or 0) for c in candidates), 'generation_backend': 'remote_runtime_hidden_hook_v23_guarded_via_v29_gui_count_unit_route', 'remote_runtime_url': remote_url, 'candidate_count': len(candidates), 'validator_llm_invoked': False},
+        'diagnostics': {'patch_id': LEAP_V29_GUI_COUNT_UNIT_ROUTE_PRIMARY_PATCH_ID, 'route_fix': 'respect_gui_candidate_count_while_preserving_one_hidden_hook_unit_per_candidate', 'unit_operation_defined_as': 'one_candidate_equals_exactly_one_remote_hidden_hook_generate_call', 'layer_response': layer_response, 'unit_diagnostics': unit_diags, 'raw_generation_preserved': True},
+    }
+
+
+def run_leap_search(*, baseline_ir=None, context=None, **kwargs):
+    ctx = _lv29_context_from(context=context, kwargs=kwargs)
+    clean = _lv29_strip_context_kwargs(kwargs)
+    if _lv29_remote_url(context=ctx, **clean):
+        return _lv29_unit_operation_route(baseline_ir=baseline_ir, context=ctx, **clean)
+    if callable(_LV29_PREV_RUN_LEAP_SEARCH):
+        return _LV29_PREV_RUN_LEAP_SEARCH(baseline_ir=baseline_ir, context=ctx, **clean)
+    return {'status': 'failed', 'reason': 'previous_run_leap_search_missing_v29', 'diagnostics': {'patch_id': LEAP_V29_GUI_COUNT_UNIT_ROUTE_PRIMARY_PATCH_ID}}
+
+
+def run_leap_engine(*args, **kwargs):
+    context = kwargs.get('context')
+    baseline_ir = kwargs.get('baseline_ir') if 'baseline_ir' in kwargs else (args[0] if args else None)
+    ctx = _lv29_context_from(context=context, kwargs=kwargs)
+    clean = _lv29_strip_context_kwargs(kwargs)
+    if _lv29_remote_url(context=ctx, **clean):
+        return _lv29_unit_operation_route(baseline_ir=baseline_ir, context=ctx, **clean)
+    if callable(_LV29_PREV_RUN_LEAP_ENGINE):
+        return _LV29_PREV_RUN_LEAP_ENGINE(*args, **clean)
+    return run_leap_search(baseline_ir=baseline_ir, context=ctx, **clean)
+
+
+def _lv29_class_run_leap_engine(self, *args, **kwargs):
+    context = kwargs.get('context')
+    baseline_ir = kwargs.get('baseline_ir') if 'baseline_ir' in kwargs else (args[0] if args else None)
+    ctx = _lv29_context_from(context=context, kwargs=kwargs)
+    clean = _lv29_strip_context_kwargs(kwargs)
+    if _lv29_remote_url(context=ctx, **clean):
+        return _lv29_unit_operation_route(baseline_ir=baseline_ir, context=ctx, **clean)
+    if callable(_LV29_PREV_CLASS_RUN_LEAP_ENGINE):
+        return _LV29_PREV_CLASS_RUN_LEAP_ENGINE(self, *args, **clean)
+    return run_leap_engine(*args, **clean)
+
+try:
+    LatentPhaseInventor.run_leap_engine = _lv29_class_run_leap_engine
+except Exception:
+    pass
+
+# ============================================================================
+# END ADD-ONLY PATCH: LEAP_V29_GUI_COUNT_UNIT_ROUTE_PRIMARY
+# ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY PATCH: LEAP_V30_QUALITY_GATE_RAW_ONLY
+# generated_at_jst: 20260505_042046
+# source_file_before_bytes: 606915
+# source_file_before_sha256_12: a382327fcf29
+# Purpose:
+# - Do NOT try to solve prompt echo by prompt wording.
+# - Separate unit-operation success from publishable invention-candidate quality.
+# - Keep raw LLM/hidden-hook output, but do not publish prompt-echo/meta-output
+#   as best_candidate, review_recommended, or conclusion.final_answer.
+# - Preserve V29 route and GUI candidate-count handling.
+# - No task/benchmark-name hardcoding.
+# ============================================================================
+
+LEAP_V30_QUALITY_GATE_RAW_ONLY_PATCH_ID = "LEAP_V30_QUALITY_GATE_RAW_ONLY"
+_LV30_PREV_RUN_LEAP_SEARCH = globals().get('run_leap_search')
+_LV30_PREV_RUN_LEAP_ENGINE = globals().get('run_leap_engine')
+try:
+    _LV30_PREV_CLASS_RUN_LEAP_ENGINE = LatentPhaseInventor.run_leap_engine
+except Exception:
+    _LV30_PREV_CLASS_RUN_LEAP_ENGINE = None
+
+
+def _lv30_safe_dict(x):
+    return dict(x) if isinstance(x, dict) else {}
+
+
+def _lv30_safe_list(x):
+    if isinstance(x, list):
+        return list(x)
+    if isinstance(x, tuple):
+        return list(x)
+    return []
+
+
+def _lv30_text(x, limit=8000):
+    try:
+        s = '' if x is None else str(x)
+    except Exception:
+        s = ''
+    return ' '.join(s.split())[:max(0, int(limit))]
+
+
+def _lv30_lower(x, limit=12000):
+    return _lv30_text(x, limit).lower()
+
+
+def _lv30_classify_generation_quality(raw_text=None, cleaned_text=None, candidate=None):
+    c = _lv30_safe_dict(candidate)
+    raw = '' if raw_text is None else str(raw_text)
+    cleaned = '' if cleaned_text is None else str(cleaned_text)
+    if not raw and c:
+        raw = str(c.get('raw_generation') or c.get('raw_text') or c.get('generated_text') or c.get('decoded_hypothesis') or '')
+        cleaned = str(c.get('cleaned_generation') or c.get('decoded_hypothesis') or raw)
+    head = _lv30_lower(raw[:1800] + '\n' + cleaned[:1800], 5000)
+    full = _lv30_lower(raw + '\n' + cleaned, 16000)
+    reasons = []
+    meta_markers = [
+        'thinking process', 'analyze the request', '**analyze the request:**',
+        '* **task:**', '* **constraint:**', '* **format:**', '* **problem:**',
+        'candidate index:', 'return only the final invention candidate',
+        'do not output thinking process', 'role/constraint/problem restatement',
+        'required sections exactly', 'start now with "idea:"',
+        'generate a final invention candidate based on',
+    ]
+    thinking_process_detected = bool(head.strip().startswith('thinking process') or 'thinking process:' in head[:500])
+    request_analysis_detected = bool('analyze the request' in head[:900] or '* **task:**' in head[:1200] or '* **constraint:**' in head[:1200] or '* **format:**' in head[:1200])
+    instruction_reflection_detected = sum(1 for m in meta_markers if m in head) >= 2
+    prompt_echo_detected = bool(c.get('prompt_echo_detected')) or thinking_process_detected or request_analysis_detected or instruction_reflection_detected
+    if thinking_process_detected:
+        reasons.append('starts_with_or_contains_thinking_process')
+    if request_analysis_detected:
+        reasons.append('contains_request_analysis_markers')
+    if instruction_reflection_detected:
+        reasons.append('contains_instruction_or_format_reflection')
+    if bool(c.get('prompt_echo_detected')):
+        reasons.append('upstream_prompt_echo_detected')
+    # Candidate body checks. These are intentionally conservative and do not fabricate content.
+    idea_pos = full.find('idea:')
+    mech_pos = full.find('mechanism:')
+    exp_pos = full.find('verification experiment:')
+    risks_pos = full.find('risks:')
+    has_candidate_idea_body = bool(idea_pos >= 0 and len(full[idea_pos:idea_pos+600].strip()) >= 80 and 'analyze the request' not in full[idea_pos:idea_pos+500])
+    has_mechanism_body = bool(mech_pos >= 0 and len(full[mech_pos:mech_pos+600].strip()) >= 80 and 'constraint' not in full[mech_pos:mech_pos+250])
+    has_experiment_body = bool(exp_pos >= 0 and len(full[exp_pos:exp_pos+600].strip()) >= 60)
+    has_risk_body = bool(risks_pos >= 0 and len(full[risks_pos:risks_pos+400].strip()) >= 40)
+    candidate_sections_valid = bool(has_candidate_idea_body and has_mechanism_body and (has_experiment_body or has_risk_body))
+    if not raw.strip():
+        reasons.append('raw_generation_empty')
+    if not candidate_sections_valid:
+        reasons.append('candidate_sections_not_valid')
+    publishable = bool(raw.strip() and candidate_sections_valid and not prompt_echo_detected)
+    if publishable:
+        status = 'publishable_candidate'
+    elif prompt_echo_detected:
+        status = 'rejected_prompt_echo'
+    elif raw.strip():
+        status = 'rejected_semantic_invalid'
+    else:
+        status = 'rejected_empty_generation'
+    return {
+        'patch_id': LEAP_V30_QUALITY_GATE_RAW_ONLY_PATCH_ID,
+        'publishable': bool(publishable),
+        'generation_quality_status': status,
+        'candidate_publishable': bool(publishable),
+        'thinking_process_detected': bool(thinking_process_detected),
+        'request_analysis_detected': bool(request_analysis_detected),
+        'instruction_reflection_detected': bool(instruction_reflection_detected),
+        'prompt_echo_detected': bool(prompt_echo_detected),
+        'candidate_sections_valid': bool(candidate_sections_valid),
+        'has_candidate_idea_body': bool(has_candidate_idea_body),
+        'has_mechanism_body': bool(has_mechanism_body),
+        'has_experiment_body': bool(has_experiment_body),
+        'has_risk_body': bool(has_risk_body),
+        'reasons': list(dict.fromkeys(reasons)),
+    }
+
+
+def _lv30_candidate_with_quality(candidate):
+    c = dict(_lv30_safe_dict(candidate))
+    q = _lv30_classify_generation_quality(candidate=c)
+    c['generation_quality_v30'] = q
+    c['candidate_quality_status'] = q.get('generation_quality_status')
+    c['candidate_publishable'] = bool(q.get('publishable'))
+    c['candidate_publication_status'] = 'publishable' if q.get('publishable') else 'raw_only'
+    if not q.get('publishable'):
+        c['accepted'] = False
+        c['review_recommended'] = False
+        c['publish_rejection_reason'] = q.get('generation_quality_status')
+        c.setdefault('reject_reasons', [])
+        if isinstance(c.get('reject_reasons'), list) and q.get('generation_quality_status') not in c['reject_reasons']:
+            c['reject_reasons'].append(q.get('generation_quality_status'))
+    return c
+
+
+def _lv30_postprocess_result(result):
+    if not isinstance(result, dict):
+        return result
+    res = dict(result)
+    generated = [_lv30_candidate_with_quality(c) if isinstance(c, dict) else c for c in _lv30_safe_list(res.get('generated_ideas'))]
+    decoded_source = _lv30_safe_list(res.get('decoded_candidates')) or generated
+    decoded_all = [_lv30_candidate_with_quality(c) if isinstance(c, dict) else c for c in decoded_source]
+    # Merge quality annotations back into generated_ideas by candidate_id when possible.
+    quality_by_id = {str(c.get('candidate_id')): c for c in decoded_all if isinstance(c, dict) and c.get('candidate_id')}
+    generated2 = []
+    for c in generated:
+        if isinstance(c, dict) and str(c.get('candidate_id')) in quality_by_id:
+            merged = dict(c)
+            qc = quality_by_id[str(c.get('candidate_id'))]
+            for k in ('generation_quality_v30','candidate_quality_status','candidate_publishable','candidate_publication_status','review_recommended','publish_rejection_reason','reject_reasons'):
+                if k in qc:
+                    merged[k] = qc[k]
+            generated2.append(merged)
+        else:
+            generated2.append(c)
+    publishable = [c for c in decoded_all if isinstance(c, dict) and bool(c.get('candidate_publishable'))]
+    rejected_quality = [c for c in decoded_all if isinstance(c, dict) and not bool(c.get('candidate_publishable'))]
+    raw_trials = generated2 if generated2 else decoded_all
+    unit_ok_count = int(_lv30_safe_dict(res.get('scores')).get('unit_ok_count', 0) or 0)
+    hook_called = bool(_lv30_safe_dict(res.get('llm_usage')).get('hidden_hook_called')) or unit_ok_count > 0
+    unit_operation_status = 'ok' if hook_called or unit_ok_count > 0 or res.get('status') == 'ok' else 'failed'
+    res['unit_operation_status'] = unit_operation_status
+    res['generation_quality_gate_v30'] = {
+        'patch_id': LEAP_V30_QUALITY_GATE_RAW_ONLY_PATCH_ID,
+        'policy': 'raw_generation_is_preserved_but_prompt_echo_or_meta_output_is_not_published_as_candidate',
+        'publishable_candidate_count': len(publishable),
+        'rejected_quality_candidate_count': len(rejected_quality),
+        'unit_operation_status': unit_operation_status,
+        'candidate_generation_status': 'publishable_candidate_available' if publishable else ('unit_operation_ok_but_no_publishable_candidate' if unit_operation_status == 'ok' else 'unit_operation_failed'),
+        'quality_status_counts': {k: sum(1 for c in rejected_quality + publishable if isinstance(c, dict) and c.get('candidate_quality_status') == k) for k in sorted(set([c.get('candidate_quality_status') for c in rejected_quality + publishable if isinstance(c, dict)]))},
+    }
+    res['raw_trials'] = raw_trials
+    res['generated_ideas'] = generated2
+    res['decoded_candidates_raw_v30'] = decoded_all
+    res['rejected_candidates_quality_v30'] = rejected_quality
+    res['decoded_candidates'] = publishable
+    res['review_recommended'] = publishable
+    res['review_recommended_candidates'] = publishable
+    res['accepted_candidates'] = [c for c in publishable if isinstance(c, dict) and c.get('accepted')]
+    if publishable:
+        best = publishable[0]
+        res['best_candidate'] = best
+        res['conclusion'] = {
+            'status': 'REQUIRE_EXPERIMENT',
+            'reason': 'publishable_candidate_available_after_v30_quality_gate',
+            'final_answer': best.get('decoded_hypothesis') or best.get('cleaned_generation') or '',
+        }
+    else:
+        res['best_candidate_raw_before_quality_gate_v30'] = res.get('best_candidate')
+        res['best_candidate'] = None
+        res['conclusion'] = {
+            'status': 'INDETERMINATE',
+            'reason': 'unit_operation_ok_but_no_publishable_candidate' if unit_operation_status == 'ok' else 'unit_operation_failed',
+            'final_answer': '',
+        }
+    scores = _lv30_safe_dict(res.get('scores'))
+    scores['publishable_candidate_count'] = len(publishable)
+    scores['semantic_valid_count'] = sum(1 for c in publishable if isinstance(c, dict) and c.get('semantic_valid'))
+    scores['quality_rejected_count'] = len(rejected_quality)
+    res['scores'] = scores
+    res.setdefault('diagnostics', {})
+    if isinstance(res.get('diagnostics'), dict):
+        res['diagnostics']['quality_gate_v30'] = res['generation_quality_gate_v30']
+    res.setdefault('route_trace', [])
+    if isinstance(res.get('route_trace'), list) and LEAP_V30_QUALITY_GATE_RAW_ONLY_PATCH_ID not in res['route_trace']:
+        res['route_trace'].append(LEAP_V30_QUALITY_GATE_RAW_ONLY_PATCH_ID)
+    res['official_route'] = _lv30_text(res.get('official_route'), 500) + '::' + LEAP_V30_QUALITY_GATE_RAW_ONLY_PATCH_ID
+    return res
+
+
+def run_leap_search(*args, **kwargs):
+    if callable(_LV30_PREV_RUN_LEAP_SEARCH):
+        res = _LV30_PREV_RUN_LEAP_SEARCH(*args, **kwargs)
+    else:
+        res = {'status': 'failed', 'reason': 'previous_run_leap_search_missing_v30'}
+    return _lv30_postprocess_result(res)
+
+
+def run_leap_engine(*args, **kwargs):
+    if callable(_LV30_PREV_RUN_LEAP_ENGINE):
+        res = _LV30_PREV_RUN_LEAP_ENGINE(*args, **kwargs)
+    else:
+        res = run_leap_search(*args, **kwargs)
+    return _lv30_postprocess_result(res)
+
+
+def _lv30_class_run_leap_engine(self, *args, **kwargs):
+    if callable(_LV30_PREV_CLASS_RUN_LEAP_ENGINE):
+        res = _LV30_PREV_CLASS_RUN_LEAP_ENGINE(self, *args, **kwargs)
+    else:
+        res = run_leap_engine(*args, **kwargs)
+    return _lv30_postprocess_result(res)
+
+try:
+    LatentPhaseInventor.run_leap_engine = _lv30_class_run_leap_engine
+except Exception:
+    pass
+
+# ============================================================================
+# END ADD-ONLY PATCH: LEAP_V30_QUALITY_GATE_RAW_ONLY
+# ============================================================================

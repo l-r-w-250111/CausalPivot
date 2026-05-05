@@ -12281,7 +12281,32 @@ def _leapv8_render_main_ui():
         with e: disturbance=st.slider('乱れの大きさ / rotation magnitude',0.0,0.50,float(st.session_state.get('leapv8_disturbance',0.12)),0.01,key='leapv8_disturbance')
         theta_text=st.text_input('theta schedule（カンマ区切り）', value=str(st.session_state.get('leapv8_theta','0.03,0.07,0.12,0.18')), key='leapv8_theta')
         feedback=st.text_area('プログラム修正用フィードバック（任意）', value=str(st.session_state.get('leapv8_feedback','')), height=70, key='leapv8_feedback')
-        cfg={'prompt':prompt,'observables':_leapv8_csv(observables),'controllables':_leapv8_csv(controllables),'constraints':[x.strip() for x in str(constraints_text or '').splitlines() if x.strip()],'operators':operators,'operator_sequence':_leapv8_op_sequence(seq_text),'seed':int(seed),'max_turns':int(max_turns),'max_candidates':int(max_candidates),'operated_layer_count':int(layer_count),'operated_layer_meaning':layer_meaning,'disturbance_magnitude':float(disturbance),'theta_schedule':_leapv8_float_list(theta_text,[float(disturbance)]),'feedback':feedback}
+
+        # --- Validator/Repair tuning (ADD-ONLY: LEAP_V24_VALIDATOR_GUI_TUNABLES_20260504_135912) ---
+        st.caption('検出(Validator)はLLM、修復(Repair)はルールベース。しきい値や再生成回数はテストで最適化する前提のためGUIで調整可能にしています。')
+        v1,v2,v3=st.columns(3)
+        with v1:
+            validator_q_min=st.slider('validator q_min（品質しきい値）', 0.0, 1.0, float(st.session_state.get('leapv8_validator_q_min', 0.35)), 0.01, key='leapv8_validator_q_min')
+        with v2:
+            validator_regen=st.slider('validator regen（再生成回数/候補）', 0, 6, int(st.session_state.get('leapv8_validator_regen', 2)), 1, key='leapv8_validator_regen')
+        with v3:
+            validator_max_tokens=st.slider('validator max_tokens', 64, 1024, int(st.session_state.get('leapv8_validator_max_tokens', 256)), 16, key='leapv8_validator_max_tokens')
+
+        # --- Exploration width tuning (ADD-ONLY: LEAP_V25_EXPLORATION_WIDTH_GUI_STAGED) ---
+        st.caption('探索幅(2)のチューニング：段階拡張(staged)でまず狭く探索し、必要に応じて候補数・分岐を増やします。')
+        m1, m2 = st.columns(2)
+        with m1:
+            explore_mode = st.selectbox('探索幅モード', ['fixed', 'staged'], index=1 if str(st.session_state.get('leapv8_explore_mode', 'staged')) == 'staged' else 0, key='leapv8_explore_mode')
+        with m2:
+            explore_stage_max = st.slider('段階拡張の最大ステージ', 0, 4, int(st.session_state.get('leapv8_explore_stage_max', 2)), 1, key='leapv8_explore_stage_max')
+        x1, x2, x3 = st.columns(3)
+        with x1:
+            explore_cap = st.slider('探索候補数の上限 cap（実効値）', 1, 24, int(st.session_state.get('leapv8_explore_cap', 8)), 1, key='leapv8_explore_cap')
+        with x2:
+            explore_branch_cap = st.slider('分岐数の上限 cap（operator sequence）', 1, 8, int(st.session_state.get('leapv8_explore_branch_cap', 2)), 1, key='leapv8_explore_branch_cap')
+        with x3:
+            explore_shuffle = st.checkbox('ステージ拡張時に演算子順をシャッフル生成', value=bool(st.session_state.get('leapv8_explore_shuffle', True)), key='leapv8_explore_shuffle')
+        cfg={'prompt':prompt,'observables':_leapv8_csv(observables),'controllables':_leapv8_csv(controllables),'constraints':[x.strip() for x in str(constraints_text or '').splitlines() if x.strip()],'operators':operators,'operator_sequence':_leapv8_op_sequence(seq_text),'seed':int(seed),'max_turns':int(max_turns),'max_candidates':int(max_candidates),'operated_layer_count':int(layer_count),'operated_layer_meaning':layer_meaning,'disturbance_magnitude':float(disturbance),'theta_schedule':_leapv8_float_list(theta_text,[float(disturbance)]),'feedback':feedback, 'validator_q_min': float(validator_q_min), 'validator_regen': int(validator_regen), 'validator_max_tokens': int(validator_max_tokens), 'explore_mode': str(explore_mode), 'explore_stage_max': int(explore_stage_max), 'explore_cap': int(explore_cap), 'explore_branch_cap': int(explore_branch_cap), 'explore_shuffle': bool(explore_shuffle)}
         with st.expander('設定プレビュー', expanded=False): st.json({k:v for k,v in cfg.items() if k!='prompt'})
         if st.button('Run Leap Engine 発明テスト', type='primary', key='leapv8_run_button'):
             if not str(prompt or '').strip(): st.warning('課題が空です。')
@@ -13419,3 +13444,471 @@ except Exception:
 ## ============================================================================
 ## END ADD-ONLY PATCH APP-LATEST-ONLY-REMOTE-RUNTIME-V15G-20260503
 ## ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY PATCH APP V16: build Leap IdeaBackend from existing loaded model/runtime
+# generated_at: 20260504_000818 JST
+# source_file_before_bytes: 667495
+# source_file_before_sha256_8: 27d4e342
+# ============================================================================
+_APP_LEAP_IDEA_BACKEND_V16_PATCH_ID = 'APP-BUILD-LEAP-IDEA-BACKEND-V16-20260503'
+
+def _app_build_leap_idea_backend_v16(model=None, tokenizer=None, runtime_generate_fn=None, device=None):
+    try:
+        from leap_engine import LocalTransformersIdeaBackend, RemoteRuntimeIdeaBackend
+    except Exception:
+        return None
+    try:
+        if model is None or tokenizer is None:
+            osys = st.session_state.get('causalos_engine') if 'st' in globals() else None
+            if osys is not None and osys != 'remote_runtime':
+                model = model or getattr(osys, 'model', None)
+                tokenizer = tokenizer or getattr(osys, 'tokenizer', None)
+                device = device or getattr(osys, 'model_device', None) or getattr(osys, 'device', None)
+        if model is not None and tokenizer is not None:
+            try: source = str(getattr(st.session_state.get('causalos_engine'), 'model_id', '') or getattr(model, 'name_or_path', '') or '')
+            except Exception: source = str(getattr(model, 'name_or_path', '') or '')
+            return LocalTransformersIdeaBackend(model=model, tokenizer=tokenizer, device=device, model_source=source)
+    except Exception: pass
+    try:
+        fn = runtime_generate_fn
+        if fn is None and '_autonomous_growth_backend_json' in globals(): fn = _autonomous_growth_backend_json
+        if callable(fn): return RemoteRuntimeIdeaBackend(fn, backend_label='remote_runtime')
+    except Exception: pass
+    return None
+
+try: _APP_V16_PREV_ENSURE_EXECUTOR = _ensure_autonomous_growth_executor
+except Exception: _APP_V16_PREV_ENSURE_EXECUTOR = None
+
+def _app_v16_ensure_autonomous_growth_executor_wrapper():
+    ex = _APP_V16_PREV_ENSURE_EXECUTOR() if callable(_APP_V16_PREV_ENSURE_EXECUTOR) else None
+    try:
+        if ex is not None and getattr(ex, 'idea_backend', None) is None:
+            backend = _app_build_leap_idea_backend_v16(runtime_generate_fn=getattr(ex, 'llm_json_fn', None))
+            if backend is not None:
+                ex.idea_backend = backend
+                ex.leap_idea_backend_v16_patch_id = _APP_LEAP_IDEA_BACKEND_V16_PATCH_ID
+    except Exception: pass
+    return ex
+try:
+    if callable(_APP_V16_PREV_ENSURE_EXECUTOR): _ensure_autonomous_growth_executor = _app_v16_ensure_autonomous_growth_executor_wrapper
+except Exception: pass
+# ============================================================================
+# END ADD-ONLY PATCH APP V16
+# ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY PATCH: LEAP_REMOTE_RUNTIME_FORCE_WIRE_V19_20260504_112101
+# Purpose:
+#   Force-inject a real Remote Runtime text/latent generation callable into the
+#   Leap Engine cfg/context. Debug JSON showed remote_runtime_available=true but
+#   no runtime_generate_fn in context, so leap_engine fell back to backend=none.
+# ============================================================================
+LEAP_REMOTE_RUNTIME_FORCE_WIRE_V19_PATCH_ID = "LEAP_REMOTE_RUNTIME_FORCE_WIRE_V19_20260504_112101"
+
+try:
+    _APP_LRFV19_PREV_INJECT_RUNTIME_CFG = _appv15g_inject_runtime_cfg
+except Exception:
+    _APP_LRFV19_PREV_INJECT_RUNTIME_CFG = None
+try:
+    _APP_LRFV19_PREV_LEAPV8_RUN = _leapv8_run
+except Exception:
+    _APP_LRFV19_PREV_LEAPV8_RUN = None
+
+def _app_lrfv19_text(x, limit=4000):
+    try:
+        s = '' if x is None else str(x)
+    except Exception:
+        s = repr(x)
+    return s[:max(0, int(limit))]
+
+def _app_lrfv19_runtime_url():
+    try:
+        return str(_transformers_runtime_url()).rstrip('/')
+    except Exception:
+        try:
+            return str(st.session_state.get('transformers_runtime_url') or globals().get('TRANSFORMERS_RUNTIME_URL_DEFAULT') or 'http://transformers-runtime:8011').rstrip('/')
+        except Exception:
+            return 'http://transformers-runtime:8011'
+
+def _app_lrfv19_model_path():
+    for k in ('transformers_runtime_model_path', 'runtime_model_path', 'model_path', 'selected_model_path', 'local_model_path'):
+        try:
+            v = st.session_state.get(k)
+            if v:
+                return str(v)
+        except Exception:
+            pass
+    try:
+        return str(globals().get('DEFAULT_MODEL_PATH') or globals().get('TRANSFORMERS_RUNTIME_MODEL_PATH') or '')
+    except Exception:
+        return ''
+
+def _app_lrfv19_quantization():
+    for k in ('transformers_runtime_quantization', 'runtime_quantization', 'quantization'):
+        try:
+            v = st.session_state.get(k)
+            if v:
+                return str(v)
+        except Exception:
+            pass
+    return '4bit'
+
+def _app_lrfv19_runtime_available():
+    try:
+        if callable(globals().get('_appv15g_runtime_available')) and _appv15g_runtime_available():
+            return True
+    except Exception:
+        pass
+    try:
+        r = requests.get(_app_lrfv19_runtime_url() + '/health', timeout=5)
+        return bool(getattr(r, 'status_code', 0) < 500)
+    except Exception:
+        return False
+
+def _app_lrfv19_permissive_schema():
+    return {
+        'type': 'object',
+        'additionalProperties': True,
+        'properties': {
+            'idea': {'type': 'string'},
+            'hypothesis': {'type': 'string'},
+            'mechanism': {'type': 'string'},
+            'required_experiments': {'type': 'array'},
+            'predicted_edges': {'type': 'array'},
+            'uncertainty': {'type': 'string'},
+            's_matrix_updates_proposed': {'type': 'array'},
+        },
+    }
+
+def _app_lrfv19_remote_runtime_generate(prompt_text, **kwargs):
+    import time as _time
+    t0 = _time.time()
+    base = _app_lrfv19_runtime_url()
+    max_new_tokens = int(kwargs.get('max_new_tokens') or kwargs.get('max_tokens') or st.session_state.get('max_new_tokens_loop', 512) or 512)
+    operator = kwargs.get('operator') or kwargs.get('operator_name') or 'generic'
+    try:
+        layer = int(kwargs.get('manual_layer_index', kwargs.get('layer', 0)) or 0)
+    except Exception:
+        layer = 0
+    try:
+        theta = float(kwargs.get('theta', 0.03) or 0.03)
+    except Exception:
+        theta = 0.03
+    common = {
+        'model_path': _app_lrfv19_model_path() or None,
+        'quantization': _app_lrfv19_quantization(),
+    }
+    diag = {
+        'patch_id': LEAP_REMOTE_RUNTIME_FORCE_WIRE_V19_PATCH_ID,
+        'remote_runtime_url': base,
+        'called': False,
+        'endpoint_attempts': [],
+        'operator': str(operator),
+        'layer': layer,
+        'theta': theta,
+    }
+    endpoints = [
+        ('/latent/generate', {
+            **common,
+            'prompt': str(prompt_text or ''),
+            'manual_layer_index': layer,
+            'operator': str(operator),
+            'operator_trace': kwargs.get('operator_trace') or [str(operator)],
+            'theta': theta,
+            'max_new_tokens': max_new_tokens,
+            'return_hidden_diagnostics': True,
+        }),
+        ('/generate', {
+            **common,
+            'prompt': str(prompt_text or ''),
+            'max_new_tokens': max_new_tokens,
+        }),
+        ('/structured-json/generate', {
+            **common,
+            'prompt': str(prompt_text or ''),
+            'schema': kwargs.get('schema_obj') or _app_lrfv19_permissive_schema(),
+            'max_new_tokens': max_new_tokens,
+        }),
+    ]
+    last_error = ''
+    for ep, payload in endpoints:
+        attempt = {'endpoint': ep}
+        try:
+            r = requests.post(base + ep, json=payload, timeout=600)
+            diag['called'] = True
+            attempt['http_status'] = int(getattr(r, 'status_code', 0) or 0)
+            if attempt['http_status'] >= 400:
+                attempt['error'] = 'http_' + str(attempt['http_status'])
+                diag['endpoint_attempts'].append(attempt)
+                last_error = attempt['error']
+                continue
+            data = r.json()
+            if not isinstance(data, dict):
+                data = {'ok': False, 'text': _app_lrfv19_text(data), 'reason': 'non_dict_response'}
+            text = data.get('generated_text') or data.get('text') or data.get('response') or data.get('output') or data.get('content')
+            if not text and isinstance(data.get('parsed'), dict):
+                try:
+                    text = json.dumps(data.get('parsed'), ensure_ascii=False)
+                except Exception:
+                    text = _app_lrfv19_text(data.get('parsed'))
+            attempt['ok'] = bool(data.get('ok', True)) and bool(str(text or '').strip())
+            diag['endpoint_attempts'].append(attempt)
+            data.setdefault('generated_text', text or '')
+            data.setdefault('text', text or '')
+            data.setdefault('generation_backend', 'remote_runtime' + ep.replace('/', '_'))
+            data['app_remote_runtime_force_wire_v19'] = diag
+            data['elapsed_ms_app_v19'] = int((_time.time() - t0) * 1000)
+            if attempt['ok']:
+                return data
+            last_error = data.get('reason') or data.get('error') or 'empty_text'
+        except Exception as e:
+            attempt['error'] = repr(e)
+            diag['endpoint_attempts'].append(attempt)
+            last_error = repr(e)
+    return {
+        'ok': False,
+        'generated_text': '',
+        'text': '',
+        'reason': 'all_remote_runtime_generation_endpoints_failed_v19:' + _app_lrfv19_text(last_error, 300),
+        'generation_backend': 'remote_runtime_failed_v19',
+        'app_remote_runtime_force_wire_v19': diag,
+        'elapsed_ms_app_v19': int((_time.time() - t0) * 1000),
+    }
+
+def _app_lrfv19_inject_callable(cfg):
+    cfg = cfg if isinstance(cfg, dict) else {}
+    ctx = cfg.get('context') if isinstance(cfg.get('context'), dict) else {}
+    runtime_ok = _app_lrfv19_runtime_available()
+    diag = ctx.get('remote_runtime_force_wire_v19') if isinstance(ctx.get('remote_runtime_force_wire_v19'), dict) else {}
+    diag.update({
+        'patch_id': LEAP_REMOTE_RUNTIME_FORCE_WIRE_V19_PATCH_ID,
+        'remote_runtime_available': bool(runtime_ok),
+        'remote_runtime_url': _app_lrfv19_runtime_url(),
+        'runtime_generate_fn_injected': bool(runtime_ok),
+        'endpoint_priority': ['/latent/generate', '/generate', '/structured-json/generate'],
+    })
+    if runtime_ok:
+        for target in (ctx, cfg):
+            target['runtime_generate_fn'] = _app_lrfv19_remote_runtime_generate
+            target['remote_runtime_generate_fn'] = _app_lrfv19_remote_runtime_generate
+            target['remote_latent_generate_fn'] = _app_lrfv19_remote_runtime_generate
+            target['llm_generate_fn'] = _app_lrfv19_remote_runtime_generate
+            # Keep JSON aliases because older app patches already expect these names.
+            target.setdefault('llm_json_fn', _app_lrfv19_remote_runtime_generate)
+            target.setdefault('runtime_llm_json_fn', _app_lrfv19_remote_runtime_generate)
+            target.setdefault('remote_runtime_generate_json_fn', _app_lrfv19_remote_runtime_generate)
+        ctx['generation_backend'] = 'remote_runtime_callable_v19'
+        cfg['generation_backend'] = 'remote_runtime_callable_v19'
+    ctx['remote_runtime_force_wire_v19'] = diag
+    cfg['remote_runtime_force_wire_v19'] = diag
+    cfg['context'] = ctx
+    return cfg, diag
+
+def _appv15g_inject_runtime_cfg(cfg):
+    if callable(_APP_LRFV19_PREV_INJECT_RUNTIME_CFG):
+        try:
+            cfg, diag0 = _APP_LRFV19_PREV_INJECT_RUNTIME_CFG(cfg)
+        except Exception:
+            cfg, diag0 = (cfg if isinstance(cfg, dict) else {}, {'previous_inject_error': 'v15g_inject_failed'})
+    else:
+        cfg, diag0 = (cfg if isinstance(cfg, dict) else {}, {})
+    cfg, diag = _app_lrfv19_inject_callable(cfg)
+    if isinstance(diag0, dict):
+        diag['previous_inject_diag'] = {k: _app_lrfv19_text(v, 300) for k, v in diag0.items() if k not in ('runtime_generate_fn','remote_runtime_generate_fn')}
+    return cfg, diag
+
+def _leapv8_run(cfg):
+    cfg, diag = _app_lrfv19_inject_callable(cfg if isinstance(cfg, dict) else {})
+    if callable(_APP_LRFV19_PREV_LEAPV8_RUN):
+        result = _APP_LRFV19_PREV_LEAPV8_RUN(cfg)
+    else:
+        result = {'status': 'failed', 'reason': 'previous_leapv8_run_missing_v19'}
+    if isinstance(result, dict):
+        result['app_remote_runtime_force_wire_v19'] = diag
+        if result.get('reason') in ('model_or_tokenizer_missing_before_run_leap_engine', 'model_or_tokenizer_missing_before_leap_search') and diag.get('runtime_generate_fn_injected'):
+            result['reason_v19_note'] = 'Remote runtime callable was injected; if branch trials still show backend=none, leap_engine.py V19 is not deployed/loaded.'
+    return result
+
+# ============================================================================
+# END ADD-ONLY PATCH: LEAP_REMOTE_RUNTIME_FORCE_WIRE_V19_20260504_112101
+# ============================================================================
+
+# ============================================================================
+# ADD-ONLY PATCH APP-REMOTE-HIDDEN-V20B (2026-05-04 JST)
+# GUI adapter: Remote Runtime hidden-hook endpoint first. No normal chat deletion.
+# ============================================================================
+APP_REMOTE_HIDDEN_V20B = "APP-REMOTE-HIDDEN-V20B-20260504"
+try:
+    import os as _appv20b_os, json as _appv20b_json, urllib.request as _appv20b_ureq
+except Exception: pass
+
+def _appv20b_t(x,n=4000):
+    try: s='' if x is None else str(x)
+    except Exception: s=''
+    return ' '.join(s.split())[:n]
+def _appv20b_url(url=None): return _appv20b_t(url or globals().get('REMOTE_RUNTIME_URL','') or _appv20b_os.getenv('TRANSFORMERS_RUNTIME_URL') or _appv20b_os.getenv('REMOTE_RUNTIME_URL') or '',500).rstrip('/')
+def _appv20b_post(url,path,payload,timeout=240):
+    req=_appv20b_ureq.Request(url.rstrip('/')+path, data=_appv20b_json.dumps(payload,ensure_ascii=False).encode('utf-8'), headers={'Content-Type':'application/json'}, method='POST')
+    with _appv20b_ureq.urlopen(req, timeout=timeout) as r: return _appv20b_json.loads(r.read().decode('utf-8','replace'))
+
+def _app_lrfv19_remote_runtime_generate(prompt, *args, **kwargs):
+    url=_appv20b_url(kwargs.get('runtime_url') or kwargs.get('remote_runtime_url'))
+    if not url: return {'ok':False,'error':'remote_runtime_url_empty','diagnostics':{'patch_id':APP_REMOTE_HIDDEN_V20B}}
+    payload={'prompt':str(prompt or ''),'max_new_tokens':int(kwargs.get('max_new_tokens',kwargs.get('max_tokens',220)) or 220),'temperature':float(kwargs.get('temperature',0.7) or 0.7),'layer_index':int(kwargs.get('layer_index',0) or 0),'theta':float(kwargs.get('theta',0.75) or 0.75),'operator':kwargs.get('operator','phase_shift'),'seed':int(kwargs.get('seed',0) or 0)}
+    errors=[]
+    for path in ('/latent/v20b/generate','/latent/v20/generate','/generate'):
+        try:
+            out=_appv20b_post(url,path,payload)
+            text=_appv20b_t(out.get('generated_text') or out.get('text') or out.get('response') or '',20000) if isinstance(out,dict) else ''
+            parsed=None
+            if text:
+                try:
+                    a,b=text.find('{'),text.rfind('}')
+                    if a>=0 and b>a: parsed=_appv20b_json.loads(text[a:b+1])
+                except Exception: parsed=None
+            result=parsed if isinstance(parsed,dict) else {'generated_text':text,'raw_remote_result':out}
+            rdiag=out.get('diagnostics') if isinstance(out,dict) and isinstance(out.get('diagnostics'),dict) else {}
+            diag=result.get('diagnostics') if isinstance(result.get('diagnostics'),dict) else {}
+            diag.update({'patch_id':APP_REMOTE_HIDDEN_V20B,'remote_path_used':path,'remote_runtime_url':url,'llm_used':bool((isinstance(out,dict) and out.get('ok',True)) or text),'hidden_intervention_used':bool(isinstance(out,dict) and (out.get('hidden_intervention_used') or out.get('hook_called') or rdiag.get('hidden_intervention_used') or rdiag.get('hook_called'))),'generation_backend':(out.get('generation_backend') if isinstance(out,dict) else '') or ('remote_runtime_hidden_hook_v20b' if path.startswith('/latent') else 'remote_runtime_generate')})
+            result['diagnostics']=diag; result['llm_usage']={'llm_called':diag['llm_used'],'hidden_hook_called':diag['hidden_intervention_used'],'remote_path_used':path,'runtime_url':url}
+            return result
+        except Exception as e: errors.append({'path':path,'error':repr(e)})
+    return {'ok':False,'error':'remote_runtime_all_paths_failed','errors':errors,'diagnostics':{'patch_id':APP_REMOTE_HIDDEN_V20B,'remote_runtime_url':url}}
+# ============================================================================
+# END ADD-ONLY PATCH APP-REMOTE-HIDDEN-V20B
+# ============================================================================
+
+
+
+# ============================================================================
+# ADD-ONLY PATCH: APP_REMOTE_RUNTIME_URL_CONTEXT_V21_STRICT
+# Purpose:
+#   Ensure the latest Leap Engine panel passes the Remote Runtime URL as a plain
+#   context/config value, not only as a callable adapter.  This lets
+#   leap_engine.run_leap_search select the strict /latent/v21 hidden-hook route.
+# ============================================================================
+APP_REMOTE_RUNTIME_URL_CONTEXT_V21_STRICT_PATCH_ID = "LEAP_REMOTE_HIDDEN_WIRE_V21_STRICT_20260504_025750"
+try:
+    _APP_LRH21_PREV_LEAPV8_RUN = globals().get('_leapv8_run')
+    def _leapv8_run(*args, **kwargs):
+        try:
+            ctx = kwargs.get('context')
+            if not isinstance(ctx, dict):
+                ctx = {}
+            cfg = kwargs
+            url = ''
+            try:
+                url = str(st.session_state.get('transformers_runtime_url') or globals().get('TRANSFORMERS_RUNTIME_URL_DEFAULT') or '').strip()
+            except Exception:
+                url = str(globals().get('TRANSFORMERS_RUNTIME_URL_DEFAULT') or '').strip()
+            if url:
+                ctx['remote_runtime_url'] = url.rstrip('/')
+                ctx['transformers_runtime_url'] = url.rstrip('/')
+                kwargs['remote_runtime_url'] = url.rstrip('/')
+                kwargs['transformers_runtime_url'] = url.rstrip('/')
+            ctx['app_remote_runtime_url_context_v21_strict'] = {
+                'patch_id': APP_REMOTE_RUNTIME_URL_CONTEXT_V21_STRICT_PATCH_ID,
+                'remote_runtime_url': url.rstrip('/') if url else '',
+                'strict_hidden_hook_route_expected': bool(url),
+            }
+            kwargs['context'] = ctx
+        except Exception:
+            pass
+        if callable(_APP_LRH21_PREV_LEAPV8_RUN):
+            return _APP_LRH21_PREV_LEAPV8_RUN(*args, **kwargs)
+        raise RuntimeError('previous _leapv8_run missing after APP_REMOTE_RUNTIME_URL_CONTEXT_V21_STRICT')
+except Exception:
+    pass
+
+
+# ============================================================================
+# ADD-ONLY PATCH: APP_V30_CANDIDATE_QUALITY_DIAGNOSTIC_PANEL
+# generated_at_jst: 20260505_042046
+# Purpose:
+# - Display Leap Engine V30 candidate-quality status near the latest result.
+# - Do not hide raw JSON. Do not fabricate candidates.
+# - No benchmark/task-name hardcoding.
+# ============================================================================
+
+APP_V30_CANDIDATE_QUALITY_DIAGNOSTIC_PANEL_PATCH_ID = "APP_V30_CANDIDATE_QUALITY_DIAGNOSTIC_PANEL"
+try:
+    _APP_V30_PREV_LEAPV8_RENDER_RESULT = _leapv8_render_result
+except Exception:
+    _APP_V30_PREV_LEAPV8_RENDER_RESULT = None
+
+
+def _appv30_dict(x):
+    return dict(x) if isinstance(x, dict) else {}
+
+
+def _appv30_list(x):
+    if isinstance(x, list):
+        return list(x)
+    if isinstance(x, tuple):
+        return list(x)
+    return []
+
+
+def _appv30_quality_summary(result):
+    r = _appv30_dict(result)
+    if isinstance(r.get('result'), dict):
+        r = _appv30_dict(r.get('result'))
+    q = _appv30_dict(r.get('generation_quality_gate_v30'))
+    scores = _appv30_dict(r.get('scores'))
+    llm = _appv30_dict(r.get('llm_usage'))
+    if not q and not scores and not llm:
+        return {}
+    return {
+        'patch_id': APP_V30_CANDIDATE_QUALITY_DIAGNOSTIC_PANEL_PATCH_ID,
+        'unit_operation_status': r.get('unit_operation_status') or q.get('unit_operation_status'),
+        'candidate_generation_status': q.get('candidate_generation_status'),
+        'publishable_candidate_count': q.get('publishable_candidate_count', scores.get('publishable_candidate_count')),
+        'quality_rejected_count': q.get('rejected_quality_candidate_count', scores.get('quality_rejected_count')),
+        'semantic_valid_count': scores.get('semantic_valid_count'),
+        'hidden_hook_called': llm.get('hidden_hook_called'),
+        'hook_call_count_total': llm.get('hook_call_count_total'),
+        'validator_llm_invoked': llm.get('validator_llm_invoked'),
+        'conclusion_status': _appv30_dict(r.get('conclusion')).get('status'),
+        'conclusion_reason': _appv30_dict(r.get('conclusion')).get('reason'),
+    }
+
+
+def _appv30_render_quality_panel(result):
+    try:
+        summary = _appv30_quality_summary(result)
+        if not summary:
+            return
+        with st.expander('候補品質診断（unit operation / prompt echo / publishable）', expanded=True):
+            st.json(summary)
+            if summary.get('publishable_candidate_count') in (0, '0'):
+                st.info('hidden-hook単位操作は記録されていますが、publishableな発明候補は0件です。raw_trials / rejected_candidates_quality_v30 を確認してください。')
+    except Exception:
+        pass
+
+
+def _leapv8_render_result(result, cfg=None):
+    prev = None
+    if callable(_APP_V30_PREV_LEAPV8_RENDER_RESULT):
+        try:
+            prev = _APP_V30_PREV_LEAPV8_RENDER_RESULT(result, cfg)
+        except TypeError:
+            prev = _APP_V30_PREV_LEAPV8_RENDER_RESULT(result)
+    _appv30_render_quality_panel(result)
+    return prev
+
+try:
+    APP_V30_CANDIDATE_QUALITY_DIAGNOSTIC_PANEL_EXECUTION_PROOF = {
+        'patch_id': APP_V30_CANDIDATE_QUALITY_DIAGNOSTIC_PANEL_PATCH_ID,
+        'display_only': True,
+        'does_not_fabricate_candidates': True,
+        'no_task_hardcoding': True,
+    }
+except Exception:
+    pass
+
+# ============================================================================
+# END ADD-ONLY PATCH: APP_V30_CANDIDATE_QUALITY_DIAGNOSTIC_PANEL
+# ============================================================================

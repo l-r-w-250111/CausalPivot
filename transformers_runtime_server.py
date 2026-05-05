@@ -1066,3 +1066,1367 @@ def autonomous_growth_run(req: AutonomousGrowthRunRequest) -> AutonomousGrowthRu
             loader_kind=str(kind),
             quantization=str(loaded_quant),
         )
+
+
+# ============================================================================
+# ADD-ONLY PATCH: TRANSFORMERS-RUNTIME-LATENT-HOOK-API-V1
+# generated_at_jst: 20260504_103330
+# source_file_before_bytes: 37747
+# source_file_before_sha256_8: 772bec3d
+# purpose:
+# - Add hidden-state / forward-hook latent operation API to the existing
+#   transformers runtime server without changing or deleting existing endpoints.
+# - Preserve existing /load, /health, /structured-json/generate,
+#   /autonomous-growth/run behavior.
+# - Provide /latent/capabilities, /latent/probe, /latent/generate.
+# - No benchmark/task-specific hardcoding.
+# ============================================================================
+
+TRANSFORMERS_RUNTIME_LATENT_HOOK_API_V1 = "TRANSFORMERS-RUNTIME-LATENT-HOOK-API-V1-20260504"
+
+
+class LatentProbeRequest(BaseModel):
+    prompt: str = "Latent probe. Generate one short sentence."
+    model_path: Optional[str] = None
+    quantization: Optional[str] = None
+    manual_layer_path: Optional[str] = None
+    manual_layer_index: int = 0
+    operator: str = "substitution"
+    theta: float = 0.05
+    rotation_magnitude: Optional[float] = None
+    max_new_tokens: int = Field(default=16, ge=1, le=1024)
+    return_hidden_diagnostics: bool = True
+
+
+class LatentGenerateRequest(BaseModel):
+    prompt: str
+    model_path: Optional[str] = None
+    quantization: Optional[str] = None
+    manual_layer_path: Optional[str] = None
+    manual_layer_index: int = 0
+    operator: str = "substitution"
+    operator_trace: Optional[List[str]] = None
+    theta: float = 0.05
+    rotation_magnitude: Optional[float] = None
+    max_new_tokens: int = Field(default=512, ge=1, le=4096)
+    return_hidden_diagnostics: bool = True
+
+
+def _latent_safe_repr_v1(x: Any, limit: int = 500) -> str:
+    try:
+        return repr(x)[:max(0, int(limit))]
+    except Exception:
+        return str(type(x))[:max(0, int(limit))]
+
+
+def _latent_get_attr_path_v1(obj: Any, path: str) -> Any:
+    cur = obj
+    for part in str(path or "").split("."):
+        if not part:
+            continue
+        if not hasattr(cur, part):
+            raise AttributeError(path)
+        cur = getattr(cur, part)
+    return cur
+
+
+def _latent_is_layer_sequence_v1(x: Any) -> bool:
+    if x is None:
+        return False
+    if isinstance(x, (list, tuple)):
+        return len(x) > 0
+    try:
+        return hasattr(x, "__getitem__") and len(x) > 0
+    except Exception:
+        return False
+
+
+_LATENT_LAYER_CANDIDATE_PATHS_V1 = [
+    "model.layers",
+    "model.model.layers",
+    "transformer.h",
+    "model.transformer.h",
+    "gpt_neox.layers",
+    "model.gpt_neox.layers",
+    "decoder.layers",
+    "model.decoder.layers",
+    "model.model.decoder.layers",
+    "base_model.layers",
+    "base_model.model.layers",
+    "language_model.layers",
+    "language_model.model.layers",
+]
+
+
+def _latent_discover_layer_lists_v1(model: Any) -> List[Dict[str, Any]]:
+    found: List[Dict[str, Any]] = []
+    for path in _LATENT_LAYER_CANDIDATE_PATHS_V1:
+        try:
+            layers = _latent_get_attr_path_v1(model, path)
+            if _latent_is_layer_sequence_v1(layers):
+                found.append({
+                    "path": path,
+                    "num_layers": int(len(layers)),
+                    "type": type(layers).__name__,
+                    "repr_head": _latent_safe_repr_v1(layers, 300),
+                })
+        except Exception:
+            continue
+    return found
+
+
+def _latent_resolve_layer_v1(model: Any, manual_layer_path: Optional[str] = None, manual_layer_index: int = 0) -> Tuple[Optional[Any], Dict[str, Any]]:
+    diag: Dict[str, Any] = {
+        "patch_id": TRANSFORMERS_RUNTIME_LATENT_HOOK_API_V1,
+        "candidate_layer_paths_checked": list(_LATENT_LAYER_CANDIDATE_PATHS_V1),
+        "manual_layer_path": manual_layer_path or "",
+        "manual_layer_index_requested": int(manual_layer_index),
+        "layer_resolved": False,
+        "layer_resolved_path": "",
+        "layer_resolved_index": None,
+        "layer_module_repr": "",
+        "layer_list_available": False,
+        "discovered_layer_lists": [],
+    }
+    layer_lists = _latent_discover_layer_lists_v1(model)
+    diag["discovered_layer_lists"] = layer_lists
+    diag["layer_list_available"] = bool(layer_lists)
+
+    def _select_from_layers(layers: Any, path: str) -> Tuple[Optional[Any], Dict[str, Any]]:
+        idx = int(manual_layer_index)
+        try:
+            n = int(len(layers))
+        except Exception:
+            n = 0
+        if n <= 0:
+            d = dict(diag)
+            d["reason"] = "empty_layer_sequence"
+            return None, d
+        if idx < 0:
+            idx = n + idx
+        idx = max(0, min(idx, n - 1))
+        module = layers[idx]
+        d = dict(diag)
+        d.update({
+            "layer_resolved": True,
+            "layer_resolved_path": path,
+            "layer_resolved_index": idx,
+            "num_layers": n,
+            "layer_module_repr": _latent_safe_repr_v1(module, 600),
+        })
+        return module, d
+
+    if manual_layer_path:
+        try:
+            layers = _latent_get_attr_path_v1(model, manual_layer_path)
+            if _latent_is_layer_sequence_v1(layers):
+                return _select_from_layers(layers, manual_layer_path)
+            diag["manual_layer_path_error"] = "manual_path_not_layer_sequence"
+        except Exception as e:
+            diag["manual_layer_path_error"] = repr(e)
+
+    if layer_lists:
+        selected = layer_lists[0]
+        try:
+            layers = _latent_get_attr_path_v1(model, selected["path"])
+            return _select_from_layers(layers, selected["path"])
+        except Exception as e:
+            diag["auto_layer_resolve_error"] = repr(e)
+
+    diag["reason"] = "layer_list_unavailable"
+    return None, diag
+
+
+def _latent_extract_hidden_tensor_v1(output: Any) -> Any:
+    try:
+        import torch
+    except Exception:
+        return None
+    if output is None:
+        return None
+    if torch.is_tensor(output):
+        return output
+    if isinstance(output, tuple) and output:
+        first = output[0]
+        if torch.is_tensor(first):
+            return first
+    try:
+        h = getattr(output, "last_hidden_state", None)
+        if torch.is_tensor(h):
+            return h
+    except Exception:
+        pass
+    return None
+
+
+def _latent_replace_hidden_tensor_v1(original_output: Any, new_hidden: Any) -> Any:
+    if isinstance(original_output, tuple) and original_output:
+        return (new_hidden,) + tuple(original_output[1:])
+    return new_hidden
+
+
+def _latent_make_operator_hook_v1(operator: str, theta: float, rotation_magnitude: Optional[float], stats: Dict[str, Any]):
+    op = str(operator or "substitution").strip().lower()
+    th = float(theta or 0.0)
+    mag = float(rotation_magnitude if rotation_magnitude is not None else th)
+
+    def hook_fn(module, inputs, output):
+        stats["hook_call_count"] = int(stats.get("hook_call_count", 0) or 0) + 1
+        try:
+            import torch
+            hidden = _latent_extract_hidden_tensor_v1(output)
+            if hidden is None:
+                stats["hook_output_kind"] = type(output).__name__
+                stats["hook_error"] = "hidden_tensor_not_found_in_output"
+                return output
+            stats["hook_output_kind"] = type(hidden).__name__
+            stats["hidden_shape"] = list(hidden.shape)
+            stats["hidden_dim"] = int(hidden.shape[-1]) if getattr(hidden, "ndim", 0) >= 1 else 0
+            if stats["hidden_dim"] <= 0:
+                stats["operator_delta_norm"] = 0.0
+                return output
+            h2 = hidden.clone()
+            k = min(16, int(h2.shape[-1]))
+            if k <= 1:
+                stats["operator_delta_norm"] = 0.0
+                return output
+            before = h2[..., :k].clone()
+            rolled = torch.roll(before, shifts=1, dims=-1)
+            scale = float(mag)
+            if op in {"inversion", "reverse"}:
+                after = before - scale * rolled
+            elif op in {"combination", "combine"}:
+                after = before + 0.5 * scale * rolled
+            elif op in {"substitution", "mediator_insertion", "mediator-insertion"}:
+                alpha = min(abs(scale), 0.5)
+                after = (1.0 - alpha) * before + alpha * rolled
+            elif op in {"observation_shift", "observation-shift", "scale_transfer", "scale-transfer"}:
+                after = before + scale * (rolled - before.mean(dim=-1, keepdim=True))
+            else:
+                after = before + scale * rolled
+            h2[..., :k] = after
+            delta = h2[..., :k] - before
+            try:
+                stats["operator_delta_norm"] = float(torch.norm(delta.detach()).item())
+            except Exception:
+                stats["operator_delta_norm"] = -1.0
+            stats["operator_name"] = op
+            stats["theta"] = th
+            stats["rotation_magnitude"] = mag
+            stats["rotation_axes"] = list(range(k))
+            return _latent_replace_hidden_tensor_v1(output, h2)
+        except Exception as e:
+            stats["hook_error"] = repr(e)
+            return output
+
+    return hook_fn
+
+
+def _latent_tokenizer_for_generation_v1(kind: str, processor: Any, tokenizer: Any) -> Any:
+    if tokenizer is not None:
+        return tokenizer
+    try:
+        tok = getattr(processor, "tokenizer", None)
+        if tok is not None:
+            return tok
+    except Exception:
+        pass
+    return tokenizer
+
+
+def _latent_generate_with_hook_v1(
+    *,
+    prompt: str,
+    model_path: Optional[str],
+    quantization: Optional[str],
+    manual_layer_path: Optional[str],
+    manual_layer_index: int,
+    operator: str,
+    theta: float,
+    rotation_magnitude: Optional[float],
+    max_new_tokens: int,
+) -> Dict[str, Any]:
+    import torch
+    result: Dict[str, Any] = {
+        "ok": False,
+        "patch_id": TRANSFORMERS_RUNTIME_LATENT_HOOK_API_V1,
+        "latent_operation_status": "not_started",
+        "latent_operation_available": False,
+        "generation_backend": "remote_runtime_latent_hook",
+        "operator": str(operator or ""),
+        "theta": float(theta or 0.0),
+        "rotation_magnitude": float(rotation_magnitude if rotation_magnitude is not None else (theta or 0.0)),
+        "hook_register_ok": False,
+        "hook_call_count": 0,
+        "hidden_dim": 0,
+        "operator_delta_norm": 0.0,
+        "generated_text": "",
+    }
+    try:
+        kind, processor, tokenizer, model, loaded_path, loaded_quant = _ensure_loaded(model_path, quantization)
+        result.update({
+            "model_loaded": True,
+            "model_path": loaded_path,
+            "loader_kind": kind,
+            "quantization": loaded_quant,
+            "model_class": type(model).__name__,
+            "model_module": type(model).__module__,
+        })
+    except Exception as e:
+        result.update({
+            "latent_operation_status": "failed",
+            "reason": "load_error",
+            "error": repr(e),
+            "model_loaded": False,
+            "model_path": str(model_path or DEFAULT_MODEL_PATH),
+            "loader_kind": "none",
+            "quantization": _normalize_quantization(quantization),
+        })
+        return result
+
+    layer, layer_diag = _latent_resolve_layer_v1(model, manual_layer_path=manual_layer_path, manual_layer_index=manual_layer_index)
+    result["layer_resolution"] = layer_diag
+    if layer is None:
+        result.update({
+            "latent_operation_status": "failed",
+            "reason": "layer_list_unavailable",
+            "latent_operation_available": False,
+        })
+        return result
+
+    stats: Dict[str, Any] = {
+        "hook_register_ok": False,
+        "hook_call_count": 0,
+        "hidden_dim": 0,
+        "operator_delta_norm": 0.0,
+    }
+    handle = None
+    try:
+        hook = _latent_make_operator_hook_v1(operator, float(theta or 0.0), rotation_magnitude, stats)
+        handle = layer.register_forward_hook(hook)
+        stats["hook_register_ok"] = True
+        result["hook_register_ok"] = True
+    except Exception as e:
+        result.update({
+            "latent_operation_status": "failed",
+            "reason": "hook_register_failed",
+            "error": repr(e),
+            "hook_stats": stats,
+        })
+        return result
+
+    try:
+        tok = _latent_tokenizer_for_generation_v1(kind, processor, tokenizer)
+        if tok is None:
+            result.update({
+                "latent_operation_status": "failed",
+                "reason": "tokenizer_unavailable",
+                "hook_stats": stats,
+            })
+            return result
+        user_prompt = str(prompt or "")
+        try:
+            text_prompt = _build_chat_text(tok, user_prompt)
+        except Exception:
+            text_prompt = user_prompt
+        inputs = tok(text_prompt, return_tensors="pt")
+        try:
+            device = next(model.parameters()).device
+            inputs = {k: v.to(device) for k, v in inputs.items()}
+            result["device"] = str(device)
+        except Exception:
+            pass
+        with torch.no_grad():
+            output_ids = model.generate(
+                **inputs,
+                max_new_tokens=max(1, int(max_new_tokens)),
+                do_sample=False,
+                pad_token_id=getattr(tok, "eos_token_id", None),
+            )
+        try:
+            gen_ids = output_ids[0][inputs["input_ids"].shape[-1]:]
+        except Exception:
+            gen_ids = output_ids[0]
+        generated = tok.decode(gen_ids, skip_special_tokens=True)
+        result["generated_text"] = generated
+        result["text"] = generated
+        result["hook_register_ok"] = bool(stats.get("hook_register_ok", False))
+        result["hook_call_count"] = int(stats.get("hook_call_count", 0) or 0)
+        result["hidden_dim"] = int(stats.get("hidden_dim", 0) or 0)
+        result["hidden_shape"] = stats.get("hidden_shape", [])
+        result["operator_delta_norm"] = float(stats.get("operator_delta_norm", 0.0) or 0.0)
+        result["rotation_axes"] = stats.get("rotation_axes", [])
+        result["hook_stats"] = stats
+        latent_ok = bool(
+            result["hook_register_ok"] is True
+            and result["hook_call_count"] > 0
+            and result["hidden_dim"] > 0
+            and (float(theta or 0.0) == 0.0 or result["operator_delta_norm"] > 0.0)
+        )
+        result["ok"] = latent_ok
+        result["latent_operation_available"] = latent_ok
+        result["latent_operation_status"] = "ok" if latent_ok else "failed"
+        result["reason"] = "latent_hook_confirmed" if latent_ok else "hook_not_called_or_no_delta"
+        result["layer_resolved_path"] = layer_diag.get("layer_resolved_path", "")
+        result["layer_resolved_index"] = layer_diag.get("layer_resolved_index")
+        result["layer_module_repr"] = layer_diag.get("layer_module_repr", "")
+        return result
+    except Exception as e:
+        result.update({
+            "latent_operation_status": "failed",
+            "reason": "generation_with_hook_failed",
+            "error": repr(e),
+            "hook_stats": stats,
+            "hook_register_ok": bool(stats.get("hook_register_ok", False)),
+            "hook_call_count": int(stats.get("hook_call_count", 0) or 0),
+            "hidden_dim": int(stats.get("hidden_dim", 0) or 0),
+            "operator_delta_norm": float(stats.get("operator_delta_norm", 0.0) or 0.0),
+        })
+        return result
+    finally:
+        if handle is not None:
+            try:
+                handle.remove()
+            except Exception:
+                pass
+
+
+@app.get("/latent/capabilities")
+def latent_capabilities() -> Dict[str, Any]:
+    loaded = bool(_state.get("loaded") and _state.get("model") is not None)
+    layer_candidates: List[Dict[str, Any]] = []
+    if loaded:
+        try:
+            layer_candidates = _latent_discover_layer_lists_v1(_state.get("model"))
+        except Exception:
+            layer_candidates = []
+    return {
+        "ok": True,
+        "patch_id": TRANSFORMERS_RUNTIME_LATENT_HOOK_API_V1,
+        "model_loaded": loaded,
+        "model_path": _state.get("model_path") or _resolve_model_path(DEFAULT_MODEL_PATH),
+        "quantization": _state.get("quantization") or _normalize_quantization(DEFAULT_QUANTIZATION),
+        "loader_kind": _state.get("kind") or "none",
+        "supports_text_generation": loaded,
+        "supports_hidden_state_access": bool(loaded and layer_candidates),
+        "supports_forward_hook": bool(loaded and layer_candidates),
+        "supports_latent_intervention": bool(loaded and layer_candidates),
+        "supports_manual_layer_index": True,
+        "supports_layer_list": bool(loaded and layer_candidates),
+        "available_layer_paths": [x.get("path") for x in layer_candidates],
+        "layer_candidates": layer_candidates,
+        "num_layers": int(layer_candidates[0].get("num_layers", 0)) if layer_candidates else 0,
+        "default_layer_path": str(layer_candidates[0].get("path", "")) if layer_candidates else "",
+        "versions": _safe_versions(),
+    }
+
+
+@app.post("/latent/probe")
+def latent_probe(req: LatentProbeRequest) -> Dict[str, Any]:
+    return _latent_generate_with_hook_v1(
+        prompt=req.prompt,
+        model_path=req.model_path,
+        quantization=req.quantization,
+        manual_layer_path=req.manual_layer_path,
+        manual_layer_index=req.manual_layer_index,
+        operator=req.operator,
+        theta=req.theta,
+        rotation_magnitude=req.rotation_magnitude,
+        max_new_tokens=req.max_new_tokens,
+    )
+
+
+@app.post("/latent/generate")
+def latent_generate(req: LatentGenerateRequest) -> Dict[str, Any]:
+    out = _latent_generate_with_hook_v1(
+        prompt=req.prompt,
+        model_path=req.model_path,
+        quantization=req.quantization,
+        manual_layer_path=req.manual_layer_path,
+        manual_layer_index=req.manual_layer_index,
+        operator=req.operator,
+        theta=req.theta,
+        rotation_magnitude=req.rotation_magnitude,
+        max_new_tokens=req.max_new_tokens,
+    )
+    out["operator_trace"] = req.operator_trace or []
+    return out
+
+# ============================================================================
+# END ADD-ONLY PATCH: TRANSFORMERS-RUNTIME-LATENT-HOOK-API-V1
+# ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY PATCH: LEAP_REMOTE_RUNTIME_FORCE_WIRE_V19_20260504_112101
+# Purpose:
+#   Provide compatibility text-generation and layer diagnostic endpoints used by
+#   app.py V19. Existing endpoints are preserved.
+# ============================================================================
+LEAP_REMOTE_RUNTIME_FORCE_WIRE_V19_PATCH_ID = "LEAP_REMOTE_RUNTIME_FORCE_WIRE_V19_20260504_112101"
+
+class RuntimeGenerateV19Request(BaseModel):
+    prompt: str
+    model_path: Optional[str] = None
+    quantization: Optional[str] = None
+    max_new_tokens: int = Field(default=512, ge=1, le=4096)
+
+class RuntimeHiddenStatesV19Request(BaseModel):
+    prompt: str = 'probe'
+    model_path: Optional[str] = None
+    quantization: Optional[str] = None
+    manual_layer_path: Optional[str] = None
+    manual_layer_index: int = 0
+
+def _runtime_v19_gpu_diag():
+    out = {'cuda_available': False}
+    try:
+        import torch
+        out['cuda_available'] = bool(torch.cuda.is_available())
+        if torch.cuda.is_available():
+            out['device_count'] = int(torch.cuda.device_count())
+            out['current_device'] = int(torch.cuda.current_device())
+            out['device_name'] = str(torch.cuda.get_device_name(torch.cuda.current_device()))
+            out['memory_allocated_mb'] = float(torch.cuda.memory_allocated() / (1024 * 1024))
+            out['memory_reserved_mb'] = float(torch.cuda.memory_reserved() / (1024 * 1024))
+    except Exception as e:
+        out['error'] = repr(e)
+    return out
+
+@app.get('/layers')
+def runtime_layers_v19() -> Dict[str, Any]:
+    loaded = bool(_state.get('loaded') and _state.get('model') is not None)
+    layers = []
+    if loaded:
+        try:
+            if callable(globals().get('_latent_discover_layer_lists_v1')):
+                layers = _latent_discover_layer_lists_v1(_state.get('model'))
+        except Exception as e:
+            return {'ok': False, 'patch_id': LEAP_REMOTE_RUNTIME_FORCE_WIRE_V19_PATCH_ID, 'model_loaded': loaded, 'error': repr(e), 'gpu': _runtime_v19_gpu_diag()}
+    return {
+        'ok': True,
+        'patch_id': LEAP_REMOTE_RUNTIME_FORCE_WIRE_V19_PATCH_ID,
+        'model_loaded': loaded,
+        'model_path': _state.get('model_path') or _resolve_model_path(DEFAULT_MODEL_PATH),
+        'quantization': _state.get('quantization') or _normalize_quantization(DEFAULT_QUANTIZATION),
+        'layer_list_available': bool(layers),
+        'layer_candidates': layers,
+        'available_layer_paths': [x.get('path') for x in layers] if isinstance(layers, list) else [],
+        'num_layers': int(layers[0].get('num_layers', 0)) if isinstance(layers, list) and layers else 0,
+        'gpu': _runtime_v19_gpu_diag(),
+    }
+
+@app.post('/generate')
+def runtime_generate_v19(req: RuntimeGenerateV19Request) -> Dict[str, Any]:
+    import time
+    t0 = time.time()
+    try:
+        kind, processor, tokenizer, model, loaded_path, loaded_quant = _ensure_loaded(req.model_path, req.quantization)
+        txt = _plain_generate(kind, processor, tokenizer, model, req.prompt, int(req.max_new_tokens))
+        return {
+            'ok': bool(str(txt).strip()),
+            'patch_id': LEAP_REMOTE_RUNTIME_FORCE_WIRE_V19_PATCH_ID,
+            'generation_backend': 'remote_runtime_plain_generate_v19',
+            'text': txt,
+            'generated_text': txt,
+            'model_loaded': True,
+            'model_path': loaded_path,
+            'loader_kind': kind,
+            'quantization': loaded_quant,
+            'elapsed_ms': int((time.time() - t0) * 1000),
+            'gpu': _runtime_v19_gpu_diag(),
+        }
+    except Exception as e:
+        return {
+            'ok': False,
+            'patch_id': LEAP_REMOTE_RUNTIME_FORCE_WIRE_V19_PATCH_ID,
+            'generation_backend': 'remote_runtime_plain_generate_v19',
+            'text': '',
+            'generated_text': '',
+            'reason': 'generate_exception_v19',
+            'error': repr(e),
+            'elapsed_ms': int((time.time() - t0) * 1000),
+            'gpu': _runtime_v19_gpu_diag(),
+        }
+
+@app.post('/hidden_states')
+def runtime_hidden_states_v19(req: RuntimeHiddenStatesV19Request) -> Dict[str, Any]:
+    try:
+        kind, processor, tokenizer, model, loaded_path, loaded_quant = _ensure_loaded(req.model_path, req.quantization)
+        layer_diag = {}
+        layer_ok = False
+        try:
+            if callable(globals().get('_latent_resolve_layer_v1')):
+                layer, layer_diag = _latent_resolve_layer_v1(model, req.manual_layer_path, req.manual_layer_index)
+                layer_ok = layer is not None
+        except Exception as e:
+            layer_diag = {'error': repr(e)}
+        return {
+            'ok': bool(layer_ok),
+            'patch_id': LEAP_REMOTE_RUNTIME_FORCE_WIRE_V19_PATCH_ID,
+            'model_loaded': True,
+            'model_path': loaded_path,
+            'loader_kind': kind,
+            'quantization': loaded_quant,
+            'supports_hidden_states': bool(layer_ok),
+            'supports_forward_hook': bool(layer_ok),
+            'layer_diagnostics': layer_diag,
+            'gpu': _runtime_v19_gpu_diag(),
+        }
+    except Exception as e:
+        return {'ok': False, 'patch_id': LEAP_REMOTE_RUNTIME_FORCE_WIRE_V19_PATCH_ID, 'reason': 'hidden_states_exception_v19', 'error': repr(e), 'gpu': _runtime_v19_gpu_diag()}
+
+# ============================================================================
+# END ADD-ONLY PATCH: LEAP_REMOTE_RUNTIME_FORCE_WIRE_V19_20260504_112101
+# ============================================================================
+
+# ============================================================================
+# ADD-ONLY PATCH LEAP-RUNTIME-HIDDEN-V20B (2026-05-04 JST)
+# Robust Remote Runtime hidden-hook endpoint. No deletion of existing routes.
+# ============================================================================
+LEAP_RUNTIME_HIDDEN_V20B = "LEAP-RUNTIME-HIDDEN-V20B-20260504"
+
+
+def _lrh20b_state():
+    st = globals().get('_state', {})
+    model = tokenizer = None
+    if isinstance(st, dict):
+        for k in ('model','llm_model','base_model','loaded_model'):
+            if st.get(k) is not None: model = st.get(k); break
+        for k in ('tokenizer','tok','llm_tokenizer','loaded_tokenizer'):
+            if st.get(k) is not None: tokenizer = st.get(k); break
+    return model, tokenizer
+
+
+def _lrh20b_get_path(obj, path):
+    cur = obj
+    for part in str(path or '').split('.'):
+        if not part: continue
+        cur = cur.get(part) if isinstance(cur, dict) else getattr(cur, part)
+    return cur
+
+
+def _lrh20b_is_seq(x):
+    try:
+        return len(x) > 0 and (hasattr(x[0], 'forward') or callable(x[0]))
+    except Exception:
+        return False
+
+
+def _lrh20b_layers(model=None):
+    if model is None: model, _ = _lrh20b_state()
+    if model is None: return []
+    found=[]; seen=set()
+    def add(path, layers, src):
+        if path and path not in seen and _lrh20b_is_seq(layers):
+            seen.add(path); found.append({'path':path,'num_layers':int(len(layers)),'type':type(layers).__name__,'source':src})
+    for path in ['model.layers','model.model.layers','model.decoder.layers','model.model.decoder.layers','transformer.h','model.transformer.h','gpt_neox.layers','model.gpt_neox.layers','decoder.layers','base_model.model.layers','base_model.model.model.layers','language_model.model.layers','module.model.layers','module.model.model.layers']:
+        try: add(path, _lrh20b_get_path(model,path), 'canonical')
+        except Exception: pass
+    try:
+        import torch.nn as _nn
+        for name, mod in model.named_modules():
+            if isinstance(mod, (_nn.ModuleList, _nn.Sequential)) and _lrh20b_is_seq(mod):
+                add(name, mod, 'named_modules')
+    except Exception:
+        pass
+    return sorted(found, key=lambda d:(0 if d.get('source')=='canonical' else 1, -int(d.get('num_layers',0)), len(d.get('path',''))))
+
+
+def _lrh20b_device(model=None):
+    if model is None: model,_ = _lrh20b_state()
+    out={'cuda_available':False,'gpu_name':'','model_device':'unknown'}
+    try:
+        import torch
+        out['cuda_available']=bool(torch.cuda.is_available())
+        if torch.cuda.is_available(): out['gpu_name']=torch.cuda.get_device_name(0)
+        if model is not None:
+            try: out['model_device']=str(next(model.parameters()).device)
+            except Exception: pass
+    except Exception: pass
+    return out
+
+
+def _lrh20b_resolve(model=None, layer_path=None, layer_index=0):
+    if model is None: model,_ = _lrh20b_state()
+    diag={'patch_id':LEAP_RUNTIME_HIDDEN_V20B,'model_loaded':model is not None,'layer_list_available':False,'layer_resolved':False,'layer_path':'','layer_index':None,'reason':''}
+    if model is None:
+        diag['reason']='model_not_loaded'; return None, diag
+    lists=_lrh20b_layers(model); diag['layer_list_available']=bool(lists); diag['discovered_layer_lists']=lists
+    try:
+        path = str(layer_path or (lists[0]['path'] if lists else ''))
+        layers = _lrh20b_get_path(model,path) if path else None
+        if not _lrh20b_is_seq(layers):
+            diag['reason']='layer_list_unavailable'; return None, diag
+        n=int(len(layers)); idx=int(layer_index or 0); idx = n+idx if idx<0 else idx; idx=max(0,min(idx,n-1))
+        diag.update({'layer_resolved':True,'layer_path':path,'layer_index':idx,'num_layers':n,'reason':'resolved'})
+        return layers[idx], diag
+    except Exception as e:
+        diag['reason']='layer_resolve_exception'; diag['error']=repr(e); return None, diag
+
+
+def _lrh20b_generate(payload):
+    payload = payload if isinstance(payload, dict) else {}
+    model, tokenizer = _lrh20b_state()
+    diag={'patch_id':LEAP_RUNTIME_HIDDEN_V20B,'model_loaded':model is not None,'tokenizer_loaded':tokenizer is not None}
+    diag.update(_lrh20b_device(model))
+    if model is None or tokenizer is None:
+        diag['reason']='model_or_tokenizer_not_loaded'; return {'ok':False,'status':'failed','reason':'model_or_tokenizer_not_loaded','generated_text':'','diagnostics':diag}
+    layer, ldiag = _lrh20b_resolve(model, payload.get('layer_path') or payload.get('manual_layer_path'), int(payload.get('layer_index', payload.get('manual_layer_index',0)) or 0)); diag.update(ldiag)
+    if layer is None:
+        return {'ok':False,'status':'failed','reason':diag.get('reason','layer_not_resolved'),'generated_text':'','diagnostics':diag}
+    prompt=str(payload.get('prompt') or payload.get('text') or '')
+    theta=float(payload.get('theta', payload.get('theta_deg',0.75)) or 0.0)
+    max_new=int(payload.get('max_new_tokens', payload.get('max_tokens',192)) or 192)
+    temp=float(payload.get('temperature',0.7) or 0.7)
+    hook={'called':False,'intervention':False,'shape':None,'device':None}
+    try:
+        import torch
+        def _hook(_m,_inp,out):
+            h = out[0] if isinstance(out, tuple) and out else out
+            if not hasattr(h,'detach'): return out
+            hook['called']=True; hook['shape']=list(h.shape); hook['device']=str(h.device)
+            if abs(theta) <= 1e-12: return out
+            try:
+                noise=torch.randn_like(h); denom=torch.clamp(noise.norm(dim=-1,keepdim=True), min=1e-6)
+                hstd=torch.clamp(h.detach().float().std(), min=1e-6).to(h.device).to(h.dtype)
+                h2=h+(noise/denom).to(h.dtype)*hstd*float(payload.get('scale',0.015))*theta
+                hook['intervention']=True
+                return (h2,)+tuple(out[1:]) if isinstance(out, tuple) else h2
+            except Exception as e:
+                hook['error']=repr(e); return out
+        handle=layer.register_forward_hook(_hook)
+        try:
+            enc=tokenizer(prompt, return_tensors='pt')
+            try:
+                dev=next(model.parameters()).device; enc={k:v.to(dev) for k,v in enc.items() if hasattr(v,'to')}
+            except Exception: pass
+            with torch.no_grad():
+                ids=model.generate(**enc, max_new_tokens=max_new, do_sample=temp>0, temperature=max(1e-5,temp))
+            text=tokenizer.decode(ids[0], skip_special_tokens=True)
+        finally:
+            try: handle.remove()
+            except Exception: pass
+        diag.update({'hook_called':bool(hook['called']),'hidden_intervention_used':bool(hook['intervention']),'hidden_shape':hook.get('shape'),'hidden_device':hook.get('device')})
+        return {'ok':True,'status':'ok','generated_text':text,'text':text,'generation_backend':'remote_runtime_hidden_hook_v20b','backend':'remote_runtime_hidden_hook_v20b','llm_used':True,'hook_called':bool(hook['called']),'hidden_intervention_used':bool(hook['intervention']),'diagnostics':diag}
+    except Exception as e:
+        diag['exception']=repr(e); return {'ok':False,'status':'failed','reason':'generation_exception','generated_text':'','diagnostics':diag}
+
+try:
+    @app.get('/latent/v20b/layers')
+    def latent_v20b_layers():
+        model,tok=_lrh20b_state(); return {'ok':model is not None,'patch_id':LEAP_RUNTIME_HIDDEN_V20B,'model_loaded':model is not None,'tokenizer_loaded':tok is not None,'device':_lrh20b_device(model),'layers':_lrh20b_layers(model),'layer_list_available':bool(_lrh20b_layers(model))}
+    @app.post('/latent/v20b/generate')
+    def latent_v20b_generate(payload: dict):
+        return _lrh20b_generate(payload)
+    @app.get('/runtime/v20b/capabilities')
+    def runtime_v20b_capabilities():
+        model,tok=_lrh20b_state(); layers=_lrh20b_layers(model); return {'ok':True,'patch_id':LEAP_RUNTIME_HIDDEN_V20B,'model_loaded':model is not None,'tokenizer_loaded':tok is not None,'hook_api_available':bool(model is not None and layers),'layer_list_available':bool(layers),'layers':layers,'device':_lrh20b_device(model)}
+except Exception:
+    pass
+# ============================================================================
+# END ADD-ONLY PATCH LEAP-RUNTIME-HIDDEN-V20B
+# ============================================================================
+
+
+
+# ============================================================================
+# ADD-ONLY PATCH: LEAP_REMOTE_HIDDEN_WIRE_V21_STRICT
+# Purpose:
+#   Strict remote hidden-hook API for Leap Engine invention tests.
+#   - exposes real layer discovery
+#   - expands mixed layers only from real model layer count
+#   - performs a real forward-hook generation path via _latent_generate_with_hook_v1
+#   - never reports hook success when hook_call_count == 0
+# ============================================================================
+LEAP_REMOTE_HIDDEN_WIRE_V21_STRICT_PATCH_ID = "LEAP_REMOTE_HIDDEN_WIRE_V21_STRICT_20260504_025750"
+
+
+def _lrh21_safe_text(x, limit=12000):
+    try:
+        s = str(x if x is not None else "")
+    except Exception:
+        s = ""
+    return s[:limit]
+
+
+def _lrh21_layer_inventory():
+    """Return real layer inventory from the currently loaded model.
+    This is intentionally strict: no fake [0,1,2] layer list is emitted.
+    """
+    out = {
+        "ok": False,
+        "patch_id": LEAP_REMOTE_HIDDEN_WIRE_V21_STRICT_PATCH_ID,
+        "loaded": bool((_state or {}).get("loaded")),
+        "layer_list_available": False,
+        "discovered_layer_lists": [],
+        "selected_layer_path": "",
+        "num_layers": 0,
+        "resolved_layers_mixed": [],
+        "reason": "not_started",
+    }
+    try:
+        model = (_state or {}).get("model")
+        if model is None:
+            out["reason"] = "model_not_loaded"
+            return out
+        lists = []
+        try:
+            lists = _latent_discover_layer_lists_v1(model)
+        except Exception as e:
+            out["discover_error"] = repr(e)
+            lists = []
+        # Additional generic scan as a safety net, but still only real module lists.
+        if not lists:
+            try:
+                for name, module in model.named_modules():
+                    lname = str(name).lower()
+                    if any(tok in lname for tok in ("layers", "h", "block")):
+                        try:
+                            if hasattr(module, "__len__") and hasattr(module, "__getitem__") and int(len(module)) > 0:
+                                lists.append({"path": name, "num_layers": int(len(module)), "type": type(module).__name__, "repr_head": repr(module)[:300]})
+                        except Exception:
+                            pass
+            except Exception as e:
+                out["named_modules_scan_error"] = repr(e)
+        # Prefer the largest candidate list; that is normally the transformer block stack.
+        lists = [x for x in lists if int(x.get("num_layers") or 0) > 0]
+        lists.sort(key=lambda x: int(x.get("num_layers") or 0), reverse=True)
+        out["discovered_layer_lists"] = lists[:20]
+        if not lists:
+            out["reason"] = "layer_list_unavailable"
+            return out
+        best = lists[0]
+        n = int(best.get("num_layers") or 0)
+        if n <= 0:
+            out["reason"] = "layer_list_unavailable"
+            return out
+        def pick(frac):
+            return max(0, min(n - 1, int(round((n - 1) * frac))))
+        mixed = sorted(set([pick(0.18), pick(0.50), pick(0.82)]))
+        out.update({
+            "ok": True,
+            "layer_list_available": True,
+            "selected_layer_path": str(best.get("path") or ""),
+            "num_layers": n,
+            "resolved_layers_mixed": mixed,
+            "reason": "ok",
+        })
+        return out
+    except Exception as e:
+        out.update({"ok": False, "reason": "layer_inventory_exception", "error": repr(e)})
+        return out
+
+
+@app.get('/latent/v21/layers')
+def latent_v21_layers():
+    return _lrh21_layer_inventory()
+
+
+@app.post('/latent/v21/generate')
+def latent_v21_generate(payload: dict):
+    payload = dict(payload or {})
+    inv = _lrh21_layer_inventory()
+    if not inv.get("ok"):
+        return {
+            "ok": False,
+            "patch_id": LEAP_REMOTE_HIDDEN_WIRE_V21_STRICT_PATCH_ID,
+            "reason": inv.get("reason") or "layer_list_unavailable",
+            "layer_inventory": inv,
+            "generation_backend": "remote_runtime_hidden_hook_v21_strict",
+            "hook_used": False,
+            "hook_call_count": 0,
+            "generated_text": "",
+            "base_text": "",
+        }
+    prompt = _lrh21_safe_text(payload.get("prompt") or payload.get("input") or "", 24000)
+    operator = _lrh21_safe_text(payload.get("operator") or payload.get("operator_name") or "mixed", 200)
+    theta = float(payload.get("theta") if payload.get("theta") is not None else 0.03)
+    max_new_tokens = int(payload.get("max_new_tokens") or 512)
+    layer_index = payload.get("layer")
+    if layer_index is None:
+        mixed = inv.get("resolved_layers_mixed") or []
+        layer_index = mixed[0] if mixed else 0
+    layer_index = int(layer_index)
+    layer_path = payload.get("manual_layer_path") or inv.get("selected_layer_path") or None
+    base_text = ""
+    try:
+        kind, processor, tokenizer, model, loaded_path, loaded_quant = _ensure_loaded(payload.get("model_path"), payload.get("quantization"))
+        base_prompt = prompt + "\n\nReturn one concise invention idea seed before latent intervention."
+        base_text = _plain_generate(kind, processor, tokenizer, model, base_prompt, max(64, min(max_new_tokens, 768)))
+    except Exception as e:
+        # Base text is diagnostic only. Hidden-hook path below remains the acceptance criterion.
+        base_text = ""
+        base_error = repr(e)
+    else:
+        base_error = ""
+    try:
+        hook_res = _latent_generate_with_hook_v1(
+            prompt=prompt + "\n\nApply the requested invention operator in latent space and output a concrete, non-template invention idea with mechanism, causal constraints, risks, and verification plan.",
+            model_path=payload.get("model_path"),
+            quantization=payload.get("quantization"),
+            manual_layer_path=layer_path,
+            manual_layer_index=layer_index,
+            operator=operator,
+            theta=theta,
+            rotation_magnitude=payload.get("rotation_magnitude"),
+            max_new_tokens=max(64, min(max_new_tokens, 1024)),
+        )
+    except Exception as e:
+        return {
+            "ok": False,
+            "patch_id": LEAP_REMOTE_HIDDEN_WIRE_V21_STRICT_PATCH_ID,
+            "reason": "hidden_hook_exception",
+            "error": repr(e),
+            "layer_inventory": inv,
+            "generation_backend": "remote_runtime_hidden_hook_v21_strict",
+            "hook_used": False,
+            "hook_call_count": 0,
+            "generated_text": "",
+            "base_text": base_text,
+            "base_error": base_error,
+        }
+    hook_count = int((hook_res or {}).get("hook_call_count") or 0)
+    gen_text = _lrh21_safe_text((hook_res or {}).get("generated_text") or (hook_res or {}).get("text") or "", 24000)
+    ok = bool((hook_res or {}).get("ok")) and hook_count > 0 and bool(gen_text.strip())
+    return {
+        "ok": ok,
+        "patch_id": LEAP_REMOTE_HIDDEN_WIRE_V21_STRICT_PATCH_ID,
+        "reason": "ok" if ok else ((hook_res or {}).get("reason") or "hidden_hook_not_executed_or_empty"),
+        "generation_backend": "remote_runtime_hidden_hook_v21_strict",
+        "base_text": base_text,
+        "generated_text": gen_text,
+        "hook_used": bool(hook_count > 0),
+        "hook_call_count": hook_count,
+        "layer_inventory": inv,
+        "resolved_layer": layer_index,
+        "resolved_layer_path": layer_path or "",
+        "operator": operator,
+        "theta": theta,
+        "latent_result": hook_res,
+        "base_error": base_error,
+    }
+
+
+@app.get('/runtime/v21/capabilities')
+def runtime_v21_capabilities():
+    inv = _lrh21_layer_inventory()
+    return {
+        "ok": True,
+        "patch_id": LEAP_REMOTE_HIDDEN_WIRE_V21_STRICT_PATCH_ID,
+        "hidden_hook_api": True,
+        "endpoints": ["/latent/v21/layers", "/latent/v21/generate"],
+        "layer_inventory": inv,
+    }
+
+
+# ============================================================================
+# ADD-ONLY PATCH: LEAP_V23_GPU_GUARD_SYNC_CANCEL_20260504_121644
+# Purpose:
+#   GPU is being used beyond the user's expectation ("GPU 100% keeps running").
+#   This patch adds a *server-side* GPU guard:
+#     - single-flight lock (avoid concurrent generate jobs)
+#     - per-request cancel event + /latent/v23/cancel
+#     - hard deadline (server-side) + torch StoppingCriteria
+#     - explicit torch.cuda.synchronize() before returning response
+#     - post-cleanup: remove hooks, optional empty_cache, report mem stats
+#   This is not about forbidding GPU use; it ensures GPU work is bounded,
+#   traceable, and completed before returning to the client.
+# ============================================================================
+LEAP_V23_GPU_GUARD_PATCH_ID = "LEAP_V23_GPU_GUARD_SYNC_CANCEL_20260504_121644"
+
+# ---- GPU guard primitives ----
+import time as _lv23_time
+import threading as _lv23_threading
+
+_LV23_GPU_LOCK = _lv23_threading.Lock()
+_LV23_ACTIVE = {
+    'job_id': None,
+    'cancel_event': None,
+    'started_at': None,
+    'deadline_at': None,
+    'last_tag': None,
+}
+
+
+def _lv23_now():
+    return float(_lv23_time.time())
+
+
+def _lv23_cuda_mem_snapshot():
+    try:
+        import torch as _torch
+        if not _torch.cuda.is_available():
+            return {'cuda': False}
+        dev = _torch.cuda.current_device()
+        return {
+            'cuda': True,
+            'device': int(dev),
+            'mem_allocated': int(_torch.cuda.memory_allocated(dev)),
+            'mem_reserved': int(_torch.cuda.memory_reserved(dev)),
+            'max_mem_allocated': int(_torch.cuda.max_memory_allocated(dev)),
+            'max_mem_reserved': int(_torch.cuda.max_memory_reserved(dev)),
+        }
+    except Exception as e:
+        return {'cuda': None, 'error': repr(e)}
+
+
+def _lv23_cuda_sync(tag=''):
+    try:
+        import torch as _torch
+        if _torch.cuda.is_available():
+            _torch.cuda.synchronize()
+        return {'ok': True, 'tag': str(tag or ''), 't': _lv23_now(), 'mem': _lv23_cuda_mem_snapshot()}
+    except Exception as e:
+        return {'ok': False, 'tag': str(tag or ''), 't': _lv23_now(), 'error': repr(e), 'mem': _lv23_cuda_mem_snapshot()}
+
+
+def _lv23_request_job_id(payload: dict):
+    try:
+        v = (payload or {}).get('job_id') or (payload or {}).get('request_id') or (payload or {}).get('client_request_id')
+        if v:
+            return str(v)
+    except Exception:
+        pass
+    return f'job_{int(_lv23_now()*1000)}'
+
+
+def _lv23_cancel_current(reason='cancelled'):
+    ev = _LV23_ACTIVE.get('cancel_event')
+    if ev is not None:
+        try:
+            ev.set()
+        except Exception:
+            pass
+    return {
+        'ok': True,
+        'patch_id': LEAP_V23_GPU_GUARD_PATCH_ID,
+        'job_id': _LV23_ACTIVE.get('job_id'),
+        'reason': str(reason or 'cancelled'),
+        't': _lv23_now(),
+    }
+
+
+# ---- stopping criteria for generate() ----
+try:
+    from transformers import StoppingCriteria as _LV23StoppingCriteria
+except Exception:
+    _LV23StoppingCriteria = object
+
+
+class _LV23CancelOrDeadlineCriteria(_LV23StoppingCriteria):
+    def __init__(self, cancel_event, deadline_at: float):
+        super().__init__()
+        self.cancel_event = cancel_event
+        self.deadline_at = float(deadline_at) if deadline_at is not None else None
+
+    def __call__(self, input_ids, scores, **kwargs):
+        try:
+            if self.cancel_event is not None and getattr(self.cancel_event, 'is_set', lambda: False)():
+                return True
+        except Exception:
+            pass
+        try:
+            if self.deadline_at is not None and _lv23_now() >= self.deadline_at:
+                return True
+        except Exception:
+            pass
+        return False
+
+
+# ---- V23 generate wrapper (uses existing hook generator) ----
+
+def _lv23_generate_with_hook_guarded(
+    *,
+    prompt: str,
+    model_path: str,
+    quantization: str,
+    manual_layer_path: str,
+    manual_layer_index: int,
+    operator: str,
+    theta: float,
+    rotation_magnitude: float,
+    max_new_tokens: int,
+    server_timeout_s: int,
+    job_id: str,
+    do_empty_cache: bool = False,
+):
+    import torch
+    # Enter single-flight section
+    with _LV23_GPU_LOCK:
+        # Cancel any previously running job (user complaint: GPU keeps running)
+        _lv23_cancel_current(reason='preempted_by_new_job')
+        cancel_event = _lv23_threading.Event()
+        _LV23_ACTIVE.update({
+            'job_id': str(job_id),
+            'cancel_event': cancel_event,
+            'started_at': _lv23_now(),
+            'deadline_at': _lv23_now() + float(max(5, int(server_timeout_s))),
+            'last_tag': 'entered_lock',
+        })
+
+        pre_sync = _lv23_cuda_sync('pre_generate')
+        criteria = _LV23CancelOrDeadlineCriteria(cancel_event, _LV23_ACTIVE.get('deadline_at'))
+
+        # We use the existing v1 hook implementation, but we force:
+        #  - inference mode
+        #  - stopping criteria (cancel/deadline)
+        #  - explicit cuda synchronize before returning
+        # To keep ADD-ONLY, we do not edit v1; we replicate its core generation
+        # path here with criteria injected.
+
+        result = {
+            'ok': False,
+            'patch_id': LEAP_V23_GPU_GUARD_PATCH_ID,
+            'generation_backend': 'remote_runtime_hidden_hook_v23_guarded',
+            'job_id': str(job_id),
+            'pre_sync': pre_sync,
+        }
+
+        # Load model via existing loader
+        try:
+            kind, processor, tokenizer, model, loaded_path, loaded_quant = _ensure_loaded(model_path, quantization)
+            result.update({
+                'model_loaded': True,
+                'model_path': loaded_path,
+                'loader_kind': kind,
+                'quantization': loaded_quant,
+                'model_class': type(model).__name__,
+                'model_module': type(model).__module__,
+            })
+        except Exception as e:
+            result.update({'ok': False, 'reason': 'load_error', 'error': repr(e), 'post_sync': _lv23_cuda_sync('load_error')})
+            return result
+
+        layer, layer_diag = _latent_resolve_layer_v1(model, manual_layer_path=manual_layer_path, manual_layer_index=int(manual_layer_index))
+        result['layer_resolution'] = layer_diag
+        if layer is None:
+            result.update({'ok': False, 'reason': 'layer_list_unavailable', 'post_sync': _lv23_cuda_sync('layer_unavailable')})
+            return result
+
+        stats = {'hook_register_ok': False, 'hook_call_count': 0, 'hidden_dim': 0, 'operator_delta_norm': 0.0}
+        handle = None
+        try:
+            hook = _latent_make_operator_hook_v1(str(operator or ''), float(theta or 0.0), rotation_magnitude, stats)
+            handle = layer.register_forward_hook(hook)
+            stats['hook_register_ok'] = True
+        except Exception as e:
+            result.update({'ok': False, 'reason': 'hook_register_failed', 'error': repr(e), 'hook_stats': stats, 'post_sync': _lv23_cuda_sync('hook_register_failed')})
+            return result
+
+        try:
+            tok = _latent_tokenizer_for_generation_v1(kind, processor, tokenizer)
+            if tok is None:
+                result.update({'ok': False, 'reason': 'tokenizer_unavailable', 'hook_stats': stats, 'post_sync': _lv23_cuda_sync('tokenizer_unavailable')})
+                return result
+
+            user_prompt = str(prompt or '')
+            try:
+                text_prompt = _build_chat_text(tok, user_prompt)
+            except Exception:
+                text_prompt = user_prompt
+
+            inputs = tok(text_prompt, return_tensors='pt')
+            try:
+                device = next(model.parameters()).device
+                inputs = {k: v.to(device) for k, v in inputs.items()}
+                result['device'] = str(device)
+            except Exception:
+                pass
+
+            # Bounded generation: if the model does not reach EOS, we still stop at max_new_tokens.
+            max_new_tokens_eff = max(1, int(max_new_tokens))
+            # Additional safeguard: ensure deadline exists.
+            stopping = None
+            try:
+                from transformers import StoppingCriteriaList
+                stopping = StoppingCriteriaList([criteria])
+            except Exception:
+                stopping = None
+
+            # Use inference_mode (stronger than no_grad) to prevent autograd overhead.
+            with torch.inference_mode():
+                output_ids = model.generate(
+                    **inputs,
+                    max_new_tokens=max_new_tokens_eff,
+                    do_sample=False,
+                    pad_token_id=getattr(tok, 'eos_token_id', None),
+                    stopping_criteria=stopping,
+                )
+
+            # Ensure all GPU kernels for this request are finished before returning.
+            mid_sync = _lv23_cuda_sync('post_generate')
+
+            try:
+                gen_ids = output_ids[0][inputs['input_ids'].shape[-1]:]
+            except Exception:
+                gen_ids = output_ids[0]
+            generated = tok.decode(gen_ids, skip_special_tokens=True)
+
+            result.update({
+                'generated_text': generated,
+                'text': generated,
+                'hook_used': bool(stats.get('hook_register_ok')),
+                'hook_call_count': int(stats.get('hook_call_count') or 0),
+                'hidden_dim': int(stats.get('hidden_dim') or 0),
+                'operator_delta_norm': float(stats.get('operator_delta_norm') or 0.0),
+                'hook_stats': stats,
+                'max_new_tokens_effective': int(max_new_tokens_eff),
+                'server_timeout_s': int(server_timeout_s),
+                'deadline_at': _LV23_ACTIVE.get('deadline_at'),
+                'mid_sync': mid_sync,
+            })
+
+            latent_ok = bool(result['hook_call_count'] > 0 and result['hidden_dim'] > 0)
+            result['ok'] = latent_ok
+            result['reason'] = 'ok' if latent_ok else 'hook_not_called'
+            result['post_sync'] = _lv23_cuda_sync('before_return')
+            return result
+
+        except Exception as e:
+            result.update({'ok': False, 'reason': 'generation_failed', 'error': repr(e), 'hook_stats': stats, 'post_sync': _lv23_cuda_sync('generation_failed')})
+            return result
+        finally:
+            try:
+                if handle is not None:
+                    handle.remove()
+            except Exception:
+                pass
+            # One more sync after hook removal.
+            final_sync = _lv23_cuda_sync('finalize')
+            result['final_sync'] = final_sync
+            try:
+                if do_empty_cache:
+                    torch.cuda.empty_cache()
+                    result['empty_cache'] = True
+            except Exception:
+                pass
+            # Mark job complete
+            _LV23_ACTIVE.update({'last_tag': 'completed', 'cancel_event': None})
+
+
+# ---- V23 API endpoints ----
+try:
+    from fastapi import Request as _LV23Request
+except Exception:
+    _LV23Request = None
+
+
+@app.get('/latent/v23/status')
+def latent_v23_status():
+    return {
+        'ok': True,
+        'patch_id': LEAP_V23_GPU_GUARD_PATCH_ID,
+        'active': {
+            'job_id': _LV23_ACTIVE.get('job_id'),
+            'started_at': _LV23_ACTIVE.get('started_at'),
+            'deadline_at': _LV23_ACTIVE.get('deadline_at'),
+            'last_tag': _LV23_ACTIVE.get('last_tag'),
+            'has_cancel_event': _LV23_ACTIVE.get('cancel_event') is not None,
+        },
+        'mem': _lv23_cuda_mem_snapshot(),
+        't': _lv23_now(),
+    }
+
+
+@app.post('/latent/v23/cancel')
+def latent_v23_cancel(payload: dict = None):
+    payload = dict(payload or {})
+    reason = payload.get('reason') or 'cancelled_by_client'
+    return _lv23_cancel_current(reason=reason)
+
+
+@app.post('/latent/v23/generate')
+def latent_v23_generate(payload: dict):
+    payload = dict(payload or {})
+    job_id = _lv23_request_job_id(payload)
+    prompt = str(payload.get('prompt') or payload.get('input') or '')
+    operator = str(payload.get('operator') or payload.get('operator_name') or 'mixed')
+    try:
+        theta = float(payload.get('theta') if payload.get('theta') is not None else 0.03)
+    except Exception:
+        theta = 0.03
+    try:
+        max_new_tokens = int(payload.get('max_new_tokens') or 160)
+    except Exception:
+        max_new_tokens = 160
+    # server timeout can be specified; default 180s
+    try:
+        server_timeout_s = int(payload.get('server_timeout_s') or payload.get('remote_timeout') or 180)
+    except Exception:
+        server_timeout_s = 180
+
+    # Resolve layer inventory (reuse v21 inventory if present)
+    inv = None
+    try:
+        for fn_name in ('_lrh21_layer_inventory', '_lrh21_inventory'):
+            fn = globals().get(fn_name)
+            if callable(fn):
+                inv = fn()
+                break
+    except Exception:
+        inv = None
+
+    layer_path = payload.get('manual_layer_path') or (inv.get('selected_layer_path') if isinstance(inv, dict) else None) or payload.get('layer_path')
+    layers = (inv.get('resolved_layers_mixed') if isinstance(inv, dict) else None) or []
+    try:
+        layer_index = int(payload.get('layer') if payload.get('layer') is not None else (layers[0] if layers else 0))
+    except Exception:
+        layer_index = 0
+
+    do_empty_cache = bool(payload.get('do_empty_cache') or False)
+
+    # Execute guarded generation
+    res = _lv23_generate_with_hook_guarded(
+        prompt=prompt,
+        model_path=payload.get('model_path'),
+        quantization=payload.get('quantization'),
+        manual_layer_path=layer_path,
+        manual_layer_index=layer_index,
+        operator=operator,
+        theta=theta,
+        rotation_magnitude=payload.get('rotation_magnitude'),
+        max_new_tokens=max_new_tokens,
+        server_timeout_s=server_timeout_s,
+        job_id=job_id,
+        do_empty_cache=do_empty_cache,
+    )
+
+    # Wrap with a minimal compatibility envelope expected by Leap Engine
+    return {
+        'ok': bool(res.get('ok')),
+        'patch_id': LEAP_V23_GPU_GUARD_PATCH_ID,
+        'reason': res.get('reason') or ('ok' if res.get('ok') else 'failed'),
+        'generation_backend': 'remote_runtime_hidden_hook_v23_guarded',
+        'job_id': job_id,
+        'generated_text': res.get('generated_text') or '',
+        'hook_used': bool(res.get('hook_used') or res.get('hook_call_count', 0) > 0),
+        'hook_call_count': int(res.get('hook_call_count') or 0),
+        'layer_inventory': inv if isinstance(inv, dict) else {'ok': False, 'reason': 'layer_inventory_missing', 'patch_id': LEAP_V23_GPU_GUARD_PATCH_ID},
+        'resolved_layer': layer_index,
+        'resolved_layer_path': layer_path or '',
+        'operator': operator,
+        'theta': theta,
+        'max_new_tokens_effective': int(res.get('max_new_tokens_effective') or max_new_tokens),
+        'server_timeout_s': int(server_timeout_s),
+        'pre_sync': res.get('pre_sync'),
+        'mid_sync': res.get('mid_sync'),
+        'post_sync': res.get('post_sync'),
+        'final_sync': res.get('final_sync'),
+        'mem': _lv23_cuda_mem_snapshot(),
+        'latent_result': res,
+    }
+
+
+@app.get('/runtime/v23/capabilities')
+def runtime_v23_capabilities():
+    return {
+        'ok': True,
+        'patch_id': LEAP_V23_GPU_GUARD_PATCH_ID,
+        'gpu_guard': True,
+        'cancel_endpoint': True,
+        'single_flight': True,
+        'cuda_synchronize_before_return': True,
+        'endpoints': ['/latent/v23/status', '/latent/v23/generate', '/latent/v23/cancel'],
+        'mem': _lv23_cuda_mem_snapshot(),
+    }

@@ -14894,3 +14894,72 @@ except Exception:
 # ============================================================================
 # END ADD-ONLY COMPATIBILITY FIX: GROWTH-LLM-WIRE-PROOF-V15C
 # ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY PATCH GROWTH V16: block fallback-only invention success
+# generated_at: 20260504_000818 JST
+# source_file_before_bytes: 731842
+# source_file_before_sha256_8: 0fe3bb97
+# ============================================================================
+_GROWTH_V16_PATCH_ID = 'GROWTH-LEAP-FALLBACK-SUCCESS-BLOCK-V16-20260503'
+
+def _growth_mark_fallback_only_not_invention_success(result: dict) -> dict:
+    out = dict(result or {})
+    out['accepted'] = False
+    out['review_recommended'] = False
+    out['status'] = 'fallback_only_not_invention_success'
+    out['reason'] = out.get('reason') or 'primary_llm_idea_generation_failed'
+    diag = out.get('diagnostics') if isinstance(out.get('diagnostics'), dict) else {}
+    diag['fallback_success_blocked'] = True
+    diag['patch_id'] = _GROWTH_V16_PATCH_ID
+    out['diagnostics'] = diag
+    return out
+
+try: _GROWTH_V16_PREV_BUILD_INVENTOR = _lp_exec_build_inventor
+except Exception: _GROWTH_V16_PREV_BUILD_INVENTOR = None
+
+def _growth_v16_build_inventor(self, seed=0):
+    inventor = _GROWTH_V16_PREV_BUILD_INVENTOR(self, seed=seed) if callable(_GROWTH_V16_PREV_BUILD_INVENTOR) else None
+    if inventor is not None:
+        try:
+            if getattr(inventor, 'idea_backend', None) is None and callable(getattr(self, 'llm_json_fn', None)):
+                try:
+                    from leap_engine import RemoteRuntimeIdeaBackend
+                    inventor.idea_backend = RemoteRuntimeIdeaBackend(getattr(self, 'llm_json_fn'), backend_label='remote_runtime')
+                    inventor.runtime_generate_fn = getattr(self, 'llm_json_fn')
+                except Exception:
+                    inventor.runtime_generate_fn = getattr(self, 'llm_json_fn')
+            inventor._growth_v16_patch_id = _GROWTH_V16_PATCH_ID
+        except Exception: pass
+    return inventor
+try: _lp_exec_build_inventor = _growth_v16_build_inventor
+except Exception: pass
+
+try: _GROWTH_V16_PREV_RUN_LEAP = AutonomousGrowthExecutor.run_leap_engine
+except Exception: _GROWTH_V16_PREV_RUN_LEAP = None
+
+def _growth_v16_run_leap_engine(self, *args, **kwargs):
+    result = _GROWTH_V16_PREV_RUN_LEAP(self, *args, **kwargs) if callable(_GROWTH_V16_PREV_RUN_LEAP) else {'status':'failed','reason':'run_leap_engine_unavailable'}
+    if not isinstance(result, dict): return _growth_mark_fallback_only_not_invention_success({'raw':result,'reason':'non_dict_leap_result'})
+    proof = result.get('idea_generation_proof') if isinstance(result.get('idea_generation_proof'), dict) else {}
+    route = str(result.get('idea_generation_route', '') or '')
+    backend_called = bool(proof.get('backend_generate_called', False)); raw_chars = int(proof.get('raw_output_chars', 0) or 0)
+    if route != 'generate_idea' or not backend_called or raw_chars <= 0:
+        marked = _growth_mark_fallback_only_not_invention_success(result)
+        marked.setdefault('idea_generation_proof', proof); marked.setdefault('idea_generation_route', route or 'missing')
+        return marked
+    result.setdefault('diagnostics', {})
+    if isinstance(result['diagnostics'], dict): result['diagnostics'].update({'growth_v16_fallback_success_checked': True, 'patch_id': _GROWTH_V16_PATCH_ID})
+    return result
+try:
+    if 'AutonomousGrowthExecutor' in globals() and isinstance(AutonomousGrowthExecutor, type):
+        AutonomousGrowthExecutor.run_leap_engine = _growth_v16_run_leap_engine
+        AutonomousGrowthExecutor.run_latent_phase = _growth_v16_run_leap_engine
+    if 'InventionBenchmarkExecutor' in globals() and isinstance(InventionBenchmarkExecutor, type):
+        InventionBenchmarkExecutor.run_leap_engine = _growth_v16_run_leap_engine
+        InventionBenchmarkExecutor.run_latent_phase = _growth_v16_run_leap_engine
+except Exception: pass
+# ============================================================================
+# END ADD-ONLY PATCH GROWTH V16
+# ============================================================================

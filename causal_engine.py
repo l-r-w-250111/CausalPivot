@@ -6567,3 +6567,52 @@ except Exception:
 # END ADD-ONLY PATCH: CAUSAL-HIDDEN-BRANCHING-V13-BRIDGE
 # ============================================================================
 
+
+
+# ============================================================================
+# ADD-ONLY PATCH CAUSAL V16: ingest Leap causal feedback packet
+# generated_at: 20260504_000818 JST
+# source_file_before_bytes: 307228
+# source_file_before_sha256_8: 22b9ac20
+# ============================================================================
+_CAUSAL_FEEDBACK_PACKET_V16_PATCH_ID = 'CAUSAL-LEAP-FEEDBACK-PACKET-V16-20260503'
+
+def _cfp16_safe_dict(x): return dict(x) if isinstance(x, dict) else {}
+def _cfp16_safe_list(x):
+    if isinstance(x, list): return list(x)
+    if isinstance(x, tuple): return list(x)
+    return []
+
+def ingest_causal_feedback_packet_v16(self=None, packet=None, append_only=True):
+    pkt = _cfp16_safe_dict(packet)
+    record = {
+        'patch_id': _CAUSAL_FEEDBACK_PACKET_V16_PATCH_ID,
+        'source_used_llm': bool(pkt.get('source_used_llm', False)),
+        'source_idea_id': str(pkt.get('source_idea_id', '') or ''),
+        'source_turn': pkt.get('source_turn'),
+        'source_branch_id': str(pkt.get('source_branch_id', '') or ''),
+        'source_backend': str(pkt.get('source_backend', '') or ''),
+        'hypothesis_from_llm_output': bool(pkt.get('hypothesis_from_llm_output', False)),
+        'hypothesis': str(pkt.get('hypothesis', '') or '')[:4000],
+        'mechanism': str(pkt.get('mechanism', '') or '')[:4000],
+        'required_experiments': _cfp16_safe_list(pkt.get('required_experiments'))[:16],
+        's_matrix_updates_proposed': _cfp16_safe_list(pkt.get('s_matrix_updates_proposed'))[:32],
+        'predicted_edges': _cfp16_safe_list(pkt.get('predicted_edges'))[:32],
+        'feedback_to_next_turn': _cfp16_safe_dict(pkt.get('feedback_to_next_turn')),
+    }
+    if self is not None:
+        try:
+            hist = getattr(self, 'leap_causal_feedback_packets_v16', None)
+            if not isinstance(hist, list): hist = []
+            hist.append(record); setattr(self, 'leap_causal_feedback_packets_v16', hist[-256:])
+        except Exception: pass
+    return record
+try:
+    if 'UnifiedCausalOSV5_3Full' in globals() and isinstance(UnifiedCausalOSV5_3Full, type): UnifiedCausalOSV5_3Full.ingest_causal_feedback_packet_v16 = ingest_causal_feedback_packet_v16
+except Exception: pass
+try:
+    if 'CausalCoreV5' in globals() and isinstance(CausalCoreV5, type): CausalCoreV5.ingest_causal_feedback_packet_v16 = ingest_causal_feedback_packet_v16
+except Exception: pass
+# ============================================================================
+# END ADD-ONLY PATCH CAUSAL V16
+# ============================================================================
