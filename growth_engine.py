@@ -14963,3 +14963,520 @@ except Exception: pass
 # ============================================================================
 # END ADD-ONLY PATCH GROWTH V16
 # ============================================================================
+
+
+# BEGIN_ADD_ONLY_PATCH_IDEATION_PHASE
+
+# ADD-ONLY: Phase-gated LLM usage (Pre/Post only).
+# This patch introduces a global guard to prevent text generation during ideation while preserving latent/hook usage.
+
+class _LLMPhaseGuard:
+    PHASE_IDEATION = 'ideation'
+    PHASE_PRE = 'pre'
+    PHASE_POST = 'post'
+    PHASE_CHAT = 'chat'
+    _phase = PHASE_CHAT
+
+    @classmethod
+    def set(cls, phase):
+        cls._phase = phase
+    @classmethod
+    def get(cls):
+        return cls._phase
+
+# Monkey-patch generate calls to be no-op during ideation (latent ops still allowed upstream).
+def _guarded_generate(original_generate):
+    def wrapper(*args, **kwargs):
+        if _LLMPhaseGuard.get() == _LLMPhaseGuard.PHASE_IDEATION:
+            return ''
+        return original_generate(*args, **kwargs)
+    return wrapper
+
+try:
+    # Patch common generate entry points if present
+    if hasattr(globals().get('llm', None), 'generate'):
+        llm.generate = _guarded_generate(llm.generate)
+except Exception:
+    pass
+
+# Public helpers to be used by engines
+def enter_ideation(): _LLMPhaseGuard.set(_LLMPhaseGuard.PHASE_IDEATION)
+def enter_pre(): _LLMPhaseGuard.set(_LLMPhaseGuard.PHASE_PRE)
+def enter_post(): _LLMPhaseGuard.set(_LLMPhaseGuard.PHASE_POST)
+def enter_chat(): _LLMPhaseGuard.set(_LLMPhaseGuard.PHASE_CHAT)
+
+# END_ADD_ONLY_PATCH_IDEATION_PHASE
+
+
+# ============================================================================
+# ADD-ONLY PATCH: GROWTH-V43-SMATRIX-USR-REFLECTION
+# generated_at_jst: 20260506
+# source_file_before_bytes: 737222
+# source_file_before_sha256_8: 9bddbc3e
+# Policy:
+# - ADD-ONLY. No existing code is removed or overwritten.
+# - No benchmark/task-name hardcoding. All logic is based on generic result/candidate
+#   structures such as s_matrix_verification, usr_support, scores_v43, and graph signatures.
+# - Core candidate generation remains no-LLM; this patch converts verification results
+#   into meta-cognitive guidance for the next search/exploration step.
+# Purpose:
+# - Convert Leap/CausalOS S-matrix and USR verification results into reflection memory.
+# - Generate next-search control signals: avoid duplicate signatures, prefer unresolved
+#   edges, request new observations/interventions, and keep USR support enabled.
+# - Preserve existing reflection routes while adding V43 metadata when possible.
+# ============================================================================
+
+GROWTH_V43_SMATRIX_USR_REFLECTION_PATCH_ID = "GROWTH-V43-SMATRIX-USR-REFLECTION-20260506"
+
+
+def _growth_v43_safe_dict(x):
+    return x if isinstance(x, dict) else {}
+
+
+def _growth_v43_safe_list(x):
+    if x is None:
+        return []
+    if isinstance(x, list):
+        return x
+    if isinstance(x, tuple):
+        return list(x)
+    return [x]
+
+
+def _growth_v43_text(x, limit=2000):
+    try:
+        s = "" if x is None else str(x)
+    except Exception:
+        s = repr(x)
+    s = " ".join(s.split())
+    return s[:max(0, int(limit))]
+
+
+def _growth_v43_float(x, default=0.0, lo=None, hi=None):
+    try:
+        v = float(x)
+    except Exception:
+        v = float(default)
+    try:
+        import math as _math
+        if not _math.isfinite(v):
+            v = float(default)
+    except Exception:
+        pass
+    if lo is not None:
+        v = max(float(lo), v)
+    if hi is not None:
+        v = min(float(hi), v)
+    return float(v)
+
+
+def _growth_v43_hash_obj(obj, n=12):
+    try:
+        import json as _json, hashlib as _hashlib
+        raw = _json.dumps(obj, ensure_ascii=False, sort_keys=True, default=str)
+        return _hashlib.sha256(raw.encode('utf-8')).hexdigest()[:int(n)]
+    except Exception:
+        return 'hash_unavailable'
+
+
+def _growth_v43_candidate_id(candidate, idx=0):
+    c = _growth_v43_safe_dict(candidate)
+    co = _growth_v43_safe_dict(c.get('candidate_object')) or c
+    return _growth_v43_text(
+        c.get('candidate_id') or co.get('candidate_id') or c.get('idea_id') or c.get('turn_id') or ('candidate_%03d' % (int(idx) + 1)),
+        160,
+    )
+
+
+def _growth_v43_is_candidate_dict(d):
+    if not isinstance(d, dict):
+        return False
+    keys = set(d.keys())
+    v43_like = {'s_matrix_verification', 'usr_support', 'scores_v43', 's_matrix_record', 's_matrix_graph_view_v43'}
+    content_like = {'candidate_object', 'components', 'causal_edges', 'verification_plan', 'decoded_hypothesis', 'hypothesis', 'interventions'}
+    id_like = {'candidate_id', 'idea_id', 'turn_id', 'branch_id', 'hypothesis_id'}
+    if keys.intersection(v43_like):
+        return True
+    if keys.intersection(id_like) and keys.intersection(content_like):
+        return True
+    if 'candidate_object' in keys and isinstance(d.get('candidate_object'), dict):
+        return True
+    return False
+
+
+def growth_v43_extract_candidates_from_result(result, max_items=256):
+    """Recursively collect candidate dictionaries from a Leap/debug result."""
+    out = []
+    seen = set()
+    candidate_keys = {
+        'generated_ideas', 'decoded_candidates', 'accepted_candidates', 'rejected_candidates',
+        'candidates', 'leap_candidates', 'transferred_candidates', 'scored_candidates',
+        'all_candidates', 'ideas', 'trials', 'accepted_trials', 'all_trials_panel',
+    }
+    def add(path, cand):
+        if not isinstance(cand, dict) or not _growth_v43_is_candidate_dict(cand):
+            return
+        cid = _growth_v43_candidate_id(cand, len(out))
+        key = cid + '::' + _growth_v43_hash_obj(cand, 16)
+        if key in seen:
+            return
+        seen.add(key)
+        out.append({'path': path, 'candidate_id': cid, 'candidate': cand})
+    def walk(obj, path='root', depth=0):
+        if len(out) >= int(max_items) or depth > 8:
+            return
+        if isinstance(obj, dict):
+            if _growth_v43_is_candidate_dict(obj):
+                add(path, obj)
+            for k, v in list(obj.items()):
+                if len(out) >= int(max_items):
+                    break
+                if k in candidate_keys and isinstance(v, list):
+                    for i, item in enumerate(v[:int(max_items)]):
+                        if isinstance(item, dict):
+                            add(path + '.' + str(k) + '[' + str(i) + ']', item)
+                        elif isinstance(item, (dict, list, tuple)):
+                            walk(item, path + '.' + str(k) + '[' + str(i) + ']', depth + 1)
+                elif isinstance(v, (dict, list, tuple)):
+                    walk(v, path + '.' + str(k), depth + 1)
+        elif isinstance(obj, (list, tuple)):
+            for i, item in enumerate(list(obj)[:int(max_items)]):
+                if isinstance(item, (dict, list, tuple)):
+                    walk(item, path + '[' + str(i) + ']', depth + 1)
+    walk(result)
+    return out[:int(max_items)]
+
+
+def _growth_v43_get_candidate_smatrix_edges(candidate):
+    c = _growth_v43_safe_dict(candidate)
+    rec = _growth_v43_safe_dict(c.get('s_matrix_record'))
+    graph = _growth_v43_safe_dict(c.get('s_matrix_graph_view_v43'))
+    edges = _growth_v43_safe_list(rec.get('complex_s_edges'))
+    if not edges:
+        edges = _growth_v43_safe_list(graph.get('edges'))
+    return [e for e in edges if isinstance(e, dict)]
+
+
+def _growth_v43_get_usr_report(candidate):
+    usr = _growth_v43_safe_dict(_growth_v43_safe_dict(candidate).get('usr_support'))
+    ident = _growth_v43_safe_dict(usr.get('identifiability_report'))
+    score_components = _growth_v43_safe_dict(usr.get('score_components'))
+    return usr, ident, score_components
+
+
+def _growth_v43_get_graph_signature(candidate):
+    c = _growth_v43_safe_dict(candidate)
+    sig = _growth_v43_safe_dict(c.get('graph_signature_v43'))
+    if sig.get('signature'):
+        return sig.get('signature')
+    rec = _growth_v43_safe_dict(c.get('s_matrix_record'))
+    if rec.get('graph_signature'):
+        return rec.get('graph_signature')
+    co = _growth_v43_safe_dict(c.get('candidate_object')) or c
+    return _growth_v43_hash_obj({
+        'components': co.get('components') or co.get('nodes'),
+        'edges': co.get('causal_edges') or co.get('edges'),
+        'verification': co.get('verification_plan') or co.get('tests'),
+    }, 16)
+
+
+def _growth_v43_score_candidate_for_next_focus(candidate):
+    """Higher score means this candidate has more unresolved but actionable value."""
+    c = _growth_v43_safe_dict(candidate)
+    scores = _growth_v43_safe_dict(c.get('scores_v43'))
+    ver = _growth_v43_safe_dict(c.get('s_matrix_verification'))
+    usr, ident, sc = _growth_v43_get_usr_report(c)
+    pre = _growth_v43_float(scores.get('pre_experiment_confidence'), 0.0, lo=0.0, hi=1.0)
+    draft = _growth_v43_float(scores.get('draft_quality_score'), _growth_v43_float(c.get('overall_score'), 0.0), lo=0.0, hi=1.0)
+    ident_score = _growth_v43_float(ident.get('identifiability_score', usr.get('identifiability_score', sc.get('usr_identifiability_score', 0.0))), 0.0, lo=0.0, hi=1.0)
+    duplicate_penalty = _growth_v43_float(ver.get('duplicate_signature_penalty', _growth_v43_safe_dict(c.get('diversity_penalty_v43')).get('diversity_penalty', 0.0)), 0.0, lo=0.0, hi=1.0)
+    high_imag_count = len([e for e in _growth_v43_get_candidate_smatrix_edges(c) if _growth_v43_float(e.get('weight_im'), 0.0) >= 0.30])
+    unresolved_edges = len(_growth_v43_safe_list(ident.get('unidentifiable_edges'))) + len(_growth_v43_safe_list(ident.get('weakly_identifiable_edges')))
+    return max(0.0, 0.35 * draft + 0.20 * pre + 0.20 * (1.0 - ident_score) + 0.15 * min(1.0, unresolved_edges / 4.0) + 0.10 * min(1.0, high_imag_count / 4.0) - duplicate_penalty)
+
+
+def growth_v43_build_reflection_from_smatrix_usr(last_result, history=None, context=None):
+    """
+    Convert Leap result S-matrix/USR verification into a meta-cognitive reflection context.
+    Generic: does not depend on benchmark names or domain-specific task strings.
+    """
+    ctx = _growth_v43_safe_dict(context)
+    candidates = growth_v43_extract_candidates_from_result(last_result, max_items=int(ctx.get('max_candidates_for_reflection', 256) or 256))
+    duplicate_signatures = []
+    signature_seen = {}
+    high_imaginary_edges = []
+    unidentified_edges = []
+    weakly_identified_edges = []
+    usr_unbound_variables = []
+    contradiction_edges = []
+    unsupported_edges = []
+    failed_patterns = []
+    required_measurements = []
+    required_interventions = []
+    candidate_focus = []
+    publishable_candidate_ids = []
+    draft_requires_experiment_ids = []
+
+    for idx, item in enumerate(candidates):
+        cand = _growth_v43_safe_dict(item.get('candidate'))
+        cid = item.get('candidate_id') or _growth_v43_candidate_id(cand, idx)
+        sig = _growth_v43_get_graph_signature(cand)
+        if sig in signature_seen:
+            duplicate_signatures.append({'signature': sig, 'candidate_id': cid, 'first_candidate_id': signature_seen.get(sig)})
+        else:
+            signature_seen[sig] = cid
+        ver = _growth_v43_safe_dict(cand.get('s_matrix_verification'))
+        if ver.get('contradicting_edges'):
+            for e in _growth_v43_safe_list(ver.get('contradicting_edges')):
+                contradiction_edges.append({'candidate_id': cid, 'edge': e})
+        for k in ('missing_test_edges', 'missing_observable_edges', 'unsupported_edges'):
+            for e in _growth_v43_safe_list(ver.get(k)):
+                unsupported_edges.append({'candidate_id': cid, 'kind': k, 'edge': e})
+        for e in _growth_v43_get_candidate_smatrix_edges(cand):
+            im = _growth_v43_float(e.get('weight_im'), 0.0, lo=0.0, hi=1.0)
+            if im >= 0.30:
+                high_imaginary_edges.append({
+                    'candidate_id': cid,
+                    'edge_id': e.get('edge_id') or e.get('id'),
+                    'src': e.get('src') or e.get('source'),
+                    'dst': e.get('dst') or e.get('target'),
+                    'relation': e.get('relation'),
+                    'weight_im': im,
+                    'observable': e.get('observable'),
+                    'phase_hint': e.get('phase_hint'),
+                })
+        usr, ident, sc = _growth_v43_get_usr_report(cand)
+        for e in _growth_v43_safe_list(ident.get('unidentifiable_edges')):
+            unidentified_edges.append({'candidate_id': cid, 'edge': e})
+        for e in _growth_v43_safe_list(ident.get('weakly_identifiable_edges')):
+            weakly_identified_edges.append({'candidate_id': cid, 'edge': e})
+        for m in _growth_v43_safe_list(ident.get('required_next_measurements')):
+            required_measurements.append({'candidate_id': cid, 'measurement': _growth_v43_text(m, 400)})
+        for itv in _growth_v43_safe_list(ident.get('required_next_interventions')):
+            required_interventions.append({'candidate_id': cid, 'intervention': _growth_v43_text(itv, 400)})
+        bind = _growth_v43_safe_dict(usr.get('variable_binding_report') or sc.get('binding_report'))
+        for v in _growth_v43_safe_list(bind.get('unbound_variables')):
+            usr_unbound_variables.append({'candidate_id': cid, 'variable': v})
+        if cand.get('candidate_publishable'):
+            publishable_candidate_ids.append(cid)
+        if cand.get('publishable_status') == 'draft_requires_experiment':
+            draft_requires_experiment_ids.append(cid)
+        focus_score = _growth_v43_score_candidate_for_next_focus(cand)
+        candidate_focus.append({'candidate_id': cid, 'focus_score': focus_score, 'graph_signature': sig, 'publishable_status': cand.get('publishable_status')})
+
+    # Failed/repeated patterns are abstract structural patterns, not task names.
+    if duplicate_signatures:
+        failed_patterns.append({'kind': 'duplicate_or_isomorphic_graph_signature', 'count': len(duplicate_signatures)})
+    if unsupported_edges:
+        failed_patterns.append({'kind': 'unsupported_or_untested_edges', 'count': len(unsupported_edges)})
+    if usr_unbound_variables:
+        failed_patterns.append({'kind': 'usr_unbound_variables', 'count': len(usr_unbound_variables)})
+    if contradiction_edges:
+        failed_patterns.append({'kind': 's_matrix_contradictions', 'count': len(contradiction_edges)})
+
+    candidate_focus = sorted(candidate_focus, key=lambda x: _growth_v43_float(x.get('focus_score'), 0.0), reverse=True)
+    top_focus = candidate_focus[:8]
+    unresolved_count = len(unidentified_edges) + len(weakly_identified_edges) + len(high_imaginary_edges)
+    recommended_next_view = 'prefer_unresolved_edges_with_observable_or_intervention_gaps' if unresolved_count else 'diversify_candidate_graph_signatures_and_collect_new_observables'
+    if duplicate_signatures and unresolved_count:
+        recommended_next_view = 'avoid_duplicate_signatures_and_target_unidentified_high_phase_edges'
+    recommended_goal_update = 'convert draft candidates into identifiable causal hypotheses by adding measurements/interventions before publishable judgement'
+    if not candidates:
+        recommended_goal_update = 'run Leap search first; no candidate-level S-matrix/USR reflection is available'
+
+    reflection = {
+        'patch_id': GROWTH_V43_SMATRIX_USR_REFLECTION_PATCH_ID,
+        'candidate_count': len(candidates),
+        'failed_patterns': failed_patterns,
+        'duplicate_signatures': duplicate_signatures[:64],
+        'unidentified_edges': unidentified_edges[:128],
+        'weakly_identified_edges': weakly_identified_edges[:128],
+        'high_imaginary_edges': high_imaginary_edges[:128],
+        'usr_unbound_variables': usr_unbound_variables[:128],
+        'contradiction_edges': contradiction_edges[:128],
+        'unsupported_edges': unsupported_edges[:128],
+        'required_next_measurements': required_measurements[:128],
+        'required_next_interventions': required_interventions[:128],
+        'candidate_focus_ranking': top_focus,
+        'publishable_candidate_ids': publishable_candidate_ids,
+        'draft_requires_experiment_ids': draft_requires_experiment_ids[:128],
+        'recommended_next_view': recommended_next_view,
+        'recommended_goal_update': recommended_goal_update,
+        'recommended_experiments': [x.get('measurement') for x in required_measurements[:16] if x.get('measurement')] + [x.get('intervention') for x in required_interventions[:16] if x.get('intervention')],
+        'request_usr_support': True,
+        'core_llm_generate_required': False,
+        'history_seen': history is not None,
+    }
+    return reflection
+
+
+def growth_v43_build_next_search_guidance(reflection_context, context=None):
+    """
+    Convert V43 reflection context into generic next-search control signals.
+    The returned object can be passed to Leap as context/guidance without relying
+    on task names or benchmark labels.
+    """
+    ref = _growth_v43_safe_dict(reflection_context)
+    avoid = []
+    for d in _growth_v43_safe_list(ref.get('duplicate_signatures')):
+        if isinstance(d, dict) and d.get('signature'):
+            avoid.append(d.get('signature'))
+    prefer_edges = []
+    for key in ('unidentified_edges', 'weakly_identified_edges', 'high_imaginary_edges', 'unsupported_edges'):
+        for e in _growth_v43_safe_list(ref.get(key)):
+            if isinstance(e, dict):
+                prefer_edges.append({
+                    'source': key,
+                    'candidate_id': e.get('candidate_id'),
+                    'edge': e.get('edge') or e.get('edge_id'),
+                    'src': e.get('src'),
+                    'dst': e.get('dst'),
+                    'relation': e.get('relation'),
+                    'observable': e.get('observable'),
+                })
+            else:
+                prefer_edges.append({'source': key, 'edge': e})
+    force_new_observation_axis = []
+    for m in _growth_v43_safe_list(ref.get('required_next_measurements')):
+        if isinstance(m, dict) and m.get('measurement'):
+            force_new_observation_axis.append(m.get('measurement'))
+        elif m:
+            force_new_observation_axis.append(_growth_v43_text(m, 400))
+    intervention_targets = []
+    for i in _growth_v43_safe_list(ref.get('required_next_interventions')):
+        if isinstance(i, dict) and i.get('intervention'):
+            intervention_targets.append(i.get('intervention'))
+        elif i:
+            intervention_targets.append(_growth_v43_text(i, 400))
+    # Bias operator classes by abstract failure mode counts, not by task/domain names.
+    failed_kinds = {str(_growth_v43_safe_dict(x).get('kind')): _growth_v43_safe_dict(x).get('count', 0) for x in _growth_v43_safe_list(ref.get('failed_patterns')) if isinstance(x, dict)}
+    operator_bias = {
+        'observation_shift': 1.0 + min(0.6, 0.05 * len(force_new_observation_axis) + 0.05 * len(prefer_edges)),
+        'mediator_insertion': 1.0 + min(0.5, 0.05 * len(_growth_v43_safe_list(ref.get('high_imaginary_edges')))),
+        'constraint_refinement': 1.0 + min(0.5, 0.08 * len(_growth_v43_safe_list(ref.get('usr_unbound_variables')))),
+        'diversification': 1.0 + min(0.6, 0.08 * len(avoid) + 0.03 * failed_kinds.get('duplicate_or_isomorphic_graph_signature', 0)),
+        'falsification_test_design': 1.0 + min(0.6, 0.05 * len(_growth_v43_safe_list(ref.get('unsupported_edges')))),
+    }
+    guidance = {
+        'patch_id': GROWTH_V43_SMATRIX_USR_REFLECTION_PATCH_ID,
+        'avoid_graph_signatures': list(dict.fromkeys([_growth_v43_text(x, 80) for x in avoid if x]))[:128],
+        'prefer_unresolved_edges': prefer_edges[:128],
+        'force_new_observation_axis': list(dict.fromkeys([_growth_v43_text(x, 400) for x in force_new_observation_axis if x]))[:64],
+        'required_next_interventions': list(dict.fromkeys([_growth_v43_text(x, 400) for x in intervention_targets if x]))[:64],
+        'request_usr_support': True,
+        'request_s_matrix_verification': True,
+        'preferred_operator_bias': operator_bias,
+        'recommended_next_view': ref.get('recommended_next_view'),
+        'recommended_goal_update': ref.get('recommended_goal_update'),
+        'core_llm_generate_required': False,
+        'llm_phase_policy': {'pre_post_only': True, 'core_generation_forbidden': True},
+    }
+    return guidance
+
+
+def growth_v43_build_meta_cognitive_update(last_result, history=None, context=None):
+    """Convenience bundle: result -> reflection_context + next_search_guidance."""
+    reflection = growth_v43_build_reflection_from_smatrix_usr(last_result, history=history, context=context)
+    guidance = growth_v43_build_next_search_guidance(reflection, context=context)
+    return {
+        'patch_id': GROWTH_V43_SMATRIX_USR_REFLECTION_PATCH_ID,
+        'reflection_context_v43': reflection,
+        'next_search_guidance_v43': guidance,
+        'growth_memory_event_v43': {
+            'event_type': 'smatrix_usr_reflection',
+            'candidate_count': reflection.get('candidate_count', 0),
+            'unresolved_edge_count': len(_growth_v43_safe_list(reflection.get('unidentified_edges'))) + len(_growth_v43_safe_list(reflection.get('weakly_identified_edges'))),
+            'duplicate_signature_count': len(_growth_v43_safe_list(reflection.get('duplicate_signatures'))),
+            'recommended_goal_update': reflection.get('recommended_goal_update'),
+        },
+    }
+
+
+def growth_v43_attach_reflection_to_result(result, history=None, context=None):
+    """Attach V43 growth reflection to a result dictionary without removing existing fields."""
+    if not isinstance(result, dict):
+        return result
+    out = dict(result)
+    try:
+        update = growth_v43_build_meta_cognitive_update(out, history=history, context=context)
+        out.update(update)
+    except Exception as e:
+        out['reflection_context_v43'] = {
+            'patch_id': GROWTH_V43_SMATRIX_USR_REFLECTION_PATCH_ID,
+            'error': repr(e),
+            'candidate_count': 0,
+        }
+        out['next_search_guidance_v43'] = {
+            'patch_id': GROWTH_V43_SMATRIX_USR_REFLECTION_PATCH_ID,
+            'request_usr_support': True,
+            'request_s_matrix_verification': True,
+            'error': repr(e),
+        }
+    return out
+
+
+# Preserve and enrich common reflection context builders when they are used by existing routes.
+try:
+    _GROWTH_V43_PREV_AGV56_BUILD_REFLECTION_CONTEXT = _agv56_build_reflection_context
+except Exception:
+    _GROWTH_V43_PREV_AGV56_BUILD_REFLECTION_CONTEXT = None
+
+
+def _agv56_build_reflection_context(*args, **kwargs):
+    base = None
+    if callable(_GROWTH_V43_PREV_AGV56_BUILD_REFLECTION_CONTEXT):
+        try:
+            base = _GROWTH_V43_PREV_AGV56_BUILD_REFLECTION_CONTEXT(*args, **kwargs)
+        except Exception as e:
+            base = {'previous_reflection_error_v43': repr(e)}
+    if not isinstance(base, dict):
+        base = {'previous_reflection_value_v43': base}
+    result_like = args[0] if args else kwargs.get('last_result') or kwargs.get('result') or kwargs.get('payload') or base
+    try:
+        base['smatrix_usr_reflection_v43'] = growth_v43_build_reflection_from_smatrix_usr(result_like, history=kwargs.get('history'), context=kwargs)
+        base['next_search_guidance_v43'] = growth_v43_build_next_search_guidance(base['smatrix_usr_reflection_v43'], context=kwargs)
+    except Exception as e:
+        base['smatrix_usr_reflection_v43'] = {'patch_id': GROWTH_V43_SMATRIX_USR_REFLECTION_PATCH_ID, 'error': repr(e)}
+    return base
+
+try:
+    _GROWTH_V43_PREV_AGV54_BUILD_REFLECTION_CONTEXT = _agv54_build_reflection_context
+except Exception:
+    _GROWTH_V43_PREV_AGV54_BUILD_REFLECTION_CONTEXT = None
+
+
+def _agv54_build_reflection_context(*args, **kwargs):
+    base = None
+    if callable(_GROWTH_V43_PREV_AGV54_BUILD_REFLECTION_CONTEXT):
+        try:
+            base = _GROWTH_V43_PREV_AGV54_BUILD_REFLECTION_CONTEXT(*args, **kwargs)
+        except Exception as e:
+            base = {'previous_reflection_error_v43': repr(e)}
+    if not isinstance(base, dict):
+        base = {'previous_reflection_value_v43': base}
+    result_like = args[0] if args else kwargs.get('last_result') or kwargs.get('result') or kwargs.get('payload') or base
+    try:
+        base['smatrix_usr_reflection_v43'] = growth_v43_build_reflection_from_smatrix_usr(result_like, history=kwargs.get('history'), context=kwargs)
+        base['next_search_guidance_v43'] = growth_v43_build_next_search_guidance(base['smatrix_usr_reflection_v43'], context=kwargs)
+    except Exception as e:
+        base['smatrix_usr_reflection_v43'] = {'patch_id': GROWTH_V43_SMATRIX_USR_REFLECTION_PATCH_ID, 'error': repr(e)}
+    return base
+
+try:
+    __all__
+except Exception:
+    __all__ = []
+for _growth_v43_name in [
+    'GROWTH_V43_SMATRIX_USR_REFLECTION_PATCH_ID',
+    'growth_v43_extract_candidates_from_result',
+    'growth_v43_build_reflection_from_smatrix_usr',
+    'growth_v43_build_next_search_guidance',
+    'growth_v43_build_meta_cognitive_update',
+    'growth_v43_attach_reflection_to_result',
+]:
+    if _growth_v43_name not in __all__:
+        __all__.append(_growth_v43_name)
+
+# ============================================================================
+# END ADD-ONLY PATCH: GROWTH-V43-SMATRIX-USR-REFLECTION
+# ============================================================================

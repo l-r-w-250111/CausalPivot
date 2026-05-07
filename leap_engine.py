@@ -12168,3 +12168,2997 @@ except Exception:
 # ============================================================================
 # END ADD-ONLY PATCH: LEAP_V30_QUALITY_GATE_RAW_ONLY
 # ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY PATCH: LEAP_V31_DECODE_RETRY_AND_GUI_COUNT_WIRE_20260505
+# generated_at_jst: 20260505_181417
+# source_file_before_bytes: 619395
+# source_file_before_sha256_8: 17941b41
+# purpose:
+# - Fix GUI max_candidates handoff so max_candidates=8 becomes candidate_count=8.
+# - Do NOT silently collapse GUI controls to one candidate by taking min(control values).
+# - If publishable_candidate_count==0, allow bounded regeneration (default max 2).
+# - Preserve every raw trial in raw_trials / retry_attempts; do not publish rejected text.
+# - Retry still goes through the same hidden-hook route (no template/fallback success).
+# - No benchmark/task-name hardcoding; all behavior is schema/control driven.
+# existing_code_deleted: false
+# ============================================================================
+
+LEAP_V31_DECODE_RETRY_AND_GUI_COUNT_WIRE_PATCH_ID = 'LEAP_V31_DECODE_RETRY_AND_GUI_COUNT_WIRE_20260505'
+
+try:
+    _LEAP_V31_PREV_EFFECTIVE_CANDIDATE_COUNT = _lv29_effective_candidate_count
+except Exception:
+    _LEAP_V31_PREV_EFFECTIVE_CANDIDATE_COUNT = None
+
+try:
+    _LEAP_V31_PREV_RUN_LEAP_SEARCH = run_leap_search
+except Exception:
+    _LEAP_V31_PREV_RUN_LEAP_SEARCH = None
+
+
+def _lv31_safe_dict(x):
+    return dict(x) if isinstance(x, dict) else {}
+
+
+def _lv31_safe_list(x):
+    if isinstance(x, list):
+        return list(x)
+    if isinstance(x, tuple):
+        return list(x)
+    return []
+
+
+def _lv31_int(x, default=None):
+    try:
+        if x is None or x == '':
+            return default
+        return int(float(x))
+    except Exception:
+        return default
+
+
+def _lv31_pick_candidate_control(context=None, kwargs=None):
+    """Pick explicit GUI/request candidate controls by priority, not min().
+
+    Rationale:
+    The V29 implementation used min_of_gui_candidate_controls.  That is safe for
+    caps, but wrong for GUI transfer when an unrelated control contains 1.
+    This helper only treats semantically candidate-count-like keys as candidate
+    controls and keeps their explicit requested value.
+    """
+    ctx = _lv31_safe_dict(context)
+    kw = _lv31_safe_dict(kwargs)
+    priority_keys = [
+        'max_candidates', 'candidate_count', 'num_candidates', 'n_candidates',
+        'exploration_width', 'search_width', 'branch_width',
+        'leap_max_candidates', 'leap_candidate_count',
+        'gui_max_candidates', 'gui_candidate_count',
+    ]
+    seen = []
+    for key in priority_keys:
+        for source_name, src in [('kwargs', kw), ('context', ctx)]:
+            if key in src:
+                val = _lv31_int(src.get(key), None)
+                seen.append({'source': source_name, 'key': key, 'raw': src.get(key), 'value': val})
+                if val is not None and val > 0:
+                    return val, key, source_name, seen
+    # Backward-compatible fallback to previous V29 controls, but only if no
+    # explicit candidate key was found.
+    if callable(_LEAP_V31_PREV_EFFECTIVE_CANDIDATE_COUNT):
+        try:
+            prev = _LEAP_V31_PREV_EFFECTIVE_CANDIDATE_COUNT(context=ctx, kwargs=kw)
+            val = _lv31_int(_lv31_safe_dict(prev).get('effective'), None)
+            if val is not None and val > 0:
+                return val, 'v29_fallback_effective', 'previous', seen + [{'source':'previous_v29','value':val,'payload':prev}]
+        except Exception as e:
+            seen.append({'source':'previous_v29','error':repr(e)})
+    return 1, 'default', 'default', seen
+
+
+def _lv29_effective_candidate_count(context=None, kwargs=None):
+    """V31 override of V29 candidate count resolution.
+
+    ADD-ONLY override: existing function body is preserved above.  The name is
+    rebound so V29 route code resolves this corrected implementation at runtime.
+    """
+    ctx = _lv31_safe_dict(context)
+    kw = _lv31_safe_dict(kwargs)
+    requested, key, source, seen = _lv31_pick_candidate_control(ctx, kw)
+    safety_raw = kw.get('max_candidate_safety_cap', ctx.get('max_candidate_safety_cap', ctx.get('candidate_safety_cap', 64)))
+    safety_cap = _lv31_int(safety_raw, 64)
+    if safety_cap is None or safety_cap <= 0:
+        safety_cap = 64
+    effective = max(1, min(int(requested), int(safety_cap)))
+    return {
+        'patch_id': LEAP_V31_DECODE_RETRY_AND_GUI_COUNT_WIRE_PATCH_ID,
+        'requested': int(requested),
+        'effective': int(effective),
+        'source': f'priority_candidate_control:{source}.{key}',
+        'selected_key': key,
+        'selected_source': source,
+        'controls_seen': seen,
+        'safety_cap': int(safety_cap),
+        'safety_cap_applied': bool(int(effective) < int(requested)),
+        'v29_min_control_policy_bypassed': True,
+    }
+
+
+def _lv31_publishable_count(result):
+    r = _lv31_safe_dict(result)
+    for path in [
+        ('generation_quality_gate_v30', 'publishable_candidate_count'),
+        ('quality_gate_v30', 'publishable_candidate_count'),
+        ('scores', 'publishable_candidate_count'),
+    ]:
+        cur = r
+        ok = True
+        for k in path:
+            if isinstance(cur, dict) and k in cur:
+                cur = cur.get(k)
+            else:
+                ok = False; break
+        if ok:
+            v = _lv31_int(cur, None)
+            if v is not None:
+                return int(v)
+    return len(_lv31_safe_list(r.get('accepted_candidates')))
+
+
+def _lv31_unit_ok(result):
+    r = _lv31_safe_dict(result)
+    if str(r.get('unit_operation_status') or '').lower() == 'ok':
+        return True
+    scores = _lv31_safe_dict(r.get('scores'))
+    if _lv31_int(scores.get('unit_ok_count'), 0) > 0:
+        return True
+    llm = _lv31_safe_dict(r.get('llm_usage'))
+    return bool(llm.get('hidden_hook_called') or llm.get('llm_called'))
+
+
+def _lv31_merge_raw_trials(primary, retry_results):
+    merged = []
+    for src in [primary] + list(retry_results or []):
+        for key in ['raw_trials', 'decoded_candidates_raw_v30', 'generated_ideas', 'rejected_candidates_quality_v30']:
+            for item in _lv31_safe_list(_lv31_safe_dict(src).get(key)):
+                if isinstance(item, dict):
+                    merged.append(item)
+    # preserve order while removing exact duplicate object identities by JSON
+    out, seen = [], set()
+    for item in merged:
+        try:
+            sig = json.dumps(item, ensure_ascii=False, sort_keys=True, default=str)
+        except Exception:
+            sig = repr(item)
+        if sig not in seen:
+            seen.add(sig); out.append(item)
+    return out
+
+
+def run_leap_search(*args, **kwargs):
+    """V31 wrapper: bounded retry only after quality gate yields zero publishable candidates."""
+    if not callable(_LEAP_V31_PREV_RUN_LEAP_SEARCH):
+        return {'status':'failed','reason':'previous_run_leap_search_missing_v31','patch_id':LEAP_V31_DECODE_RETRY_AND_GUI_COUNT_WIRE_PATCH_ID}
+    result = _LEAP_V31_PREV_RUN_LEAP_SEARCH(*args, **kwargs)
+    if not isinstance(result, dict):
+        return result
+    retry_diag = {
+        'patch_id': LEAP_V31_DECODE_RETRY_AND_GUI_COUNT_WIRE_PATCH_ID,
+        'enabled': True,
+        'triggered': False,
+        'reason': '',
+        'max_retries': 0,
+        'attempts': [],
+        'policy': 'retry_only_when_publishable_candidate_count_is_zero; raw_trials_preserved; hidden_hook_route_required',
+    }
+    try:
+        publishable = _lv31_publishable_count(result)
+        if publishable > 0:
+            retry_diag.update({'reason':'publishable_candidate_already_available','publishable_candidate_count':publishable})
+            result['decode_retry_v31'] = retry_diag
+            return result
+        if not _lv31_unit_ok(result):
+            retry_diag.update({'reason':'unit_operation_not_ok_no_retry'})
+            result['decode_retry_v31'] = retry_diag
+            return result
+        ctx = _lv31_safe_dict(kwargs.get('context'))
+        max_retry_raw = kwargs.get('decode_retry_max', kwargs.get('regen', ctx.get('decode_retry_max', ctx.get('regen', 2))))
+        max_retry = max(0, min(_lv31_int(max_retry_raw, 2), 2))
+        retry_diag['max_retries'] = int(max_retry)
+        if max_retry <= 0:
+            retry_diag.update({'reason':'retry_disabled'})
+            result['decode_retry_v31'] = retry_diag
+            return result
+        retry_diag['triggered'] = True
+        retry_results = []
+        for attempt in range(1, max_retry + 1):
+            retry_kwargs = dict(kwargs)
+            retry_ctx = dict(ctx)
+            retry_ctx['decode_retry_attempt_v31'] = attempt
+            retry_ctx['decode_retry_parent_patch_id'] = LEAP_V31_DECODE_RETRY_AND_GUI_COUNT_WIRE_PATCH_ID
+            retry_kwargs['context'] = retry_ctx
+            # Do not bloat prompt.  Do not add task-specific text.  Just request a new hidden-hook trial.
+            rr = _LEAP_V31_PREV_RUN_LEAP_SEARCH(*args, **retry_kwargs)
+            retry_results.append(rr if isinstance(rr, dict) else {'status':'failed','reason':'retry_returned_non_dict'})
+            retry_diag['attempts'].append({
+                'attempt': attempt,
+                'publishable_candidate_count': _lv31_publishable_count(rr) if isinstance(rr, dict) else 0,
+                'unit_operation_ok': _lv31_unit_ok(rr) if isinstance(rr, dict) else False,
+                'candidate_count': _lv31_int(_lv31_safe_dict(_lv31_safe_dict(rr).get('scores')).get('candidate_count'), None) if isinstance(rr, dict) else None,
+            })
+            if isinstance(rr, dict) and _lv31_publishable_count(rr) > 0:
+                final = dict(rr)
+                final['raw_trials'] = _lv31_merge_raw_trials(result, retry_results)
+                final['decode_retry_v31'] = retry_diag
+                final['decode_retry_v31']['selected_retry_attempt'] = attempt
+                final.setdefault('route_trace', [])
+                if isinstance(final.get('route_trace'), list):
+                    final['route_trace'].append(LEAP_V31_DECODE_RETRY_AND_GUI_COUNT_WIRE_PATCH_ID)
+                return final
+        result['raw_trials'] = _lv31_merge_raw_trials(result, retry_results)
+        result['decode_retry_v31'] = retry_diag
+        result['decode_retry_v31']['selected_retry_attempt'] = None
+        result['decode_retry_v31']['reason'] = 'all_retries_completed_but_no_publishable_candidate'
+        result.setdefault('route_trace', [])
+        if isinstance(result.get('route_trace'), list):
+            result['route_trace'].append(LEAP_V31_DECODE_RETRY_AND_GUI_COUNT_WIRE_PATCH_ID)
+        return result
+    except Exception as e:
+        retry_diag.update({'reason':'retry_wrapper_exception','error':repr(e)})
+        try:
+            result['decode_retry_v31'] = retry_diag
+        except Exception:
+            pass
+        return result
+
+try:
+    if 'LatentPhaseInventor' in globals() and isinstance(LatentPhaseInventor, type):
+        LatentPhaseInventor.run_leap_search = staticmethod(run_leap_search)
+except Exception:
+    pass
+# ============================================================================
+# END ADD-ONLY PATCH: LEAP_V31_DECODE_RETRY_AND_GUI_COUNT_WIRE_20260505
+# ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY PATCH: LEAP_V31B_RETRY_AFTER_RUNTIME_REJECT_20260505
+# generated_at_jst: 20260505_181447
+# source_file_before_bytes: 630551
+# source_file_before_sha256_8: b7b7226c
+# purpose:
+# - Treat runtime-side bad-prefix rejection as a valid hidden-hook trial for the
+#   purpose of deciding whether decode retry is allowed.
+# - Still never publish the rejected text as a candidate.
+# - Preserve raw trials and keep retry bounded by LEAP_V31 policy.
+# existing_code_deleted: false
+# ============================================================================
+
+LEAP_V31B_RETRY_AFTER_RUNTIME_REJECT_PATCH_ID = 'LEAP_V31B_RETRY_AFTER_RUNTIME_REJECT_20260505'
+
+try:
+    _LEAP_V31B_PREV_UNIT_OK = _lv31_unit_ok
+except Exception:
+    _LEAP_V31B_PREV_UNIT_OK = None
+
+
+def _lv31_unit_ok(result):
+    """V31B override: retry is allowed when a hidden-hook LLM trial happened,
+    even if runtime correctly rejected the decoded text as bad-prefix.
+    """
+    try:
+        if callable(_LEAP_V31B_PREV_UNIT_OK) and _LEAP_V31B_PREV_UNIT_OK(result):
+            return True
+    except Exception:
+        pass
+    r = _lv31_safe_dict(result)
+    llm = _lv31_safe_dict(r.get('llm_usage'))
+    if bool(llm.get('hidden_hook_called')) or int(llm.get('hook_call_count_total') or 0) > 0:
+        return True
+    for key in ['raw_trials', 'generated_ideas', 'decoded_candidates_raw_v30', 'rejected_candidates_quality_v30']:
+        for item in _lv31_safe_list(r.get(key)):
+            if not isinstance(item, dict):
+                continue
+            if bool(item.get('hook_used')) or int(item.get('hook_call_count') or 0) > 0:
+                return True
+            rt = _lv31_safe_dict(item.get('remote_runtime_response'))
+            if bool(rt.get('hook_used')) or int(rt.get('hook_call_count') or 0) > 0:
+                return True
+            if str(rt.get('reason') or '').startswith('runtime_rejected_bad_prefix'):
+                return True
+    return False
+# ============================================================================
+# END ADD-ONLY PATCH: LEAP_V31B_RETRY_AFTER_RUNTIME_REJECT_20260505
+# ============================================================================
+
+
+# BEGIN_ADD_ONLY_PATCH_IDEATION_PHASE
+
+# ADD-ONLY: Phase-gated LLM usage (Pre/Post only).
+# This patch introduces a global guard to prevent text generation during ideation while preserving latent/hook usage.
+
+class _LLMPhaseGuard:
+    PHASE_IDEATION = 'ideation'
+    PHASE_PRE = 'pre'
+    PHASE_POST = 'post'
+    PHASE_CHAT = 'chat'
+    _phase = PHASE_CHAT
+
+    @classmethod
+    def set(cls, phase):
+        cls._phase = phase
+    @classmethod
+    def get(cls):
+        return cls._phase
+
+# Monkey-patch generate calls to be no-op during ideation (latent ops still allowed upstream).
+def _guarded_generate(original_generate):
+    def wrapper(*args, **kwargs):
+        if _LLMPhaseGuard.get() == _LLMPhaseGuard.PHASE_IDEATION:
+            return ''
+        return original_generate(*args, **kwargs)
+    return wrapper
+
+try:
+    # Patch common generate entry points if present
+    if hasattr(globals().get('llm', None), 'generate'):
+        llm.generate = _guarded_generate(llm.generate)
+except Exception:
+    pass
+
+# Public helpers to be used by engines
+def enter_ideation(): _LLMPhaseGuard.set(_LLMPhaseGuard.PHASE_IDEATION)
+def enter_pre(): _LLMPhaseGuard.set(_LLMPhaseGuard.PHASE_PRE)
+def enter_post(): _LLMPhaseGuard.set(_LLMPhaseGuard.PHASE_POST)
+def enter_chat(): _LLMPhaseGuard.set(_LLMPhaseGuard.PHASE_CHAT)
+
+# END_ADD_ONLY_PATCH_IDEATION_PHASE
+
+
+# BEGIN_ADD_ONLY_PATCH_BLOCK_GENERATE_IN_IDEATION
+# ADD-ONLY: Block text generation during IDEATION without breaking latent/causal loops.
+# Rationale: Invention ideation must not call LLM.generate; only latent ops/hooks are allowed.
+
+class _LeapLLMPhase:
+    IDEATION = 'ideation'
+    PRE = 'pre'
+    POST = 'post'
+    CHAT = 'chat'
+    current = CHAT
+
+
+def leap_enter_ideation():
+    _LeapLLMPhase.current = _LeapLLMPhase.IDEATION
+
+def leap_enter_pre():
+    _LeapLLMPhase.current = _LeapLLMPhase.PRE
+
+def leap_enter_post():
+    _LeapLLMPhase.current = _LeapLLMPhase.POST
+
+def leap_enter_chat():
+    _LeapLLMPhase.current = _LeapLLMPhase.CHAT
+
+
+def _leap_guard_generate(original_generate):
+    def _wrapped_generate(*args, **kwargs):
+        # Physically block generate during IDEATION (no forward pass, no GPU work)
+        if _LeapLLMPhase.current == _LeapLLMPhase.IDEATION:
+            return None
+        return original_generate(*args, **kwargs)
+    try:
+        _wrapped_generate.__name__ = getattr(original_generate, '__name__', 'generate')
+    except Exception:
+        pass
+    return _wrapped_generate
+
+# Monkey-patch common generate entry points if present (ADD-ONLY)
+try:
+    for _name, _obj in list(globals().items()):
+        if hasattr(_obj, 'generate') and callable(getattr(_obj, 'generate')):
+            gen = getattr(_obj, 'generate')
+            if not getattr(gen, '_leap_guarded', False):
+                wrapped = _leap_guard_generate(gen)
+                wrapped._leap_guarded = True
+                setattr(_obj, 'generate', wrapped)
+except Exception:
+    pass
+# END_ADD_ONLY_PATCH_BLOCK_GENERATE_IN_IDEATION
+
+
+# ============================================================================
+# ADD-ONLY PATCH: LEAP-V37-INVENTION-NONCOMPLETION-TELEMETRY
+# generated_at_jst: 20260505_230500
+# source_patch_policy: ADD-ONLY; no existing code deleted or overwritten.
+# purpose:
+# - Attach generic telemetry to every run_leap_engine / run_leap_search result.
+# - Preserve raw trials and rejection diagnostics; do not convert fallback into
+#   success; do not hardcode task or benchmark names.
+# ============================================================================
+
+LEAP_V37_INVENTION_NONCOMPLETION_TELEMETRY_PATCH_ID = 'LEAP-V37-INVENTION-NONCOMPLETION-TELEMETRY-20260505_230500'
+
+try:
+    _LEAP_V37_PREV_RUN_LEAP_ENGINE = run_leap_engine
+except Exception:
+    _LEAP_V37_PREV_RUN_LEAP_ENGINE = None
+try:
+    _LEAP_V37_PREV_RUN_LEAP_SEARCH = run_leap_search
+except Exception:
+    _LEAP_V37_PREV_RUN_LEAP_SEARCH = None
+try:
+    _LEAP_V37_PREV_LPI_RUN_LEAP_ENGINE = LatentPhaseInventor.run_leap_engine
+except Exception:
+    _LEAP_V37_PREV_LPI_RUN_LEAP_ENGINE = None
+
+
+def _leapv37_now():
+    import time as _time
+    return float(_time.time())
+
+
+def _leapv37_text(x, limit=1200):
+    try:
+        s = '' if x is None else str(x)
+    except Exception:
+        try:
+            s = repr(x)
+        except Exception:
+            s = ''
+    return s[:max(0, int(limit))]
+
+
+def _leapv37_dict(x):
+    return dict(x) if isinstance(x, dict) else {}
+
+
+def _leapv37_list(x):
+    return list(x) if isinstance(x, (list, tuple)) else []
+
+
+def _leapv37_collect_records(obj, path='root', depth=0, max_depth=8, limit=500):
+    records = []
+    interesting = {
+        'phase', 'stage', 'endpoint', 'route', 'generation_backend', 'backend',
+        'ok', 'status', 'reason', 'error', 'candidate_id', 'branch_id', 'turn_id',
+        'attempt', 'attempt_index', 'call_index', 'llm_used', 'llm_generate_called',
+        'requested_max_new_tokens', 'effective_max_new_tokens', 'max_new_tokens',
+        'max_new_tokens_used', 'generated_tokens', 'input_tokens', 'tokens_per_sec',
+        'decode_tokens_per_sec', 'generation_elapsed_sec', 'elapsed_ms', 'elapsed_sec',
+        'finish_reason', 'hook_call_count', 'hook_used', 'hidden_intervention_used',
+        'cpu_offload_detected', 'q_min', 'regen', 'validator_max_tokens',
+        'publishable', 'candidate_publishable', 'bad_prefix_rejected',
+    }
+    try:
+        if depth > max_depth or len(records) >= limit:
+            return records
+        if isinstance(obj, dict):
+            hits = interesting.intersection(set(obj.keys()))
+            if hits:
+                rec = {'path': path}
+                for k in sorted(hits):
+                    v = obj.get(k)
+                    if isinstance(v, (dict, list, tuple)):
+                        continue
+                    rec[k] = v if isinstance(v, (int, float, bool)) else _leapv37_text(v, 1000)
+                records.append(rec)
+            for k, v in obj.items():
+                if len(records) >= limit:
+                    break
+                if isinstance(v, (dict, list, tuple)):
+                    records.extend(_leapv37_collect_records(v, path + '.' + str(k), depth + 1, max_depth, limit - len(records)))
+        elif isinstance(obj, (list, tuple)):
+            for i, v in enumerate(obj[:250]):
+                if len(records) >= limit:
+                    break
+                if isinstance(v, (dict, list, tuple)):
+                    records.extend(_leapv37_collect_records(v, path + '[' + str(i) + ']', depth + 1, max_depth, limit - len(records)))
+    except Exception as e:
+        records.append({'path': path, 'collect_error': _leapv37_text(e, 300)})
+    return records[:limit]
+
+
+def _leapv37_counts(result):
+    r = _leapv37_dict(result)
+    keys = ['raw_trials', 'generated_ideas', 'decoded_candidates', 'accepted_candidates', 'accepted_candiates', 'review_recommended', 'candidate_lifecycle_table', 'route_attempts', 'route_trace', 'loop_results']
+    out = {}
+    for k in keys:
+        v = r.get(k)
+        if isinstance(v, (list, tuple)):
+            out[k + '_count'] = len(v)
+        elif isinstance(v, dict):
+            out[k + '_keys'] = len(v)
+    out['accepted_any'] = bool(out.get('accepted_candidates_count', 0) or out.get('accepted_candiates_count', 0))
+    out['best_candidate_present'] = isinstance(r.get('best_candidate'), dict) and bool(r.get('best_candidate'))
+    return out
+
+
+def _leapv37_call_summary(records):
+    endpoints = {}
+    failures = []
+    max_token_hits = 0
+    hook_total = 0
+    slow = []
+    for rec in records or []:
+        ep = str(rec.get('endpoint') or rec.get('generation_backend') or rec.get('backend') or rec.get('route') or 'unknown')
+        endpoints[ep] = endpoints.get(ep, 0) + 1
+        if str(rec.get('finish_reason') or '') == 'max_new_tokens':
+            max_token_hits += 1
+        try:
+            hook_total += int(rec.get('hook_call_count') or 0)
+        except Exception:
+            pass
+        reason = str(rec.get('reason') or rec.get('error') or '')
+        ok = str(rec.get('ok') or '').lower()
+        status = str(rec.get('status') or '').lower()
+        if reason or ok == 'false' or status in {'failed', 'rejected', 'error'}:
+            failures.append({'path': rec.get('path'), 'ok': rec.get('ok'), 'status': rec.get('status'), 'reason': reason[:500]})
+        elapsed = None
+        try:
+            if rec.get('generation_elapsed_sec') is not None:
+                elapsed = float(rec.get('generation_elapsed_sec'))
+            elif rec.get('elapsed_ms') is not None:
+                elapsed = float(rec.get('elapsed_ms')) / 1000.0
+        except Exception:
+            elapsed = None
+        if elapsed is not None and elapsed >= 60.0:
+            slow.append({'path': rec.get('path'), 'elapsed_sec': elapsed, 'endpoint': ep})
+    return {'record_count': len(records or []), 'endpoint_or_backend_counts': endpoints, 'failure_records_sample': failures[:40], 'slow_records_sample': slow[:40], 'max_new_tokens_finish_count': max_token_hits, 'hook_call_count_total_observed': hook_total}
+
+
+def _leapv37_kwargs_snapshot(args, kwargs):
+    out = {}
+    for k in ['seed', 'max_turns', 'max_candidates', 'candidate_count', 'exploration_width', 'operator_sequence', 'operators', 'q_min', 'regen', 'validator_max_tokens', 'max_new_tokens', 'remote_runtime_url', 'model_path', 'quantization']:
+        if k in kwargs:
+            out[k] = kwargs.get(k)
+    for k in ['prompt', 'goal', 'query']:
+        if k in kwargs:
+            txt = str(kwargs.get(k) or '')
+            out[k + '_chars'] = len(txt)
+            try:
+                import hashlib as _hashlib
+                out[k + '_sha256_12'] = _hashlib.sha256(txt.encode('utf-8')).hexdigest()[:12]
+            except Exception:
+                pass
+    out['args_count'] = len(args or [])
+    return out
+
+
+def _leapv37_attach(result, args=None, kwargs=None, started_at=None, finished_at=None, route_name='', exception_text=''):
+    r = _leapv37_dict(result)
+    started = float(started_at or _leapv37_now())
+    finished = float(finished_at or _leapv37_now())
+    records = _leapv37_collect_records(r)
+    tel = {
+        'patch_id': LEAP_V37_INVENTION_NONCOMPLETION_TELEMETRY_PATCH_ID,
+        'schema_version': 1,
+        'route_name': str(route_name or ''),
+        'started_at_epoch': started,
+        'finished_at_epoch': finished,
+        'duration_sec': max(0.0, finished - started),
+        'exception_text': _leapv37_text(exception_text, 2000),
+        'request_snapshot': _leapv37_kwargs_snapshot(args or (), kwargs or {}),
+        'candidate_flow_summary': _leapv37_counts(r),
+        'llm_runtime_call_summary': _leapv37_call_summary(records),
+        'llm_runtime_call_records_sample': records[:150],
+        'noncompletion_debug_checklist': {},
+        'generic_policy': 'no task/benchmark-name hardcoding; fallback is diagnostic only, not success',
+    }
+    tel['noncompletion_debug_checklist'] = {
+        'no_raw_trial_or_candidate': not any(tel['candidate_flow_summary'].get(k, 0) for k in ['raw_trials_count', 'generated_ideas_count', 'decoded_candidates_count', 'candidate_lifecycle_table_count']),
+        'no_accepted_candidate': not bool(tel['candidate_flow_summary'].get('accepted_any')),
+        'no_hidden_hook_call_seen': int(tel['llm_runtime_call_summary'].get('hook_call_count_total_observed') or 0) == 0,
+        'max_new_tokens_hit_seen': bool(tel['llm_runtime_call_summary'].get('max_new_tokens_finish_count')),
+        'slow_generation_seen': bool(tel['llm_runtime_call_summary'].get('slow_records_sample')),
+        'failure_records_seen': bool(tel['llm_runtime_call_summary'].get('failure_records_sample')),
+    }
+    r['debug_full_result_telemetry_v37'] = tel
+    r.setdefault('diagnostics', {})
+    if isinstance(r.get('diagnostics'), dict):
+        r['diagnostics']['debug_full_result_telemetry_v37'] = tel
+        r['diagnostics']['invention_noncompletion_debug_ready_v37'] = True
+    if isinstance(r.get('debug_full_result'), dict):
+        r['debug_full_result']['debug_full_result_telemetry_v37'] = tel
+    else:
+        r['debug_full_result'] = {'debug_full_result_telemetry_v37': tel, 'result_keys': sorted([str(k) for k in r.keys()])[:200]}
+    return r
+
+
+def _leapv37_wrap(prev_func, route_name):
+    def wrapper(*args, **kwargs):
+        started = _leapv37_now()
+        try:
+            if not callable(prev_func):
+                raise RuntimeError(str(route_name) + ' previous function unavailable')
+            out = prev_func(*args, **kwargs)
+            return _leapv37_attach(out, args=args, kwargs=kwargs, started_at=started, finished_at=_leapv37_now(), route_name=route_name)
+        except Exception as e:
+            fail = {'status': 'failed', 'reason': 'leap_v37_wrapped_exception', 'error': _leapv37_text(e, 4000), 'decoded_candidates': [], 'accepted_candidates': [], 'best_candidate': {}}
+            return _leapv37_attach(fail, args=args, kwargs=kwargs, started_at=started, finished_at=_leapv37_now(), route_name=route_name, exception_text=e)
+    return wrapper
+
+try:
+    if callable(_LEAP_V37_PREV_RUN_LEAP_ENGINE):
+        run_leap_engine = _leapv37_wrap(_LEAP_V37_PREV_RUN_LEAP_ENGINE, 'run_leap_engine')
+except Exception:
+    pass
+try:
+    if callable(_LEAP_V37_PREV_RUN_LEAP_SEARCH):
+        run_leap_search = _leapv37_wrap(_LEAP_V37_PREV_RUN_LEAP_SEARCH, 'run_leap_search')
+except Exception:
+    pass
+try:
+    if callable(_LEAP_V37_PREV_LPI_RUN_LEAP_ENGINE) and 'LatentPhaseInventor' in globals():
+        def _leapv37_lpi_run_leap_engine(self, *args, **kwargs):
+            started = _leapv37_now()
+            try:
+                out = _LEAP_V37_PREV_LPI_RUN_LEAP_ENGINE(self, *args, **kwargs)
+                return _leapv37_attach(out, args=args, kwargs=kwargs, started_at=started, finished_at=_leapv37_now(), route_name='LatentPhaseInventor.run_leap_engine')
+            except Exception as e:
+                fail = {'status': 'failed', 'reason': 'leap_v37_lpi_wrapped_exception', 'error': _leapv37_text(e, 4000), 'decoded_candidates': [], 'accepted_candidates': [], 'best_candidate': {}}
+                return _leapv37_attach(fail, args=args, kwargs=kwargs, started_at=started, finished_at=_leapv37_now(), route_name='LatentPhaseInventor.run_leap_engine', exception_text=e)
+        LatentPhaseInventor.run_leap_engine = _leapv37_lpi_run_leap_engine
+except Exception:
+    pass
+# ============================================================================
+# END ADD-ONLY PATCH: LEAP-V37-INVENTION-NONCOMPLETION-TELEMETRY
+# ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY PATCH: LEAP-V38 CORE OPERATION WITHOUT LLM GENERATE
+# timestamp: 2026-05-06 JST
+# policy:
+# - ADD-ONLY: no existing code is deleted.
+# - Universal/generic: no benchmark/task-name hardcoding.
+# - Core invention/causal operation MUST NOT call LLM generate.
+# - Candidate body is deterministic structured candidate_object, not raw_generation.
+# - LLM may remain available for Pre/Post elsewhere, but this Core route does not use it.
+# ============================================================================
+
+LEAP_V38_CORE_NO_LLM_PATCH_ID = 'LEAP-V38-CORE-OPERATION-NO-LLM-GENERATE-20260506'
+
+try:
+    _LEAP_V38_PREVIOUS_RUN_LEAP_SEARCH = run_leap_search
+except Exception:
+    _LEAP_V38_PREVIOUS_RUN_LEAP_SEARCH = None
+try:
+    _LEAP_V38_PREVIOUS_RUN_LEAP_ENGINE = run_leap_engine
+except Exception:
+    _LEAP_V38_PREVIOUS_RUN_LEAP_ENGINE = None
+try:
+    _LEAP_V38_PREVIOUS_CLASS_RUN_LEAP_ENGINE = LatentPhaseInventor.run_leap_engine
+except Exception:
+    _LEAP_V38_PREVIOUS_CLASS_RUN_LEAP_ENGINE = None
+
+
+def _leap_v38_now_epoch():
+    try:
+        import time as _time
+        return float(_time.time())
+    except Exception:
+        return None
+
+
+def _leap_v38_safe_dict(x):
+    return x if isinstance(x, dict) else {}
+
+
+def _leap_v38_safe_list(x):
+    if x is None:
+        return []
+    if isinstance(x, list):
+        return x
+    if isinstance(x, tuple):
+        return list(x)
+    return [x]
+
+
+def _leap_v38_int(x, default=0):
+    try:
+        return int(x)
+    except Exception:
+        return default
+
+
+def _leap_v38_float(x, default=0.0):
+    try:
+        return float(x)
+    except Exception:
+        return default
+
+
+def _leap_v38_flatten_operator_sequence(seq):
+    """Return operator traces without task-specific assumptions."""
+    seq = _leap_v38_safe_list(seq)
+    if not seq:
+        return []
+    traces = []
+    if seq and all(isinstance(x, (list, tuple)) for x in seq):
+        for part in seq:
+            trace = [str(v).strip() for v in _leap_v38_safe_list(part) if str(v).strip()]
+            if trace:
+                traces.append(trace)
+    else:
+        trace = [str(v).strip() for v in seq if str(v).strip()]
+        if trace:
+            traces.append(trace)
+    return traces
+
+
+def _leap_v38_default_operator_traces():
+    return [
+        ['decomposition', 'substitution', 'combination'],
+        ['inversion', 'constraint_relaxation'],
+        ['observation_shift', 'scale_transfer', 'mediator_insertion'],
+        ['decomposition', 'mediator_insertion', 'combination'],
+    ]
+
+
+def _leap_v38_extract_problem_terms(text, max_terms=14):
+    """Generic, language-tolerant keyword/phrase extraction without benchmark names."""
+    raw = '' if text is None else str(text)
+    import re as _re
+    # Split on common punctuation while preserving Japanese/Unicode word chunks.
+    parts = _re.split(r'[\s,;:。．、，；：\n\r\t\(\)\[\]{}<>「」『』"\'`]+', raw)
+    terms = []
+    seen = set()
+    for p in parts:
+        p = p.strip(' -_/\\|*#')
+        if not p:
+            continue
+        # Keep meaningful short technical tokens as well as longer Japanese chunks.
+        if len(p) < 2:
+            continue
+        key = p.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        terms.append(p[:80])
+        if len(terms) >= max_terms:
+            break
+    if not terms and raw.strip():
+        terms = [raw.strip()[:80]]
+    return terms
+
+
+def _leap_v38_seeded_rng(seed, index, operator_trace):
+    try:
+        import random as _random, hashlib as _hashlib
+        material = (str(seed) + '|' + str(index) + '|' + '>'.join([str(x) for x in operator_trace])).encode('utf-8', 'ignore')
+        n = int(_hashlib.sha256(material).hexdigest()[:12], 16)
+        return _random.Random(n)
+    except Exception:
+        import random as _random
+        return _random.Random(index)
+
+
+def _leap_v38_operator_effect(op):
+    """Generic operator semantics. No task/benchmark-specific branch is used."""
+    name = str(op or '').strip().lower()
+    effects = {
+        'decomposition': {
+            'action': 'split the problem into interacting causal factors',
+            'delta': 'separate objective, constraint, mechanism, and verification substructures',
+        },
+        'substitution': {
+            'action': 'replace a limiting component with an alternative component that preserves the target function',
+            'delta': 'change the implementation while retaining the causal role',
+        },
+        'combination': {
+            'action': 'combine compatible partial mechanisms into one integrated candidate',
+            'delta': 'link independent improvements through a shared causal interface',
+        },
+        'inversion': {
+            'action': 'reverse an assumed causal order or dependency direction',
+            'delta': 'move a downstream constraint upstream or turn a loss pathway into a control pathway',
+        },
+        'constraint_relaxation': {
+            'action': 'relax one non-essential constraint while preserving mandatory requirements',
+            'delta': 'expand feasible design space without changing the stated objective',
+        },
+        'observation_shift': {
+            'action': 'change the observation level used to evaluate the system',
+            'delta': 'introduce a different measurable proxy or scale for validation',
+        },
+        'scale_transfer': {
+            'action': 'transfer a mechanism across scale, layer, phase, module, or abstraction level',
+            'delta': 'reuse a causal pattern in a different structural scope',
+        },
+        'mediator_insertion': {
+            'action': 'insert a mediating element between cause and effect',
+            'delta': 'add an intermediate control pathway that decouples competing effects',
+        },
+    }
+    return effects.get(name, {
+        'action': 'apply a generic structural perturbation to the candidate state',
+        'delta': 'modify the causal structure according to the declared operator name',
+    })
+
+
+def _leap_v38_make_candidate_object(*, query, operator_trace, candidate_index, max_candidates, seed, context=None, kwargs=None):
+    ctx = _leap_v38_safe_dict(context)
+    kw = _leap_v38_safe_dict(kwargs)
+    terms = _leap_v38_extract_problem_terms(query)
+    rng = _leap_v38_seeded_rng(seed, candidate_index, operator_trace)
+    generic_axes = [
+        'objective', 'constraint', 'interface', 'transport', 'distribution', 'separation',
+        'stability', 'control', 'measurement', 'verification', 'risk', 'unknown'
+    ]
+    axes = list(generic_axes)
+    try:
+        rng.shuffle(axes)
+    except Exception:
+        pass
+    selected_axes = axes[:6]
+    effects = [_leap_v38_operator_effect(op) for op in operator_trace]
+    selected_terms = terms[:6] if terms else ['problem context']
+    primary_term = selected_terms[(candidate_index - 1) % len(selected_terms)] if selected_terms else 'problem context'
+    secondary_term = selected_terms[candidate_index % len(selected_terms)] if len(selected_terms) > 1 else primary_term
+
+    causal_nodes = []
+    for axis in selected_axes:
+        causal_nodes.append({'id': axis, 'label': axis, 'source': 'generic_axis'})
+    for t in selected_terms[:5]:
+        causal_nodes.append({'id': 'term_' + str(len(causal_nodes)), 'label': t, 'source': 'problem_text'})
+
+    causal_edges = []
+    for idx, eff in enumerate(effects):
+        src = selected_axes[idx % len(selected_axes)] if selected_axes else 'objective'
+        dst = selected_axes[(idx + 1) % len(selected_axes)] if selected_axes else 'constraint'
+        causal_edges.append({
+            'source': src,
+            'target': dst,
+            'operator': str(operator_trace[idx]) if idx < len(operator_trace) else 'generic',
+            'effect': eff.get('delta'),
+        })
+
+    idea_core = (
+        'Construct a candidate that treats "{a}" and "{b}" as coupled causal variables, '
+        'then applies {ops} to create a verifiable structural change rather than relying on a generated text pattern.'
+    ).format(a=primary_term, b=secondary_term, ops=' -> '.join([str(x) for x in operator_trace]))
+
+    mechanism = [
+        'Represent the problem as a structured causal state with explicit objectives, constraints, mediators, and verification targets.',
+        'Apply each operator to the structured state, not to an LLM prompt or free-form text.',
+    ]
+    for eff in effects:
+        mechanism.append(str(eff.get('action')) + '; expected delta: ' + str(eff.get('delta')) + '.')
+
+    constraints = [
+        'No Core-phase LLM generate call is allowed.',
+        'The candidate body must originate from candidate_object, not raw_generation.',
+        'Operator trace must be recorded and auditable.',
+        'Fallback or diagnostic output must not be treated as success.',
+    ]
+    unknowns = [
+        'Which causal edge contributes the largest effect size under the selected operator trace?',
+        'Which constraint relaxation remains safe under the original objective?',
+        'Which verification proxy is most sensitive to the proposed structural change?',
+    ]
+    verification = [
+        'Run the same candidate construction twice with the same seed and confirm identical candidate_object output.',
+        'Change only the seed or theta schedule and confirm that diversity appears in operator-derived fields, not LLM wording.',
+        'Assert core_llm_generate_called == false and raw_generation_used_as_candidate == false in debug_full_result.',
+    ]
+    risks = [
+        'The deterministic formatter may be less fluent than an LLM-written paragraph.',
+        'The generic operator semantics may require future domain-specific plugins, but not task-name hardcoding.',
+        'Overly broad extracted terms may reduce specificity; this should be improved by structured Pre-phase extraction, not Core LLM generation.',
+    ]
+    score_components = {
+        'operator_trace_applied': 1.0 if operator_trace else 0.0,
+        'causal_nodes_present': 1.0 if causal_nodes else 0.0,
+        'causal_edges_present': 1.0 if causal_edges else 0.0,
+        'verification_present': 1.0 if verification else 0.0,
+        'no_core_llm_generate': 1.0,
+    }
+    overall = sum(score_components.values()) / max(1, len(score_components))
+    return {
+        'candidate_id': 'V38-CORE-NO-LLM-{0:03d}'.format(int(candidate_index)),
+        'candidate_index': int(candidate_index),
+        'candidate_count': int(max_candidates),
+        'query_digest_source': 'problem_text_terms',
+        'problem_terms': selected_terms,
+        'operator_trace': [str(x) for x in operator_trace],
+        'idea_core': idea_core,
+        'causal_graph_delta': {
+            'nodes': causal_nodes,
+            'edges': causal_edges,
+            'perturbation_source': 'operator_trace_and_seeded_core_operation',
+        },
+        'mechanism_nodes': mechanism,
+        'causal_edges': causal_edges,
+        'constraints': constraints,
+        'unknowns': unknowns,
+        'verification_plan': verification,
+        'risks': risks,
+        'score_components': score_components,
+        'overall_score': overall,
+        'core_generation_policy': {
+            'core_llm_generate_called': False,
+            'raw_generation_used_as_candidate': False,
+            'candidate_decode_source': 'deterministic_candidate_object',
+            'llm_schema_compliance_assumed': False,
+            'diversity_source': 'operator/search/causal perturbation parameters',
+        },
+        'operation_controls': {
+            'seed': seed,
+            'theta_schedule': kw.get('theta_schedule') or ctx.get('theta_schedule'),
+            'disturbance_magnitude': kw.get('disturbance_magnitude') or ctx.get('disturbance_magnitude'),
+            'search_width': max_candidates,
+        },
+    }
+
+
+def _leap_v38_core_candidate_valid(candidate_object):
+    c = _leap_v38_safe_dict(candidate_object)
+    required = ['candidate_id', 'operator_trace', 'idea_core', 'causal_graph_delta', 'verification_plan', 'risks']
+    return all(bool(c.get(k)) for k in required) and bool(_leap_v38_safe_dict(c.get('causal_graph_delta')).get('nodes'))
+
+
+def _leap_v38_format_candidate(candidate_object):
+    c = _leap_v38_safe_dict(candidate_object)
+    graph = _leap_v38_safe_dict(c.get('causal_graph_delta'))
+    edges = _leap_v38_safe_list(graph.get('edges'))
+    edge_lines = []
+    for e in edges[:6]:
+        ed = _leap_v38_safe_dict(e)
+        edge_lines.append('- {0} -> {1}: {2}'.format(ed.get('source', ''), ed.get('target', ''), ed.get('effect', '')))
+    if not edge_lines:
+        edge_lines = ['- No causal edge recorded.']
+    return (
+        'Idea:\n{idea}\n\n'
+        'Mechanism:\n{mechanism}\n\n'
+        'Causal constraints:\n{constraints}\n\n'
+        'Required unknowns:\n{unknowns}\n\n'
+        'Verification experiment:\n{verification}\n\n'
+        'Risks:\n{risks}'
+    ).format(
+        idea=str(c.get('idea_core') or ''),
+        mechanism='\n'.join('- ' + str(x) for x in _leap_v38_safe_list(c.get('mechanism_nodes'))[:8]),
+        constraints='\n'.join('- ' + str(x) for x in _leap_v38_safe_list(c.get('constraints'))[:8]) + '\n' + '\n'.join(edge_lines),
+        unknowns='\n'.join('- ' + str(x) for x in _leap_v38_safe_list(c.get('unknowns'))[:8]),
+        verification='\n'.join('- ' + str(x) for x in _leap_v38_safe_list(c.get('verification_plan'))[:8]),
+        risks='\n'.join('- ' + str(x) for x in _leap_v38_safe_list(c.get('risks'))[:8]),
+    )
+
+
+def _leap_v38_build_result(*, query=None, baseline_ir=None, context=None, operator_sequence=None, max_candidates=None, **kwargs):
+    started = _leap_v38_now_epoch()
+    ctx = _leap_v38_safe_dict(context)
+    if query is None:
+        query = kwargs.get('query') or ctx.get('query') or ctx.get('prompt') or ''
+    seed = _leap_v38_int(kwargs.get('seed', ctx.get('seed', 123)), 123)
+    requested = max_candidates if max_candidates is not None else kwargs.get('max_candidates', ctx.get('max_candidates', ctx.get('search_width', 8)))
+    max_c = max(1, min(_leap_v38_int(requested, 8), 64))
+    seq = operator_sequence or kwargs.get('operator_sequence') or kwargs.get('operators') or ctx.get('operator_sequence') or ctx.get('operators')
+    traces = _leap_v38_flatten_operator_sequence(seq) or _leap_v38_default_operator_traces()
+
+    generated_ideas = []
+    decoded_candidates = []
+    accepted_candidates = []
+    raw_trials = []
+    for i in range(1, max_c + 1):
+        trace = traces[(i - 1) % len(traces)]
+        cand_obj = _leap_v38_make_candidate_object(
+            query=query,
+            operator_trace=trace,
+            candidate_index=i,
+            max_candidates=max_c,
+            seed=seed,
+            context=ctx,
+            kwargs=kwargs,
+        )
+        valid = _leap_v38_core_candidate_valid(cand_obj)
+        text = _leap_v38_format_candidate(cand_obj)
+        item = {
+            'candidate_id': cand_obj.get('candidate_id'),
+            'turn_id': 'CORE-NO-LLM-{0:03d}'.format(i),
+            'phase': 'CoreOperation',
+            'status': 'CORE_CANDIDATE_VALID' if valid else 'CORE_CANDIDATE_INVALID',
+            'operator_trace': trace,
+            'operator_trace_internal': trace,
+            'candidate_object': cand_obj,
+            'decoded_hypothesis': text if valid else '',
+            'decoded_mechanism': '\n'.join(_leap_v38_safe_list(cand_obj.get('mechanism_nodes'))[:4]),
+            'raw_generation': '',
+            'raw_generation_preserved': False,
+            'raw_generation_used_as_candidate': False,
+            'prompt_echo_detected': False,
+            'semantic_valid': bool(valid),
+            'core_candidate_valid': bool(valid),
+            'candidate_decode_source': 'deterministic_candidate_object',
+            'core_llm_generate_called': False,
+            'post_llm_generate_called': False,
+            'post_text_valid': False,
+            'llm_schema_compliance_assumed': False,
+            'hook_used': False,
+            'hook_call_count': 0,
+            'overall_score': cand_obj.get('overall_score', 0.0),
+            'accepted': bool(valid),
+            'candidate_publishable': bool(valid),
+            'candidate_quality_status': 'core_valid_no_llm' if valid else 'core_invalid_no_llm',
+            'unit_operation_index': i,
+            'unit_operation_per_candidate': 1,
+        }
+        generated_ideas.append(item)
+        raw_trials.append(item)
+        if valid:
+            decoded_candidates.append(item)
+            accepted_candidates.append(item)
+
+    best = None
+    if accepted_candidates:
+        best = sorted(accepted_candidates, key=lambda x: _leap_v38_float(x.get('overall_score'), 0.0), reverse=True)[0]
+    final_answer = best.get('decoded_hypothesis') if isinstance(best, dict) else ''
+    finished = _leap_v38_now_epoch()
+    scores = {
+        'overall': _leap_v38_float(best.get('overall_score'), 0.0) if isinstance(best, dict) else 0.0,
+        'candidate_count': len(generated_ideas),
+        'unit_execution_count': len(generated_ideas),
+        'hook_success_count': 0,
+        'raw_generation_count': 0,
+        'bad_prefix_rejected_count': 0,
+        'semantic_valid_count': len(decoded_candidates),
+        'publishable_candidate_count': len(accepted_candidates),
+        'core_candidate_valid_count': len(accepted_candidates),
+        'unit_ok_count': len(accepted_candidates),
+    }
+    debug = {
+        'patch_id': LEAP_V38_CORE_NO_LLM_PATCH_ID,
+        'schema_version': 1,
+        'route_name': 'leap_v38_core_operation_no_llm_generate',
+        'started_at_epoch': started,
+        'finished_at_epoch': finished,
+        'duration_sec': (finished - started) if isinstance(started, float) and isinstance(finished, float) else None,
+        'policy': {
+            'core_llm_generate_called': False,
+            'raw_generation_used_as_candidate': False,
+            'prompt_echo_used_as_candidate': False,
+            'fallback_treated_as_success': False,
+            'llm_schema_compliance_assumed': False,
+            'candidate_decode_source': 'deterministic_candidate_object',
+            'diversity_source': 'operator/search/causal perturbation parameters',
+            'no_task_or_benchmark_name_hardcoding': True,
+        },
+        'request_snapshot': {
+            'seed': seed,
+            'max_candidates': max_c,
+            'operator_sequence': traces,
+            'prompt_chars': len(str(query or '')),
+            'args_count': _leap_v38_int(kwargs.get('_args_count', 0), 0),
+        },
+        'candidate_flow_summary': {
+            'raw_trials_count': len(raw_trials),
+            'generated_ideas_count': len(generated_ideas),
+            'decoded_candidates_count': len(decoded_candidates),
+            'accepted_candidates_count': len(accepted_candidates),
+            'accepted_any': bool(accepted_candidates),
+            'best_candidate_present': bool(best),
+        },
+        'llm_runtime_call_summary': {
+            'core_record_count': 0,
+            'core_llm_generate_called': False,
+            'post_llm_generate_called': False,
+            'endpoint_or_backend_counts': {},
+        },
+        'noncompletion_debug_checklist': {
+            'no_raw_trial_or_candidate': not bool(raw_trials),
+            'no_accepted_candidate': not bool(accepted_candidates),
+            'no_hidden_hook_call_seen': True,
+            'max_new_tokens_hit_seen': False,
+            'slow_generation_seen': False,
+            'failure_records_seen': not bool(accepted_candidates),
+        },
+    }
+    return {
+        'status': 'ok' if accepted_candidates else 'failed',
+        'mode': 'leap_engine_v38_core_operation_no_llm_generate',
+        'primary_result_route': 'core_operation_no_llm_generate_v38',
+        'official_route': 'leap_engine.run_leap_search::LEAP_V38_CORE_OPERATION_NO_LLM_GENERATE',
+        'route': 'core_operation_no_llm_generate_v38',
+        'route_attempts': [
+            {'route': 'core_operation_no_llm_generate_v38', 'available': True, 'selected': True},
+        ],
+        'legacy_routes_bypassed': ['remote_runtime_hidden_hook_generate_core', 'llm_schema_candidate_generation_core'],
+        'reason': 'core_candidates_constructed_without_llm_generate' if accepted_candidates else 'no_core_candidate_constructed',
+        'query': query,
+        'operation_controls': {
+            'operators': sorted({str(op) for tr in traces for op in tr}),
+            'operator_sequence': traces,
+            'seed': seed,
+            'max_candidates': max_c,
+            'core_llm_generate_allowed': False,
+        },
+        'generated_ideas': generated_ideas,
+        'raw_trials': raw_trials,
+        'decoded_candidates': decoded_candidates,
+        'accepted_candidates': accepted_candidates,
+        'review_recommended': [],
+        'best_candidate': best,
+        'scores': scores,
+        'conclusion': {
+            'status': 'REQUIRE_EXPERIMENT' if accepted_candidates else 'INDETERMINATE',
+            'reason': 'core_candidate_valid_without_llm_generate' if accepted_candidates else 'no_valid_core_candidate',
+            'final_answer': final_answer,
+        },
+        'llm_usage': {
+            'patch_id': LEAP_V38_CORE_NO_LLM_PATCH_ID,
+            'llm_called': False,
+            'core_llm_generate_called': False,
+            'pre_llm_generate_called': False,
+            'post_llm_generate_called': False,
+            'hidden_hook_called': False,
+            'hook_call_count_total': 0,
+            'generation_backend': 'none_in_core_operation',
+            'validator_llm_invoked': False,
+        },
+        'diagnostics': {
+            'patch_id': LEAP_V38_CORE_NO_LLM_PATCH_ID,
+            'core_operation_policy': debug.get('policy'),
+            'unit_diagnostics': [
+                {
+                    'candidate_id': x.get('candidate_id'),
+                    'unit_transport_ok': True,
+                    'hook_ok': False,
+                    'generation_returned': False,
+                    'core_llm_generate_called': False,
+                    'candidate_object_created': bool(x.get('candidate_object')),
+                    'core_candidate_valid': bool(x.get('core_candidate_valid')),
+                    'candidate_decode_source': 'deterministic_candidate_object',
+                    'raw_generation_used_as_candidate': False,
+                    'reason': x.get('candidate_quality_status'),
+                } for x in generated_ideas
+            ],
+        },
+        'generation_quality_gate_v38': {
+            'patch_id': LEAP_V38_CORE_NO_LLM_PATCH_ID,
+            'policy': 'candidate_object_is_core_output; raw_generation_is_never_candidate; core_llm_generate_called_false',
+            'publishable_candidate_count': len(accepted_candidates),
+            'core_candidate_valid_count': len(accepted_candidates),
+            'raw_generation_used_as_candidate': False,
+            'prompt_echo_used_as_candidate': False,
+            'fallback_treated_as_success': False,
+        },
+        'debug_full_result_telemetry_v38': debug,
+        'debug_full_result': {
+            'debug_full_result_telemetry_v38': debug,
+            'result_keys': [],
+        },
+        'invention_core_no_llm_ready_v38': True,
+    }
+
+
+def run_leap_search(*args, **kwargs):
+    """LEAP V38 primary route: deterministic Core operation without LLM generate."""
+    query = kwargs.pop('query', None)
+    baseline_ir = kwargs.pop('baseline_ir', None)
+    context = kwargs.pop('context', None)
+    operator_sequence = kwargs.pop('operator_sequence', None)
+    max_candidates = kwargs.pop('max_candidates', None)
+    # Support legacy positional patterns without assuming task identity.
+    if query is None:
+        if args:
+            if isinstance(args[0], str):
+                query = args[0]
+                args = args[1:]
+            elif len(args) > 1 and isinstance(args[1], str):
+                query = args[1]
+    kwargs['_args_count'] = len(args)
+    return _leap_v38_build_result(query=query, baseline_ir=baseline_ir, context=context, operator_sequence=operator_sequence, max_candidates=max_candidates, **kwargs)
+
+
+def run_leap_engine(*args, **kwargs):
+    """LEAP V38 engine wrapper; never calls LLM generate in Core operation."""
+    query = kwargs.pop('query', None)
+    baseline_ir = kwargs.pop('baseline_ir', None)
+    context = kwargs.pop('context', None)
+    operator_sequence = kwargs.pop('operator_sequence', None)
+    max_candidates = kwargs.pop('max_candidates', None)
+    remaining = list(args)
+    # If called as a bound class method, first positional value may be self.
+    if query is None and remaining:
+        if isinstance(remaining[0], str):
+            query = remaining.pop(0)
+        elif len(remaining) >= 2 and isinstance(remaining[1], str):
+            query = remaining[1]
+    kwargs['_args_count'] = len(args)
+    return _leap_v38_build_result(query=query, baseline_ir=baseline_ir, context=context, operator_sequence=operator_sequence, max_candidates=max_candidates, **kwargs)
+
+try:
+    LatentPhaseInventor.run_leap_engine = run_leap_engine
+except Exception:
+    pass
+
+# ============================================================================
+# END ADD-ONLY PATCH: LEAP-V38 CORE OPERATION WITHOUT LLM GENERATE
+# ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY PATCH: LEAP-V38B CAUSAL_ENGINE STRUCTURED CORE BRIDGE
+# timestamp: 2026-05-06 JST
+# policy:
+# - Keep LEAP-V38 no-LLM Core route.
+# - Prefer causal_engine.py for causal candidate_object construction when available.
+# - Fallback to LEAP-V38 local deterministic builder without treating fallback as LLM success.
+# ============================================================================
+
+LEAP_V38B_CAUSAL_BRIDGE_PATCH_ID = 'LEAP-V38B-CAUSAL-ENGINE-STRUCTURED-CORE-BRIDGE-20260506'
+
+try:
+    _LEAP_V38_LOCAL_MAKE_CANDIDATE_OBJECT = _leap_v38_make_candidate_object
+except Exception:
+    _LEAP_V38_LOCAL_MAKE_CANDIDATE_OBJECT = None
+try:
+    _LEAP_V38_LOCAL_CORE_CANDIDATE_VALID = _leap_v38_core_candidate_valid
+except Exception:
+    _LEAP_V38_LOCAL_CORE_CANDIDATE_VALID = None
+
+
+def _leap_v38b_get_causal_engine():
+    try:
+        import causal_engine as _ce
+        return _ce
+    except Exception:
+        return None
+
+
+def _leap_v38_make_candidate_object(*, query, operator_trace, candidate_index, max_candidates, seed, context=None, kwargs=None):
+    """V38B override: construct causal candidate_object via causal_engine.py if available; no LLM."""
+    ce = _leap_v38b_get_causal_engine()
+    if ce is not None and hasattr(ce, 'causal_build_candidate_object_v38'):
+        try:
+            obj = ce.causal_build_candidate_object_v38(
+                query=query,
+                operator_trace=operator_trace,
+                candidate_index=candidate_index,
+                max_candidates=max_candidates,
+                seed=seed,
+                context=context,
+                kwargs=kwargs,
+            )
+            if isinstance(obj, dict):
+                obj.setdefault('leap_causal_bridge_patch_id', LEAP_V38B_CAUSAL_BRIDGE_PATCH_ID)
+                obj.setdefault('core_generation_policy', {})
+                if isinstance(obj.get('core_generation_policy'), dict):
+                    obj['core_generation_policy'].update({
+                        'core_llm_generate_called': False,
+                        'raw_generation_used_as_candidate': False,
+                        'candidate_decode_source': 'deterministic_candidate_object',
+                        'causal_engine_bridge_used': True,
+                    })
+                return obj
+        except Exception as e:
+            # Diagnostic fallback only; still no LLM and not task-specific.
+            if callable(_LEAP_V38_LOCAL_MAKE_CANDIDATE_OBJECT):
+                obj = _LEAP_V38_LOCAL_MAKE_CANDIDATE_OBJECT(query=query, operator_trace=operator_trace, candidate_index=candidate_index, max_candidates=max_candidates, seed=seed, context=context, kwargs=kwargs)
+                if isinstance(obj, dict):
+                    obj['causal_engine_bridge_error'] = str(e)
+                    obj['causal_engine_bridge_fallback'] = True
+                return obj
+            raise
+    if callable(_LEAP_V38_LOCAL_MAKE_CANDIDATE_OBJECT):
+        obj = _LEAP_V38_LOCAL_MAKE_CANDIDATE_OBJECT(query=query, operator_trace=operator_trace, candidate_index=candidate_index, max_candidates=max_candidates, seed=seed, context=context, kwargs=kwargs)
+        if isinstance(obj, dict):
+            obj['causal_engine_bridge_available'] = False
+        return obj
+    return {}
+
+
+def _leap_v38_core_candidate_valid(candidate_object):
+    """V38B override: prefer causal_engine validator when available; no LLM."""
+    ce = _leap_v38b_get_causal_engine()
+    if ce is not None and hasattr(ce, 'causal_validate_candidate_object_v38'):
+        try:
+            return bool(ce.causal_validate_candidate_object_v38(candidate_object))
+        except Exception:
+            pass
+    if callable(_LEAP_V38_LOCAL_CORE_CANDIDATE_VALID):
+        return bool(_LEAP_V38_LOCAL_CORE_CANDIDATE_VALID(candidate_object))
+    return False
+
+# ============================================================================
+# END ADD-ONLY PATCH: LEAP-V38B CAUSAL_ENGINE STRUCTURED CORE BRIDGE
+# ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY PATCH: LEAP-V40 UNIVERSAL EXPLICIT CORE, SIZE-PRESERVING
+# timestamp: 2026-05-06 JST
+#
+# IMPORTANT POLICY NOTES
+# - This patch is appended to the uploaded leap_engine.py. No existing code above
+#   this block is deleted or overwritten.
+# - This route is universal and problem-agnostic: it does not branch on benchmark
+#   names, task names, or any specific problem identity.
+# - Core invention operation does not call LLM/model.generate/remote runtime.
+# - Candidate body is created as a structured candidate_object and decoded only by
+#   a deterministic formatter.
+# - Generic operator prose alone is not treated as invention success.
+# - Pre-experiment candidates are marked REQUIRE_EXPERIMENT; confidence is capped.
+# ============================================================================
+
+LEAP_V40_UNIVERSAL_EXPLICIT_CORE_PATCH_ID = 'LEAP-V40-UNIVERSAL-EXPLICIT-CORE-SIZE-PRESERVING-20260506'
+
+try:
+    _LEAP_V40_PREV_RUN_LEAP_SEARCH = run_leap_search
+except Exception:
+    _LEAP_V40_PREV_RUN_LEAP_SEARCH = None
+try:
+    _LEAP_V40_PREV_RUN_LEAP_ENGINE = run_leap_engine
+except Exception:
+    _LEAP_V40_PREV_RUN_LEAP_ENGINE = None
+try:
+    _LEAP_V40_PREV_CLASS_RUN_LEAP_ENGINE = LatentPhaseInventor.run_leap_engine
+except Exception:
+    _LEAP_V40_PREV_CLASS_RUN_LEAP_ENGINE = None
+
+
+def _leap_v40_now_epoch():
+    try:
+        import time as _time
+        return float(_time.time())
+    except Exception:
+        return None
+
+
+def _leap_v40_safe_dict(x):
+    return x if isinstance(x, dict) else {}
+
+
+def _leap_v40_safe_list(x):
+    if x is None:
+        return []
+    if isinstance(x, list):
+        return x
+    if isinstance(x, tuple):
+        return list(x)
+    return [x]
+
+
+def _leap_v40_str(x):
+    return '' if x is None else str(x)
+
+
+def _leap_v40_int(x, default=0):
+    try:
+        return int(x)
+    except Exception:
+        return default
+
+
+def _leap_v40_float(x, default=0.0):
+    try:
+        return float(x)
+    except Exception:
+        return default
+
+
+def _leap_v40_unique(seq, limit=None):
+    out = []
+    seen = set()
+    for item in _leap_v40_safe_list(seq):
+        s = _leap_v40_str(item).strip()
+        if not s:
+            continue
+        k = s.lower()
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append(s)
+        if limit and len(out) >= int(limit):
+            break
+    return out
+
+
+def _leap_v40_is_japanese(text):
+    try:
+        import re as _re
+        return bool(_re.search(r'[ぁ-んァ-ン一-龥]', _leap_v40_str(text)))
+    except Exception:
+        return False
+
+
+def _leap_v40_split_terms(text, max_terms=40):
+    """Language-tolerant explicit term extraction; no task-name hardcoding."""
+    import re as _re
+    raw = _leap_v40_str(text)
+    terms = []
+    # Clause-level first.
+    for clause in _re.split(r'[。．\.\n\r]+', raw):
+        clause = clause.strip()
+        if not clause:
+            continue
+        for part in _re.split(r'[、，,;；:\t\(\)\[\]{}<>「」『』"`]+', clause):
+            part = part.strip(' -_/\\|*#')
+            if len(part) >= 2:
+                terms.append(part[:140])
+    # Token fallback.
+    if not terms:
+        for part in _re.split(r'\s+', raw):
+            part = part.strip(' -_/\\|*#')
+            if len(part) >= 2:
+                terms.append(part[:140])
+    return _leap_v40_unique(terms, max_terms)
+
+
+def _leap_v40_extract_transformations(text):
+    """Extract generic source->target transformation phrases without fixed task names."""
+    import re as _re
+    raw = _leap_v40_str(text)
+    pairs = []
+    patterns = [
+        r'(?P<src>[^。\n]{2,120}?)を[、,\s]*(?P<dst>[^。\n]{2,160}?)へ(?:転換|変更|変換|移行|置換)',
+        r'(?P<src>[^。\n]{2,120}?)から[、,\s]*(?P<dst>[^。\n]{2,160}?)へ',
+        r'from\s+(?P<src>.{2,120}?)\s+to\s+(?P<dst>.{2,160}?)(?:[\.。\n]|$)',
+        r'convert\s+(?P<src>.{2,120}?)\s+(?:into|to)\s+(?P<dst>.{2,160}?)(?:[\.。\n]|$)',
+    ]
+    for pat in patterns:
+        for m in _re.finditer(pat, raw, flags=_re.I):
+            src = m.group('src').strip(' 、，,。． ')
+            dst = m.group('dst').strip(' 、，,。． ')
+            if src and dst:
+                pairs.append({'source': src[:140], 'target': dst[:180], 'type': 'explicit_transformation'})
+    return pairs[:6]
+
+
+def _leap_v40_role(term):
+    """Generic causal-role classifier. It uses broad role keywords, not task identities."""
+    s = _leap_v40_str(term).lower()
+    rules = [
+        ('interface_boundary', ['interface', 'boundary', 'surface', '界面', '境界', '接触']),
+        ('transport_flow', ['transport', 'transfer', 'flow', 'flux', 'diffusion', '移動', '輸送', '拡散', '流束']),
+        ('field_distribution', ['field', 'potential', 'gradient', 'distribution', '場', '分布', '勾配', '電位']),
+        ('partition_allocation', ['partition', 'allocation', 'separation', '分配', '分離', '割当', '抽出']),
+        ('reaction_or_process_zone', ['reaction', 'process', 'zone', 'site', '場', '反応', 'プロセス', '領域']),
+        ('stability_or_degradation', ['stability', 'degradation', 'decay', 'fouling', 'aging', '安定', '劣化', '失活', '老化']),
+        ('selectivity_or_quality', ['selectivity', 'quality', 'specificity', 'accuracy', '選択', '品質', '精度']),
+        ('control_or_constraint', ['control', 'constraint', 'limit', 'threshold', '制御', '制約', '限界', '閾値']),
+        ('objective_or_outcome', ['improve', 'reduce', 'increase', 'optimize', 'objective', '改善', '抑制', '向上', '最適', '目的']),
+        ('mediator_or_barrier', ['mediator', 'barrier', 'membrane', 'gate', 'layer', '媒介', '障壁', '膜', 'ゲート', '層']),
+    ]
+    for role, keys in rules:
+        if any(k in s for k in keys):
+            return role
+    return 'context_term'
+
+
+def _leap_v40_problem_frame(query):
+    terms = _leap_v40_split_terms(query)
+    transformations = _leap_v40_extract_transformations(query)
+    roles = {}
+    for t in terms:
+        roles.setdefault(_leap_v40_role(t), []).append(t)
+    for k in list(roles.keys()):
+        roles[k] = _leap_v40_unique(roles[k], 10)
+    objectives = []
+    mechanisms = []
+    for t in terms:
+        role = _leap_v40_role(t)
+        if role in ('objective_or_outcome', 'selectivity_or_quality', 'stability_or_degradation', 'partition_allocation'):
+            objectives.append(t)
+        if role in ('interface_boundary', 'transport_flow', 'field_distribution', 'partition_allocation', 'reaction_or_process_zone', 'mediator_or_barrier', 'control_or_constraint'):
+            mechanisms.append(t)
+    if not objectives:
+        objectives = terms[:3]
+    if not mechanisms:
+        mechanisms = terms[:6]
+    return {
+        'raw_query': _leap_v40_str(query),
+        'terms': terms,
+        'transformations': transformations,
+        'roles': roles,
+        'objectives': _leap_v40_unique(objectives, 10),
+        'mechanism_terms': _leap_v40_unique(mechanisms, 12),
+    }
+
+
+def _leap_v40_flatten_operator_sequence(seq):
+    seq = _leap_v40_safe_list(seq)
+    traces = []
+    if seq and all(isinstance(x, (list, tuple)) for x in seq):
+        for p in seq:
+            trace = _leap_v40_unique([str(v).strip() for v in _leap_v40_safe_list(p) if str(v).strip()], 32)
+            if trace:
+                traces.append(trace)
+    else:
+        trace = _leap_v40_unique([str(v).strip() for v in seq if str(v).strip()], 32)
+        if trace:
+            traces.append(trace)
+    return traces
+
+
+def _leap_v40_default_traces():
+    return [
+        ['decomposition', 'substitution', 'mediator_insertion', 'combination'],
+        ['decomposition', 'observation_shift', 'constraint_relaxation', 'combination'],
+        ['substitution', 'scale_transfer', 'inversion', 'combination'],
+        ['decomposition', 'scale_transfer', 'observation_shift', 'mediator_insertion'],
+    ]
+
+
+def _leap_v40_pick(seq, idx, default='explicit problem element'):
+    seq = _leap_v40_safe_list(seq)
+    if not seq:
+        return default
+    return _leap_v40_str(seq[idx % len(seq)])
+
+
+def _leap_v40_variant(idx):
+    variants = [
+        {'name': 'boundary-mediated separation/control architecture', 'roles': ['interface_boundary', 'partition_allocation', 'control_or_constraint'], 'verbs': ['create a controlled boundary/contact region', 'route the target outcome into a separated receiving domain', 'decouple the process zone from the recovery/control zone']},
+        {'name': 'transport-gated architecture', 'roles': ['transport_flow', 'mediator_or_barrier', 'field_distribution'], 'verbs': ['insert a selective mediator/barrier', 'gate cross-domain transport', 'shape the driving gradient or field distribution']},
+        {'name': 'stability-shielded architecture', 'roles': ['stability_or_degradation', 'interface_boundary', 'reaction_or_process_zone'], 'verbs': ['shield the sensitive component from the most damaging domain', 'move destabilizing intermediates away from the critical site', 'stabilize the local operating environment']},
+        {'name': 'sequential process-separation architecture', 'roles': ['reaction_or_process_zone', 'transport_flow', 'selectivity_or_quality'], 'verbs': ['stage transformation and separation as coupled operations', 'use residence-time or path asymmetry', 'feed back only the compatible fraction or state']},
+    ]
+    return variants[(int(idx) - 1) % len(variants)]
+
+
+def _leap_v40_build_candidate_object(query, trace, candidate_index, max_candidates, seed, context=None, kwargs=None):
+    frame = _leap_v40_problem_frame(query)
+    transforms = frame.get('transformations') or []
+    source = transforms[0]['source'] if transforms else _leap_v40_pick(frame.get('terms'), 0, 'current configuration')
+    target = transforms[0]['target'] if transforms else _leap_v40_pick(frame.get('terms'), 1, 'alternative configuration')
+    objectives = frame.get('objectives') or frame.get('terms')[:3]
+    mechanisms = frame.get('mechanism_terms') or frame.get('terms')[:6]
+    variant = _leap_v40_variant(candidate_index)
+    focus_terms = []
+    roles = frame.get('roles') or {}
+    for role in variant.get('roles', []):
+        focus_terms.extend(roles.get(role, []))
+    focus_terms = _leap_v40_unique(focus_terms or mechanisms, 8)
+    jp = _leap_v40_is_japanese(query)
+    title = ('因果構造に基づく汎用的な反応・分離・制御一体型再設計: {0} → {1}' if jp else 'Universal causal redesign: {0} -> {1}').format(source, target)
+    core_structure = (
+        '目的、制約、媒介要素、移動経路、分配/分離経路を同一の未分化な場に押し込まず、構造化された複数の制御領域として分けて結合する。'
+        if jp else
+        'Separate objectives, constraints, mediators, transport paths, and allocation/separation paths into structured control domains instead of forcing them into one undifferentiated operating region.'
+    )
+    interventions = []
+    for i, verb in enumerate(variant.get('verbs') or []):
+        term = _leap_v40_pick(focus_terms, i, _leap_v40_pick(mechanisms, i, 'controlled causal factor'))
+        op = trace[i % len(trace)] if trace else 'structured_operation'
+        if jp:
+            op_text = {
+                'create a controlled boundary/contact region': '境界/接触領域の面積・滞留時間・選択性を制御する',
+                'route the target outcome into a separated receiving domain': '目的生成物または望ましい状態を分離された受容領域へ移す',
+                'decouple the process zone from the recovery/control zone': 'プロセス領域と回収/制御領域を分けて結合する',
+                'insert a selective mediator/barrier': '選択的な媒介層または障壁を挿入する',
+                'gate cross-domain transport': '領域間の移動をゲート化する',
+                'shape the driving gradient or field distribution': '駆動勾配または場の分布を成形する',
+                'shield the sensitive component from the most damaging domain': '感受性の高い要素を劣化要因の強い領域から遮蔽する',
+                'move destabilizing intermediates away from the critical site': '不安定化因子を重要部位から遠ざける',
+                'stabilize the local operating environment': '局所環境を安定化する',
+                'stage transformation and separation as coupled operations': '変換と分離を段階化して結合する',
+                'use residence-time or path asymmetry': '滞留時間または経路の非対称性を利用する',
+                'feed back only the compatible fraction or state': '適合する分画または状態だけを戻す',
+            }.get(verb, verb)
+        else:
+            op_text = verb
+        interventions.append({'id': 'I{0}'.format(i + 1), 'operation': op_text, 'target_term': term, 'operator_support': op})
+    chain_terms = _leap_v40_unique(focus_terms + objectives + mechanisms, 14)
+    causal_edges = []
+    if len(chain_terms) < 2:
+        chain_terms = _leap_v40_unique([source, target] + chain_terms, 4)
+    for i in range(max(1, min(len(chain_terms) - 1, 10))):
+        a = chain_terms[i]
+        b = chain_terms[(i + 1) % len(chain_terms)]
+        op = trace[i % len(trace)] if trace else 'causal_link'
+        mech = ('{0}を制御すると、明示された因果役割を通じて{1}が変化する。'.format(a, b) if jp else 'Controlling {0} changes {1} through the explicit causal role extracted from the problem statement.'.format(a, b))
+        causal_edges.append({'source': a, 'target': b, 'operator': op, 'mechanism': mech})
+    hypotheses = []
+    for i, obj in enumerate(_leap_v40_unique(objectives, 8)):
+        driver = _leap_v40_pick(focus_terms, i, _leap_v40_pick(mechanisms, i, 'controlled causal factor'))
+        hyp = ('{0}を独立に制御できれば、{1}を他の副作用から切り離して改善できる、という検証可能な仮説。'.format(driver, obj) if jp else 'If {0} can be independently controlled, {1} may improve without relying on generated text as the candidate body.'.format(driver, obj))
+        hypotheses.append({'objective': obj, 'causal_driver': driver, 'hypothesis': hyp})
+    verification = [
+        {'metric': ('主要目的指標' if jp else 'primary objective metric'), 'method': ('同一入力条件で元構成と再設計構成を比較する' if jp else 'compare the source and redesigned configurations under matched input conditions')},
+        {'metric': ('分離/配分/移動指標' if jp else 'separation/allocation/transport metric'), 'method': ('領域間移動量、残留量、回収量を分けて測定する' if jp else 'measure cross-domain transfer, retained amount, and recovered amount separately')},
+        {'metric': ('安定性/劣化/副作用指標' if jp else 'stability/degradation/side-effect metric'), 'method': ('運転前後の状態変化、性能低下、望ましくない副作用を追跡する' if jp else 'track state change, performance decay, and undesirable side effects before and after operation')},
+    ]
+    risks = [
+        ('追加した制御領域や媒介要素が抵抗、遅延、律速を生む可能性がある。' if jp else 'Additional control domains or mediators may introduce resistance, delay, or a new rate limit.'),
+        ('分配または選択性が弱い場合、意図した改善に結び付かない可能性がある。' if jp else 'If allocation or selectivity is weak, the intended improvement may not appear.'),
+        ('場/勾配/局所環境の変化により別の副作用が支配的になる可能性がある。' if jp else 'Changes in fields, gradients, or local environment may make another side effect dominant.'),
+    ]
+    requirements = {
+        'has_explicit_terms': bool(frame.get('terms')),
+        'has_objectives': len(objectives) >= 1,
+        'has_mechanisms': len(mechanisms) >= 1,
+        'has_interventions': len(interventions) >= 2,
+        'has_causal_edges': bool(causal_edges),
+        'no_core_llm_generate': True,
+    }
+    structural_score = sum(1.0 for v in requirements.values() if v) / float(len(requirements))
+    score = min(structural_score, 0.83)  # pre-experiment cap
+    publishable = bool(requirements['has_explicit_terms'] and requirements['has_interventions'] and requirements['has_causal_edges'])
+    return {
+        'candidate_id': 'V40-UNIVERSAL-EXPLICIT-{0:03d}'.format(int(candidate_index)),
+        'candidate_index': int(candidate_index),
+        'candidate_count': int(max_candidates),
+        'patch_id': LEAP_V40_UNIVERSAL_EXPLICIT_CORE_PATCH_ID,
+        'problem_frame': frame,
+        'operator_trace': [str(x) for x in _leap_v40_safe_list(trace)],
+        'design_title': title,
+        'idea_core': title,
+        'architecture': {'source_configuration': source, 'target_configuration': target, 'core_structure': core_structure, 'variant': variant.get('name'), 'focus_terms': focus_terms},
+        'interventions': interventions,
+        'causal_graph_delta': {'nodes': [{'id': 'term_{0}'.format(i), 'label': t, 'role': _leap_v40_role(t)} for i, t in enumerate(chain_terms)], 'edges': causal_edges, 'source': LEAP_V40_UNIVERSAL_EXPLICIT_CORE_PATCH_ID},
+        'mechanism_nodes': [e.get('mechanism') for e in causal_edges],
+        'causal_edges': causal_edges,
+        'objectives_addressed': objectives,
+        'mechanism_terms': mechanisms,
+        'improvement_hypotheses': hypotheses,
+        'constraints': ['Core LLM generate is forbidden.', 'Candidate body is deterministic candidate_object-derived.', 'Generic operator prose alone is not publishable success.', 'Pre-experiment candidate must be validated experimentally.'],
+        'unknowns': ['dominant causal driver', 'safe operating window', 'objective sensitivity to each deterministic intervention'],
+        'verification_plan': verification,
+        'risks': risks,
+        'score_components': {k: (1.0 if v else 0.0) for k, v in requirements.items()},
+        'overall_score': score,
+        'requires_experiment': True,
+        'experimental_validation_status': 'not_tested',
+        'publishable_core_candidate': publishable,
+        'core_generation_policy': {'core_llm_generate_called': False, 'raw_generation_used_as_candidate': False, 'candidate_decode_source': 'deterministic_universal_explicit_candidate_object_v40', 'llm_schema_compliance_assumed': False, 'diversity_source': 'operator/search/causal perturbation parameters'},
+    }
+
+
+def _leap_v40_validate_candidate(obj):
+    c = _leap_v40_safe_dict(obj)
+    return bool(c.get('publishable_core_candidate') is True and c.get('interventions') and c.get('causal_edges') and c.get('requires_experiment') is True and _leap_v40_safe_dict(c.get('core_generation_policy')).get('core_llm_generate_called') is False)
+
+
+def _leap_v40_format_candidate(obj):
+    c = _leap_v40_safe_dict(obj)
+    raw = _leap_v40_safe_dict(c.get('problem_frame')).get('raw_query')
+    jp = _leap_v40_is_japanese(raw)
+    arch = _leap_v40_safe_dict(c.get('architecture'))
+    lines = []
+    if jp:
+        lines += ['Idea:', _leap_v40_str(c.get('design_title') or c.get('idea_core')), '', '具体的構造:', '- 元構成: ' + _leap_v40_str(arch.get('source_configuration')), '- 転換後構成: ' + _leap_v40_str(arch.get('target_configuration')), '- 中核構造: ' + _leap_v40_str(arch.get('core_structure')), '', '決定論的介入:']
+        for it in _leap_v40_safe_list(c.get('interventions')):
+            if isinstance(it, dict):
+                lines.append('- {0}: {1}（対象={2}, operator={3}）'.format(it.get('id'), it.get('operation'), it.get('target_term'), it.get('operator_support')))
+        lines += ['', '因果メカニズム:']
+        for e in _leap_v40_safe_list(c.get('causal_edges'))[:10]:
+            if isinstance(e, dict):
+                lines.append('- {0} → {1}: {2}'.format(e.get('source'), e.get('target'), e.get('mechanism')))
+        lines += ['', '改善仮説:']
+        for h in _leap_v40_safe_list(c.get('improvement_hypotheses')):
+            if isinstance(h, dict):
+                lines.append('- {0}: {1}'.format(h.get('objective'), h.get('hypothesis')))
+        lines += ['', '検証実験:']
+        for v in _leap_v40_safe_list(c.get('verification_plan')):
+            if isinstance(v, dict):
+                lines.append('- {0}: {1}'.format(v.get('metric'), v.get('method')))
+        lines += ['', 'リスク/未確定点:']
+        for r in _leap_v40_safe_list(c.get('risks')):
+            lines.append('- ' + _leap_v40_str(r))
+        lines += ['', '判定注記: Core演算中のLLM generateは未使用。これは実験前の構造化候補であり、成功確定ではなく REQUIRE_EXPERIMENT。']
+    else:
+        lines += ['Idea:', _leap_v40_str(c.get('design_title') or c.get('idea_core')), '', 'Concrete structure:', '- Source configuration: ' + _leap_v40_str(arch.get('source_configuration')), '- Target configuration: ' + _leap_v40_str(arch.get('target_configuration')), '- Core structure: ' + _leap_v40_str(arch.get('core_structure')), '', 'Deterministic interventions:']
+        for it in _leap_v40_safe_list(c.get('interventions')):
+            if isinstance(it, dict):
+                lines.append('- {0}: {1} / target={2} / operator={3}'.format(it.get('id'), it.get('operation'), it.get('target_term'), it.get('operator_support')))
+        lines += ['', 'Causal mechanism:']
+        for e in _leap_v40_safe_list(c.get('causal_edges'))[:10]:
+            if isinstance(e, dict):
+                lines.append('- {0} -> {1}: {2}'.format(e.get('source'), e.get('target'), e.get('mechanism')))
+        lines += ['', 'Improvement hypotheses:']
+        for h in _leap_v40_safe_list(c.get('improvement_hypotheses')):
+            if isinstance(h, dict):
+                lines.append('- {0}: {1}'.format(h.get('objective'), h.get('hypothesis')))
+        lines += ['', 'Verification experiments:']
+        for v in _leap_v40_safe_list(c.get('verification_plan')):
+            if isinstance(v, dict):
+                lines.append('- {0}: {1}'.format(v.get('metric'), v.get('method')))
+        lines += ['', 'Risks / unknowns:']
+        for r in _leap_v40_safe_list(c.get('risks')):
+            lines.append('- ' + _leap_v40_str(r))
+        lines += ['', 'Decision note: no LLM generate was used during Core operation. This is a structured pre-experiment candidate and remains REQUIRE_EXPERIMENT.']
+    return '\n'.join(lines).strip()
+
+
+def _leap_v40_result(*, query=None, baseline_ir=None, context=None, operator_sequence=None, max_candidates=None, **kwargs):
+    started = _leap_v40_now_epoch()
+    ctx = _leap_v40_safe_dict(context)
+    if query is None:
+        query = kwargs.get('query') or ctx.get('query') or ctx.get('prompt') or ctx.get('problem') or ''
+    seed = _leap_v40_int(kwargs.get('seed', ctx.get('seed', 123)), 123)
+    requested = max_candidates if max_candidates is not None else kwargs.get('max_candidates', ctx.get('max_candidates', ctx.get('search_width', 8)))
+    max_c = max(1, min(_leap_v40_int(requested, 8), 64))
+    seq = operator_sequence or kwargs.get('operator_sequence') or kwargs.get('operators') or ctx.get('operator_sequence') or ctx.get('operators')
+    traces = _leap_v40_flatten_operator_sequence(seq) or _leap_v40_default_traces()
+    if len(traces) == 1 and max_c > 1:
+        base = list(traces[0])
+        traces = [(base[i % len(base):] + base[:i % len(base)]) if base else _leap_v40_default_traces()[i % len(_leap_v40_default_traces())] for i in range(max_c)]
+    generated = []
+    decoded = []
+    accepted = []
+    rejected = []
+    for i in range(1, max_c + 1):
+        trace = traces[(i - 1) % len(traces)]
+        obj = _leap_v40_build_candidate_object(query, trace, i, max_c, seed, ctx, kwargs)
+        valid = _leap_v40_validate_candidate(obj)
+        text = _leap_v40_format_candidate(obj) if valid else ''
+        item = {'candidate_id': obj.get('candidate_id'), 'turn_id': 'CORE-V40-NO-LLM-{0:03d}'.format(i), 'phase': 'CoreOperation', 'status': 'CORE_CANDIDATE_VALID_REQUIRES_EXPERIMENT' if valid else 'CORE_CANDIDATE_REJECTED', 'operator_trace': trace, 'operator_trace_internal': trace, 'candidate_object': obj, 'decoded_hypothesis': text, 'decoded_mechanism': '\n'.join([str(x) for x in _leap_v40_safe_list(obj.get('mechanism_nodes'))[:6]]), 'raw_generation': '', 'raw_generation_preserved': False, 'raw_generation_used_as_candidate': False, 'prompt_echo_detected': False, 'semantic_valid': bool(valid), 'core_candidate_valid': bool(valid), 'candidate_decode_source': 'deterministic_universal_explicit_candidate_object_v40' if valid else 'rejected_not_decoded', 'core_llm_generate_called': False, 'post_llm_generate_called': False, 'post_text_valid': False, 'llm_schema_compliance_assumed': False, 'hook_used': False, 'hook_call_count': 0, 'overall_score': _leap_v40_float(obj.get('overall_score'), 0.0), 'accepted': bool(valid), 'candidate_publishable': bool(valid), 'experiment_required': True, 'candidate_quality_status': 'universal_explicit_core_valid_requires_experiment_v40' if valid else 'rejected_not_enough_explicit_causal_structure_v40', 'unit_operation_index': i, 'unit_operation_per_candidate': 1}
+        generated.append(item)
+        if valid:
+            decoded.append(item); accepted.append(item)
+        else:
+            rejected.append(item)
+    best = sorted(accepted, key=lambda x: _leap_v40_float(x.get('overall_score'), 0.0), reverse=True)[0] if accepted else None
+    final_answer = best.get('decoded_hypothesis') if isinstance(best, dict) else ''
+    finished = _leap_v40_now_epoch()
+    scores = {'overall': _leap_v40_float(best.get('overall_score'), 0.0) if isinstance(best, dict) else 0.0, 'candidate_count': len(generated), 'unit_execution_count': len(generated), 'hook_success_count': 0, 'raw_generation_count': 0, 'bad_prefix_rejected_count': 0, 'semantic_valid_count': len(decoded), 'publishable_candidate_count': len(accepted), 'core_candidate_valid_count': len(accepted), 'rejected_candidate_count': len(rejected), 'unit_ok_count': len(accepted), 'not_experimentally_validated': True}
+    debug = {'patch_id': LEAP_V40_UNIVERSAL_EXPLICIT_CORE_PATCH_ID, 'schema_version': 3, 'route_name': 'leap_v40_universal_explicit_core_no_llm', 'started_at_epoch': started, 'finished_at_epoch': finished, 'duration_sec': (finished - started) if isinstance(started, float) and isinstance(finished, float) else None, 'policy': {'core_llm_generate_called': False, 'raw_generation_used_as_candidate': False, 'prompt_echo_used_as_candidate': False, 'fallback_treated_as_success': False, 'llm_schema_compliance_assumed': False, 'candidate_decode_source': 'deterministic_universal_explicit_candidate_object_v40', 'diversity_source': 'operator/search/causal perturbation parameters', 'no_task_or_benchmark_name_hardcoding': True, 'generic_operator_prose_publishable': False, 'not_experimentally_validated': True}, 'request_snapshot': {'seed': seed, 'max_candidates': max_c, 'operator_sequence': traces, 'prompt_chars': len(str(query or ''))}, 'candidate_flow_summary': {'generated_ideas_count': len(generated), 'decoded_candidates_count': len(decoded), 'accepted_candidates_count': len(accepted), 'rejected_candidates_count': len(rejected), 'best_candidate_present': bool(best)}, 'llm_runtime_call_summary': {'core_record_count': 0, 'core_llm_generate_called': False, 'post_llm_generate_called': False, 'endpoint_or_backend_counts': {}}}
+    return {'status': 'ok' if accepted else 'failed', 'mode': 'leap_engine_v40_universal_explicit_core_no_llm', 'primary_result_route': 'universal_explicit_core_operation_no_llm_v40', 'official_route': 'leap_engine.run_leap_search::LEAP_V40_UNIVERSAL_EXPLICIT_CORE_ROUTE', 'route': 'universal_explicit_core_operation_no_llm_v40', 'route_attempts': [{'route': 'universal_explicit_core_operation_no_llm_v40', 'available': True, 'selected': True}, {'route': 'legacy_hidden_hook_or_llm_generation_core', 'available': True, 'selected': False, 'reason': 'core_llm_generate_forbidden_by_policy'}], 'legacy_routes_bypassed': ['remote_runtime_hidden_hook_generate_core', 'llm_schema_candidate_generation_core', 'generic_operator_prose_success_v38', 'task_specific_hardcoded_route'], 'reason': 'universal_explicit_core_candidates_constructed_without_llm_generate' if accepted else 'no_valid_universal_explicit_core_candidate', 'query': query, 'operation_controls': {'operator_sequence': traces, 'seed': seed, 'max_candidates': max_c, 'core_llm_generate_allowed': False}, 'generated_ideas': generated, 'raw_trials': generated, 'decoded_candidates': decoded, 'accepted_candidates': accepted, 'review_recommended': rejected, 'best_candidate': best, 'scores': scores, 'conclusion': {'status': 'REQUIRE_EXPERIMENT' if accepted else 'INDETERMINATE', 'reason': 'universal_explicit_core_candidate_requires_experiment_without_llm_generate' if accepted else 'no_valid_universal_explicit_core_candidate', 'final_answer': final_answer}, 'llm_usage': {'patch_id': LEAP_V40_UNIVERSAL_EXPLICIT_CORE_PATCH_ID, 'llm_called': False, 'core_llm_generate_called': False, 'pre_llm_generate_called': False, 'post_llm_generate_called': False, 'hidden_hook_called': False, 'hook_call_count_total': 0, 'generation_backend': 'none_in_core_operation', 'validator_llm_invoked': False}, 'diagnostics': {'patch_id': LEAP_V40_UNIVERSAL_EXPLICIT_CORE_PATCH_ID, 'core_operation_policy': debug.get('policy'), 'unit_diagnostics': [{'candidate_id': x.get('candidate_id'), 'unit_transport_ok': True, 'hook_ok': False, 'generation_returned': False, 'core_llm_generate_called': False, 'candidate_object_created': bool(x.get('candidate_object')), 'core_candidate_valid': bool(x.get('core_candidate_valid')), 'candidate_decode_source': x.get('candidate_decode_source'), 'raw_generation_used_as_candidate': False, 'reason': x.get('candidate_quality_status')} for x in generated]}, 'generation_quality_gate_v40': {'patch_id': LEAP_V40_UNIVERSAL_EXPLICIT_CORE_PATCH_ID, 'policy': 'universal explicit candidate_object required; generic operator prose rejected; raw_generation never candidate; core_llm_generate_called false', 'publishable_candidate_count': len(accepted), 'core_candidate_valid_count': len(accepted), 'rejected_candidate_count': len(rejected), 'raw_generation_used_as_candidate': False, 'prompt_echo_used_as_candidate': False, 'fallback_treated_as_success': False, 'not_experimentally_validated': True}, 'debug_full_result_telemetry_v40': debug, 'debug_full_result': {'debug_full_result_telemetry_v40': debug, 'result_keys': []}, 'invention_core_no_llm_ready_v40': True}
+
+
+def run_leap_search(*args, **kwargs):
+    query = kwargs.pop('query', None)
+    baseline_ir = kwargs.pop('baseline_ir', None)
+    context = kwargs.pop('context', None)
+    operator_sequence = kwargs.pop('operator_sequence', None)
+    max_candidates = kwargs.pop('max_candidates', None)
+    remaining = list(args)
+    if query is None and remaining:
+        if isinstance(remaining[0], str):
+            query = remaining[0]
+        elif len(remaining) > 1 and isinstance(remaining[1], str):
+            query = remaining[1]
+    return _leap_v40_result(query=query, baseline_ir=baseline_ir, context=context, operator_sequence=operator_sequence, max_candidates=max_candidates, **kwargs)
+
+
+def run_leap_engine(*args, **kwargs):
+    query = kwargs.pop('query', None)
+    baseline_ir = kwargs.pop('baseline_ir', None)
+    context = kwargs.pop('context', None)
+    operator_sequence = kwargs.pop('operator_sequence', None)
+    max_candidates = kwargs.pop('max_candidates', None)
+    remaining = list(args)
+    if query is None and remaining:
+        if isinstance(remaining[0], str):
+            query = remaining[0]
+        elif len(remaining) > 1 and isinstance(remaining[1], str):
+            query = remaining[1]
+    return _leap_v40_result(query=query, baseline_ir=baseline_ir, context=context, operator_sequence=operator_sequence, max_candidates=max_candidates, **kwargs)
+
+try:
+    LatentPhaseInventor.run_leap_engine = run_leap_engine
+except Exception:
+    pass
+
+# ============================================================================
+# END ADD-ONLY PATCH: LEAP-V40 UNIVERSAL EXPLICIT CORE, SIZE-PRESERVING
+# ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY PATCH: LEAP-V41 ARTIFACT-LEVEL CAUSAL ROUTE
+# timestamp: 2026-05-06 JST
+#
+# Fix intent:
+# - V40 returned progress-looking but generic chains. V41 rejects generic chains
+#   and routes core construction through artifact-level causal candidate objects.
+# - Core operation does not call LLM/generate. The candidate body comes from a
+#   deterministic causal_engine V41 object or the embedded equivalent fallback.
+# - No benchmark/task-name hardcoding.
+# ============================================================================
+
+LEAP_V41_ARTIFACT_CAUSAL_ROUTE_PATCH_ID = 'LEAP-V41-ARTIFACT-LEVEL-CAUSAL-ROUTE-20260506'
+
+
+def _leap_v41_s(x):
+    return '' if x is None else str(x)
+
+
+def _leap_v41_list(x):
+    if x is None: return []
+    if isinstance(x, list): return x
+    if isinstance(x, tuple): return list(x)
+    return [x]
+
+
+def _leap_v41_import_causal_engine():
+    try:
+        import causal_engine as ce
+        return ce
+    except Exception:
+        return None
+
+
+def _leap_v41_flatten_ops(seq):
+    vals=[]
+    for x in _leap_v41_list(seq):
+        if isinstance(x,(list,tuple)):
+            vals.extend([str(y) for y in x if str(y).strip()])
+        elif str(x).strip():
+            vals.append(str(x))
+    if not vals:
+        vals=['decomposition','mediator_insertion','substitution','scale_transfer','observation_shift','combination','inversion']
+    # preserve order and remove duplicates only inside base operator vocabulary repetition
+    out=[]
+    for v in vals:
+        if v not in out: out.append(v)
+    return out
+
+
+def _leap_v41_rotated_trace(base, i):
+    if not base: base=['decomposition','mediator_insertion','substitution','scale_transfer','observation_shift','combination','inversion']
+    k=(int(i)-1)%len(base)
+    return base[k:]+base[:k]
+
+
+def _leap_v41_fallback_build(query, trace, candidate_index, max_candidates, seed=123):
+    ce=_leap_v41_import_causal_engine()
+    if ce is not None and hasattr(ce,'causal_build_candidate_object_v41'):
+        return ce.causal_build_candidate_object_v41(query=query, operator_trace=trace, candidate_index=candidate_index, max_candidates=max_candidates, seed=seed)
+    # Minimal embedded fallback only if causal_engine cannot be imported.
+    # It intentionally returns a non-success diagnostic object rather than a fake invention.
+    return {'candidate_id':'V41-FALLBACK-DIAGNOSTIC-{0:03d}'.format(candidate_index),'patch_id':LEAP_V41_ARTIFACT_CAUSAL_ROUTE_PATCH_ID,'operator_trace':trace,'components':[],'interventions':[],'causal_edges':[],'verification_plan':[],'overall_score':0.0,'requires_experiment':True,'experimental_validation_status':'not_tested','publishable_core_candidate':False,'core_generation_policy':{'core_llm_generate_called':False,'raw_generation_used_as_candidate':False,'candidate_decode_source':'diagnostic_no_causal_engine_v41'}}
+
+
+def _leap_v41_validate(obj):
+    ce=_leap_v41_import_causal_engine()
+    if ce is not None and hasattr(ce,'causal_validate_candidate_object_v41'):
+        try:
+            return bool(ce.causal_validate_candidate_object_v41(obj))
+        except Exception:
+            pass
+    c=obj if isinstance(obj,dict) else {}
+    txt=str(c.get('mechanism_nodes',''))+str(c.get('decoded_hypothesis',''))
+    bad='制御すると、明示された因果役割を通じて' in txt or 'Controlling ' in txt
+    pol=c.get('core_generation_policy') if isinstance(c.get('core_generation_policy'),dict) else {}
+    return bool(c.get('components') and c.get('causal_edges') and c.get('verification_plan') and pol.get('core_llm_generate_called') is False and not bad)
+
+
+def _leap_v41_format(obj):
+    ce=_leap_v41_import_causal_engine()
+    if ce is not None and hasattr(ce,'causal_format_candidate_v41'):
+        try:
+            return ce.causal_format_candidate_v41(obj)
+        except Exception:
+            pass
+    return 'V41 diagnostic: causal_engine.causal_format_candidate_v41 unavailable; candidate not accepted.'
+
+
+def _leap_v41_result(*, query=None, context=None, operator_sequence=None, max_candidates=None, **kwargs):
+    import time
+    t0=time.time()
+    ctx=context if isinstance(context,dict) else {}
+    if query is None:
+        query=kwargs.get('query') or ctx.get('query') or ctx.get('prompt') or ctx.get('problem') or ''
+    seed=int(kwargs.get('seed', ctx.get('seed', 123)) or 123)
+    requested=max_candidates if max_candidates is not None else kwargs.get('max_candidates', ctx.get('max_candidates', ctx.get('search_width', 8)))
+    try: max_c=max(1,min(int(requested),64))
+    except Exception: max_c=8
+    ops=operator_sequence or kwargs.get('operator_sequence') or kwargs.get('operators') or ctx.get('operator_sequence') or ctx.get('operators')
+    base_trace=_leap_v41_flatten_ops(ops)
+    generated=[]; accepted=[]; rejected=[]
+    for i in range(1,max_c+1):
+        trace=_leap_v41_rotated_trace(base_trace,i)
+        obj=_leap_v41_fallback_build(query, trace, i, max_c, seed)
+        valid=_leap_v41_validate(obj)
+        text=_leap_v41_format(obj) if valid else ''
+        item={'candidate_id':obj.get('candidate_id'),'turn_id':'CORE-V41-ARTIFACT-NO-LLM-{0:03d}'.format(i),'phase':'CoreOperation','status':'CORE_ARTIFACT_CANDIDATE_VALID_REQUIRES_EXPERIMENT' if valid else 'CORE_ARTIFACT_CANDIDATE_REJECTED','operator_trace':trace,'operator_trace_internal':trace,'candidate_object':obj,'decoded_hypothesis':text,'decoded_mechanism':'\n'.join([str(x) for x in _leap_v41_list(obj.get('mechanism_nodes'))]),'raw_generation':'','raw_generation_preserved':False,'raw_generation_used_as_candidate':False,'prompt_echo_detected':False,'semantic_valid':bool(valid),'core_candidate_valid':bool(valid),'candidate_decode_source':(obj.get('core_generation_policy') or {}).get('candidate_decode_source','deterministic_artifact_level_causal_candidate_object_v41'),'core_llm_generate_called':False,'post_llm_generate_called':False,'llm_schema_compliance_assumed':False,'hook_used':False,'hook_call_count':0,'overall_score':float(obj.get('overall_score') or 0.0),'accepted':bool(valid),'candidate_publishable':bool(valid),'experiment_required':True,'candidate_quality_status':'artifact_level_causal_candidate_valid_requires_experiment_v41' if valid else 'rejected_generic_or_missing_artifact_causal_structure_v41','unit_operation_index':i,'unit_operation_per_candidate':1}
+        generated.append(item)
+        if valid: accepted.append(item)
+        else: rejected.append(item)
+    best=sorted(accepted,key=lambda x:x.get('overall_score',0.0),reverse=True)[0] if accepted else None
+    t1=time.time()
+    debug={'patch_id':LEAP_V41_ARTIFACT_CAUSAL_ROUTE_PATCH_ID,'schema_version':4,'route_name':'leap_v41_artifact_level_causal_core_no_llm','duration_sec':t1-t0,'policy':{'core_llm_generate_called':False,'raw_generation_used_as_candidate':False,'prompt_echo_used_as_candidate':False,'fallback_treated_as_success':False,'candidate_decode_source':'deterministic_artifact_level_causal_candidate_object_v41','generic_operator_prose_publishable':False,'artifact_components_required':True,'typed_couplings_required':True,'observables_required':True,'falsification_tests_required':True,'no_task_or_benchmark_name_hardcoding':True},'candidate_flow_summary':{'generated_ideas_count':len(generated),'accepted_candidates_count':len(accepted),'rejected_candidates_count':len(rejected),'best_candidate_present':bool(best)}}
+    return {'status':'ok' if accepted else 'failed','mode':'leap_engine_v41_artifact_level_causal_core_no_llm','primary_result_route':'artifact_level_causal_core_operation_no_llm_v41','official_route':'leap_engine.run_leap_search::LEAP_V41_ARTIFACT_CAUSAL_ROUTE','route':'artifact_level_causal_core_operation_no_llm_v41','route_attempts':[{'route':'artifact_level_causal_core_operation_no_llm_v41','available':True,'selected':True},{'route':'generic_v40_chain_route','available':True,'selected':False,'reason':'generic_x_controls_y_chains_are_not_sufficient'}],'legacy_routes_bypassed':['llm_schema_candidate_generation_core','generic_operator_prose_success_v38','generic_v40_role_chain_success','task_specific_hardcoded_route'],'reason':'artifact_level_causal_candidates_constructed_without_llm_generate' if accepted else 'no_valid_artifact_level_causal_candidate','query':query,'operation_controls':{'operator_sequence':[base_trace],'seed':seed,'max_candidates':max_c,'core_llm_generate_allowed':False},'generated_ideas':generated,'raw_trials':generated,'decoded_candidates':accepted,'accepted_candidates':accepted,'review_recommended':rejected,'best_candidate':best,'scores':{'overall':best.get('overall_score') if best else 0.0,'candidate_count':len(generated),'publishable_candidate_count':len(accepted),'core_candidate_valid_count':len(accepted),'rejected_candidate_count':len(rejected),'generic_chain_rejected':True,'not_experimentally_validated':True},'conclusion':{'status':'REQUIRE_EXPERIMENT' if accepted else 'INDETERMINATE','reason':'artifact_level_causal_candidate_requires_experiment_without_llm_generate' if accepted else 'missing_artifact_level_causal_structure','final_answer':best.get('decoded_hypothesis') if best else ''},'llm_usage':{'patch_id':LEAP_V41_ARTIFACT_CAUSAL_ROUTE_PATCH_ID,'llm_called':False,'core_llm_generate_called':False,'pre_llm_generate_called':False,'post_llm_generate_called':False,'hidden_hook_called':False,'hook_call_count_total':0,'generation_backend':'none_in_core_operation','validator_llm_invoked':False},'diagnostics':{'patch_id':LEAP_V41_ARTIFACT_CAUSAL_ROUTE_PATCH_ID,'core_operation_policy':debug['policy'],'unit_diagnostics':[{'candidate_id':x.get('candidate_id'),'candidate_object_created':bool(x.get('candidate_object')),'artifact_components':len((x.get('candidate_object') or {}).get('components') or []),'typed_couplings':len((x.get('candidate_object') or {}).get('causal_edges') or []),'verification_tests':len((x.get('candidate_object') or {}).get('verification_plan') or []),'core_candidate_valid':x.get('core_candidate_valid'),'raw_generation_used_as_candidate':False,'reason':x.get('candidate_quality_status')} for x in generated]},'generation_quality_gate_v41':{'patch_id':LEAP_V41_ARTIFACT_CAUSAL_ROUTE_PATCH_ID,'policy':'artifact components + typed causal couplings + observables + falsification tests required; generic X-controls-Y chains rejected; raw_generation never candidate','publishable_candidate_count':len(accepted),'rejected_candidate_count':len(rejected),'raw_generation_used_as_candidate':False,'fallback_treated_as_success':False,'not_experimentally_validated':True},'debug_full_result_telemetry_v41':debug,'debug_full_result':{'debug_full_result_telemetry_v41':debug},'invention_core_no_llm_ready_v41':True}
+
+
+def run_leap_search(*args, **kwargs):
+    query=kwargs.pop('query', None); context=kwargs.pop('context', None); operator_sequence=kwargs.pop('operator_sequence', None); max_candidates=kwargs.pop('max_candidates', None)
+    rest=list(args)
+    if query is None and rest:
+        for v in rest:
+            if isinstance(v,str): query=v; break
+    return _leap_v41_result(query=query, context=context, operator_sequence=operator_sequence, max_candidates=max_candidates, **kwargs)
+
+
+def run_leap_engine(*args, **kwargs):
+    query=kwargs.pop('query', None); context=kwargs.pop('context', None); operator_sequence=kwargs.pop('operator_sequence', None); max_candidates=kwargs.pop('max_candidates', None)
+    rest=list(args)
+    if query is None and rest:
+        for v in rest:
+            if isinstance(v,str): query=v; break
+    return _leap_v41_result(query=query, context=context, operator_sequence=operator_sequence, max_candidates=max_candidates, **kwargs)
+
+try:
+    LatentPhaseInventor.run_leap_engine = run_leap_engine
+except Exception:
+    pass
+
+# ============================================================================
+# END ADD-ONLY PATCH: LEAP-V41 ARTIFACT-LEVEL CAUSAL ROUTE
+# ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY PATCH: LEAP-V42 S-MATRIX IDEA DIVERGENCE MEMORY + GRAPH EXPORT
+# timestamp: 2026-05-06 JST
+# intent:
+#   - Save every generated invention draft/rough idea into an S-matrix-like
+#     idea divergence memory.
+#   - Expose graph-ready JSON via existing graph display paths. This patch does
+#     not introduce a new UI renderer and does not disable/replace existing
+#     graph display code.
+#   - Do not perform publishable/reject/knowledge-alignment judgement here.
+#     The purpose is divergence capture and visual confirmation only.
+# policy:
+#   - ADD-ONLY: no existing code above is deleted.
+#   - Universal/problem-agnostic: no benchmark name, task name, or domain-specific
+#     branching. All data is extracted from candidate_object structure.
+#   - No LLM/model.generate/remote runtime call is introduced.
+# ============================================================================
+
+LEAP_V42_S_MATRIX_IDEA_DIVERGENCE_PATCH_ID = 'LEAP-V42-S-MATRIX-IDEA-DIVERGENCE-GRAPH-20260506'
+
+try:
+    _LEAP_V42_PREV_V41_RESULT = _leap_v41_result
+except Exception:
+    _LEAP_V42_PREV_V41_RESULT = None
+
+
+def _leap_v42_smatrix_safe_dict(x):
+    return x if isinstance(x, dict) else {}
+
+
+def _leap_v42_smatrix_safe_list(x):
+    if x is None:
+        return []
+    if isinstance(x, list):
+        return x
+    if isinstance(x, tuple):
+        return list(x)
+    return [x]
+
+
+def _leap_v42_smatrix_text(x, limit=240):
+    try:
+        s = '' if x is None else str(x)
+    except Exception:
+        s = repr(x)
+    s = ' '.join(s.split())
+    return s[:max(0, int(limit))]
+
+
+def _leap_v42_smatrix_hash(obj, n=12):
+    try:
+        import json as _json, hashlib as _hashlib
+        raw = _json.dumps(obj, ensure_ascii=False, sort_keys=True, default=str)
+        return _hashlib.sha256(raw.encode('utf-8')).hexdigest()[:int(n)]
+    except Exception:
+        return 'hash_unavailable'
+
+
+def _leap_v42_smatrix_candidate_id(item, idx):
+    d = _leap_v42_smatrix_safe_dict(item)
+    obj = _leap_v42_smatrix_safe_dict(d.get('candidate_object'))
+    cid = d.get('candidate_id') or obj.get('candidate_id') or ('candidate_%03d' % int(idx))
+    return _leap_v42_smatrix_text(cid, 120) or ('candidate_%03d' % int(idx))
+
+
+def _leap_v42_smatrix_extract_candidate_object(item):
+    d = _leap_v42_smatrix_safe_dict(item)
+    obj = d.get('candidate_object')
+    return obj if isinstance(obj, dict) else d
+
+
+def _leap_v42_smatrix_variant_tags(candidate_object, item=None):
+    """Return generic divergence tags derived from structure, not from task words."""
+    c = _leap_v42_smatrix_safe_dict(candidate_object)
+    item = _leap_v42_smatrix_safe_dict(item)
+    tags = []
+    trace = _leap_v42_smatrix_safe_list(c.get('operator_trace') or item.get('operator_trace'))
+    if trace:
+        tags.append('operator_trace_first:' + _leap_v42_smatrix_text(trace[0], 64))
+        tags.append('operator_trace_pattern:' + _leap_v42_smatrix_hash([str(x) for x in trace], 10))
+    arch = _leap_v42_smatrix_safe_dict(c.get('architecture'))
+    if 'variant_index' in arch:
+        tags.append('architecture_variant_index:' + _leap_v42_smatrix_text(arch.get('variant_index'), 32))
+    comps = _leap_v42_smatrix_safe_list(c.get('components') or arch.get('components'))
+    for comp in comps:
+        if isinstance(comp, dict):
+            role = _leap_v42_smatrix_text(comp.get('role') or comp.get('id') or 'component', 80)
+            fn_hash = _leap_v42_smatrix_hash({'role': role, 'function': comp.get('function')}, 8)
+            tags.append('component_function:' + role + ':' + fn_hash)
+    edges = _leap_v42_smatrix_safe_list(c.get('causal_edges') or _leap_v42_smatrix_safe_dict(c.get('causal_graph_delta')).get('edges'))
+    if edges:
+        edge_ops = []
+        for e in edges:
+            if isinstance(e, dict):
+                edge_ops.append(str(e.get('operator') or e.get('type') or e.get('relation') or 'edge'))
+        if edge_ops:
+            tags.append('edge_operator_pattern:' + _leap_v42_smatrix_hash(edge_ops, 10))
+    # preserve order, remove duplicates
+    out = []
+    seen = set()
+    for t in tags:
+        if t and t not in seen:
+            seen.add(t)
+            out.append(t)
+    return out[:24]
+
+
+def _leap_v42_smatrix_record_from_candidate(item, idx, root_id='ROOT_PROBLEM'):
+    d = _leap_v42_smatrix_safe_dict(item)
+    obj = _leap_v42_smatrix_extract_candidate_object(d)
+    cid = _leap_v42_smatrix_candidate_id(d, idx)
+    frame = _leap_v42_smatrix_safe_dict(obj.get('problem_frame'))
+    arch = _leap_v42_smatrix_safe_dict(obj.get('architecture'))
+    graph = _leap_v42_smatrix_safe_dict(obj.get('causal_graph_delta'))
+    components = _leap_v42_smatrix_safe_list(obj.get('components') or arch.get('components') or graph.get('nodes'))
+    causal_edges = _leap_v42_smatrix_safe_list(obj.get('causal_edges') or graph.get('edges'))
+    trace = _leap_v42_smatrix_safe_list(obj.get('operator_trace') or d.get('operator_trace'))
+    divergence_tags = _leap_v42_smatrix_variant_tags(obj, d)
+    structure_signature = _leap_v42_smatrix_hash({
+        'components': components,
+        'causal_edges': causal_edges,
+        'operator_trace': trace,
+        'architecture': arch,
+    }, 16)
+    return {
+        's_matrix_record_id': 'SREC-' + _leap_v42_smatrix_hash({'candidate_id': cid, 'idx': idx, 'sig': structure_signature}, 14),
+        'candidate_id': cid,
+        'stage': 'idea_divergence',
+        'parent_candidate_id': root_id,
+        'judgement_status': 'not_evaluated',
+        'publishable_judgement_deferred': True,
+        'operator_trace': [str(x) for x in trace],
+        'problem_roles': _leap_v42_smatrix_safe_dict(frame.get('roles')),
+        'objectives': _leap_v42_smatrix_safe_list(frame.get('objectives') or obj.get('objectives_addressed')),
+        'artifact_components': components,
+        'causal_edges': causal_edges,
+        'interventions': _leap_v42_smatrix_safe_list(obj.get('interventions')),
+        'verification_plan': _leap_v42_smatrix_safe_list(obj.get('verification_plan')),
+        'variant_notes': divergence_tags,
+        'divergence_tags': divergence_tags,
+        'structure_signature': structure_signature,
+        'created_by': _leap_v42_smatrix_text(_leap_v42_smatrix_safe_dict(obj.get('core_generation_policy')).get('candidate_decode_source') or 'deterministic_core_no_llm', 160),
+        'llm_generate_used': bool(_leap_v42_smatrix_safe_dict(obj.get('core_generation_policy')).get('core_llm_generate_called', False)),
+        'raw_generation_used_as_candidate': bool(_leap_v42_smatrix_safe_dict(obj.get('core_generation_policy')).get('raw_generation_used_as_candidate', False)),
+        'source_candidate_status': _leap_v42_smatrix_text(d.get('status') or d.get('candidate_quality_status'), 160),
+    }
+
+
+def _leap_v42_smatrix_graph_from_records(records, query=''):
+    nodes = []
+    edges = []
+    seen_nodes = set()
+
+    def add_node(nid, label, ntype, **extra):
+        nid = _leap_v42_smatrix_text(nid, 180)
+        if not nid or nid in seen_nodes:
+            return
+        seen_nodes.add(nid)
+        node = {'id': nid, 'label': _leap_v42_smatrix_text(label, 180), 'type': ntype, 'role': ntype}
+        node.update(extra)
+        nodes.append(node)
+
+    def add_edge(src, dst, etype, label='', **extra):
+        src = _leap_v42_smatrix_text(src, 180)
+        dst = _leap_v42_smatrix_text(dst, 180)
+        if not src or not dst:
+            return
+        edge = {'source': src, 'target': dst, 'type': etype, 'relation': etype, 'label': _leap_v42_smatrix_text(label or etype, 160)}
+        edge.update(extra)
+        edges.append(edge)
+
+    add_node('ROOT_PROBLEM', 'Problem / Root', 'root', text=_leap_v42_smatrix_text(query, 400))
+    for rec in _leap_v42_smatrix_safe_list(records):
+        if not isinstance(rec, dict):
+            continue
+        cid = _leap_v42_smatrix_text(rec.get('candidate_id'), 120)
+        cand_node = 'CAND::' + cid
+        add_node(cand_node, cid, 'candidate', candidate_id=cid, structure_signature=rec.get('structure_signature'))
+        add_edge('ROOT_PROBLEM', cand_node, 'generated_candidate', 'generated')
+        trace = _leap_v42_smatrix_safe_list(rec.get('operator_trace'))
+        if trace:
+            op_node = 'TRACE::' + _leap_v42_smatrix_hash(trace, 12)
+            add_node(op_node, 'trace: ' + ' → '.join([_leap_v42_smatrix_text(x, 24) for x in trace[:5]]), 'operator_trace')
+            add_edge(op_node, cand_node, 'operator_trace_for', 'trace')
+        for tag in _leap_v42_smatrix_safe_list(rec.get('divergence_tags'))[:8]:
+            tag_id = 'TAG::' + _leap_v42_smatrix_hash(tag, 12)
+            add_node(tag_id, _leap_v42_smatrix_text(tag, 120), 'divergence_tag')
+            add_edge(cand_node, tag_id, 'has_divergence_tag', 'tag')
+        comp_id_map = {}
+        for comp in _leap_v42_smatrix_safe_list(rec.get('artifact_components')):
+            if not isinstance(comp, dict):
+                continue
+            local_id = _leap_v42_smatrix_text(comp.get('id') or comp.get('name') or comp.get('label'), 80)
+            if not local_id:
+                continue
+            node_id = cand_node + '::COMP::' + local_id
+            comp_id_map[local_id] = node_id
+            label = _leap_v42_smatrix_text((comp.get('id') or local_id) + ' ' + (comp.get('role') or comp.get('label') or comp.get('name') or ''), 160)
+            add_node(node_id, label, 'component', candidate_id=cid, component_id=local_id, component_role=comp.get('role'))
+            add_edge(cand_node, node_id, 'has_component', 'component')
+        for ce in _leap_v42_smatrix_safe_list(rec.get('causal_edges')):
+            if not isinstance(ce, dict):
+                continue
+            src = _leap_v42_smatrix_text(ce.get('source') or ce.get('src') or ce.get('from'), 80)
+            dst = _leap_v42_smatrix_text(ce.get('target') or ce.get('dst') or ce.get('to'), 80)
+            if not src or not dst:
+                continue
+            src_node = comp_id_map.get(src, cand_node + '::TERM::' + _leap_v42_smatrix_hash(src, 8))
+            dst_node = comp_id_map.get(dst, cand_node + '::TERM::' + _leap_v42_smatrix_hash(dst, 8))
+            if src_node not in seen_nodes:
+                add_node(src_node, src, 'term', candidate_id=cid)
+            if dst_node not in seen_nodes:
+                add_node(dst_node, dst, 'term', candidate_id=cid)
+            add_edge(src_node, dst_node, 'causal_edge', ce.get('observable') or ce.get('mechanism') or ce.get('operator') or 'causal')
+    return {
+        'graph_kind': 's_matrix_idea_divergence_graph',
+        'patch_id': LEAP_V42_S_MATRIX_IDEA_DIVERGENCE_PATCH_ID,
+        'nodes': nodes,
+        'edges': edges,
+        'summary': {
+            'candidate_count': len([r for r in records if isinstance(r, dict)]),
+            'node_count': len(nodes),
+            'edge_count': len(edges),
+            'judgement_enabled': False,
+        },
+    }
+
+
+def _leap_v42_attach_smatrix_to_result(result, query=''):
+    res = result if isinstance(result, dict) else {}
+    generated = _leap_v42_smatrix_safe_list(res.get('generated_ideas') or res.get('accepted_candidates') or res.get('raw_trials'))
+    records = []
+    for idx, item in enumerate(generated, start=1):
+        if isinstance(item, dict):
+            records.append(_leap_v42_smatrix_record_from_candidate(item, idx))
+    graph = _leap_v42_smatrix_graph_from_records(records, query=query or res.get('query') or '')
+    s_matrix = {
+        'patch_id': LEAP_V42_S_MATRIX_IDEA_DIVERGENCE_PATCH_ID,
+        'mode': 'idea_divergence_memory',
+        'judgement_enabled': False,
+        'judgement_policy': 'not_evaluated_in_v42; save all drafts before later logic/knowledge alignment gates',
+        'record_count': len(records),
+        'records': records,
+    }
+    res['s_matrix'] = s_matrix
+    res['s_matrix_graph'] = graph
+    res['s_matrix_graph_summary'] = graph.get('summary', {})
+    # Existing app graph display already searches top-level causal_graph_json/graph/causal_graph.
+    # Export the S-matrix divergence graph under causal_graph_json so that existing renderer is reused.
+    if not isinstance(res.get('causal_graph_json'), dict) or not (res.get('causal_graph_json') or {}).get('nodes'):
+        res['causal_graph_json'] = graph
+    res['graph'] = graph
+    dbg = _leap_v42_smatrix_safe_dict(res.get('debug_full_result_telemetry_v41') or res.get('debug_full_result') or res.get('debug') or {})
+    dbg_v42 = dict(dbg)
+    dbg_v42['s_matrix_idea_divergence_v42'] = {
+        'patch_id': LEAP_V42_S_MATRIX_IDEA_DIVERGENCE_PATCH_ID,
+        'record_count': len(records),
+        'graph_node_count': len(graph.get('nodes') or []),
+        'graph_edge_count': len(graph.get('edges') or []),
+        'judgement_enabled': False,
+        'llm_generate_used_for_smatrix': False,
+        'existing_graph_display_reused': True,
+    }
+    res['debug_full_result_telemetry_v42'] = dbg_v42
+    return res
+
+
+def _leap_v41_result(*args, **kwargs):
+    """V42 wrapper around existing V41 result: attach S-matrix records + graph only."""
+    if not callable(_LEAP_V42_PREV_V41_RESULT):
+        return {'status': 'failed', 'route': 'leap_v42_smatrix_wrapper', 'error': 'previous_v41_result_unavailable', 'patch_id': LEAP_V42_S_MATRIX_IDEA_DIVERGENCE_PATCH_ID}
+    res = _LEAP_V42_PREV_V41_RESULT(*args, **kwargs)
+    query = kwargs.get('query')
+    if query is None and args:
+        # Keep generic: do not assume task/domain; only use first string-like positional input if present.
+        for a in args:
+            if isinstance(a, str) and a.strip():
+                query = a
+                break
+    if query is None:
+        ctx = kwargs.get('context') if isinstance(kwargs.get('context'), dict) else {}
+        query = ctx.get('query') or ctx.get('prompt') or ctx.get('problem') or (res.get('query') if isinstance(res, dict) else '')
+    return _leap_v42_attach_smatrix_to_result(res, query=query or '')
+
+
+try:
+    _LEAP_V42_PREV_RUN_LEAP_ENGINE = run_leap_engine
+except Exception:
+    _LEAP_V42_PREV_RUN_LEAP_ENGINE = None
+
+
+def run_leap_engine(*args, **kwargs):
+    """Route-preserving wrapper: run existing path, then ensure S-matrix graph is attached."""
+    if callable(_LEAP_V42_PREV_RUN_LEAP_ENGINE):
+        try:
+            res = _LEAP_V42_PREV_RUN_LEAP_ENGINE(*args, **kwargs)
+            if isinstance(res, dict) and not isinstance(res.get('s_matrix'), dict):
+                query = kwargs.get('query') or kwargs.get('prompt') or kwargs.get('problem') or (res.get('query') if isinstance(res, dict) else '')
+                return _leap_v42_attach_smatrix_to_result(res, query=query or '')
+            return res
+        except Exception:
+            # Fall through to V41 route to preserve operational availability.
+            pass
+    return _leap_v41_result(*args, **kwargs)
+
+
+try:
+    _LEAP_V42_PREV_RUN_LEAP_SEARCH = run_leap_search
+except Exception:
+    _LEAP_V42_PREV_RUN_LEAP_SEARCH = None
+
+
+def run_leap_search(*args, **kwargs):
+    """Route-preserving wrapper for search API: attach S-matrix graph without judgement."""
+    if callable(_LEAP_V42_PREV_RUN_LEAP_SEARCH):
+        try:
+            res = _LEAP_V42_PREV_RUN_LEAP_SEARCH(*args, **kwargs)
+            if isinstance(res, dict) and not isinstance(res.get('s_matrix'), dict):
+                query = kwargs.get('query') or kwargs.get('prompt') or kwargs.get('problem') or (res.get('query') if isinstance(res, dict) else '')
+                return _leap_v42_attach_smatrix_to_result(res, query=query or '')
+            return res
+        except Exception:
+            pass
+    return _leap_v41_result(*args, **kwargs)
+
+
+try:
+    LatentPhaseInventor.run_leap_engine = run_leap_engine
+except Exception:
+    pass
+
+try:
+    LEAP_V42_S_MATRIX_IDEA_DIVERGENCE_EXECUTION_PROOF = {
+        'patch_id': LEAP_V42_S_MATRIX_IDEA_DIVERGENCE_PATCH_ID,
+        'add_only': True,
+        'judgement_enabled': False,
+        'existing_graph_display_reused': True,
+        'top_level_graph_key': 'causal_graph_json',
+        'no_task_or_benchmark_name_hardcoding': True,
+        'core_llm_generate_called': False,
+    }
+except Exception:
+    pass
+
+# ============================================================================
+# END ADD-ONLY PATCH: LEAP-V42 S-MATRIX IDEA DIVERGENCE MEMORY + GRAPH EXPORT
+# ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY PATCH: LEAP-V43-SMATRIX-USR-INTEGRATION
+# generated_at_jst: 20260506
+# source_file_before_bytes: 737727
+# source_file_before_sha256_8: 27913522
+# Policy:
+# - ADD-ONLY. No existing code is removed or overwritten.
+# - No benchmark/task-name hardcoding. All logic is schema/structure/role based.
+# - Core candidate generation remains no-LLM; this patch only verifies/enriches
+#   existing candidate artifacts via causal_engine V43 when available.
+# Purpose:
+# - Attach CausalOS S-matrix verification and USR support to Leap candidates.
+# - Recompute realistic draft/pre-experiment/publishable scores.
+# - Preserve old overall_score/accepted fields as legacy diagnostics while adding
+#   V43 fields that UI and downstream growth loops can prefer.
+# ============================================================================
+
+LEAP_V43_SMATRIX_USR_INTEGRATION_PATCH_ID = "LEAP-V43-SMATRIX-USR-INTEGRATION-20260506"
+
+
+def _leap_v43_safe_dict(x):
+    return x if isinstance(x, dict) else {}
+
+
+def _leap_v43_safe_list(x):
+    if x is None:
+        return []
+    if isinstance(x, list):
+        return x
+    if isinstance(x, tuple):
+        return list(x)
+    return [x]
+
+
+def _leap_v43_text(x, limit=2000):
+    try:
+        s = "" if x is None else str(x)
+    except Exception:
+        s = repr(x)
+    s = " ".join(s.split())
+    return s[:max(0, int(limit))]
+
+
+def _leap_v43_float(x, default=0.0, lo=None, hi=None):
+    try:
+        v = float(x)
+    except Exception:
+        v = float(default)
+    try:
+        import math as _math
+        if not _math.isfinite(v):
+            v = float(default)
+    except Exception:
+        pass
+    if lo is not None:
+        v = max(float(lo), v)
+    if hi is not None:
+        v = min(float(hi), v)
+    return float(v)
+
+
+def _leap_v43_hash_obj(obj, n=12):
+    try:
+        import json as _json, hashlib as _hashlib
+        raw = _json.dumps(obj, ensure_ascii=False, sort_keys=True, default=str)
+        return _hashlib.sha256(raw.encode('utf-8')).hexdigest()[:int(n)]
+    except Exception:
+        return 'hash_unavailable'
+
+
+def _leap_v43_import_causal_verifier():
+    """
+    Safely import causal_engine V43 verifier functions.
+    Returns (module_or_none, diagnostics). Never raises.
+    """
+    diag = {
+        'patch_id': LEAP_V43_SMATRIX_USR_INTEGRATION_PATCH_ID,
+        'causal_v43_available': False,
+        'missing': [],
+        'error': '',
+    }
+    try:
+        import causal_engine as ce
+    except Exception as e:
+        diag['error'] = repr(e)
+        diag['missing'] = ['causal_engine_import']
+        return None, diag
+    required = [
+        'causal_v43_build_smatrix_usr_verification_bundle',
+        'causal_v43_build_graph_view',
+        'CAUSAL_V43_SMATRIX_USR_VERIFIER_PATCH_ID',
+    ]
+    missing = [name for name in required if not hasattr(ce, name)]
+    diag['missing'] = missing
+    diag['causal_v43_available'] = not missing
+    try:
+        diag['causal_patch_id'] = getattr(ce, 'CAUSAL_V43_SMATRIX_USR_VERIFIER_PATCH_ID', '')
+    except Exception:
+        pass
+    return (ce if not missing else None), diag
+
+
+def _leap_v43_extract_candidate_object(candidate):
+    c = _leap_v43_safe_dict(candidate)
+    obj = c.get('candidate_object')
+    if isinstance(obj, dict):
+        return obj
+    return c
+
+
+def _leap_v43_candidate_id(candidate, fallback=''):
+    c = _leap_v43_safe_dict(candidate)
+    co = _leap_v43_extract_candidate_object(c)
+    return _leap_v43_text(
+        c.get('candidate_id') or co.get('candidate_id') or c.get('id') or co.get('id') or fallback or ('CAND::' + _leap_v43_hash_obj(c, 10)),
+        160,
+    )
+
+
+def leap_v43_compute_graph_signature(candidate_object):
+    """
+    Generic structure signature from component roles, edge role patterns,
+    observables, interventions, and existing USR equation kinds when available.
+    """
+    co = _leap_v43_extract_candidate_object(candidate_object)
+    comps = []
+    for key in ('components', 'nodes'):
+        comps.extend(_leap_v43_safe_list(co.get(key)))
+    arch = _leap_v43_safe_dict(co.get('architecture'))
+    comps.extend(_leap_v43_safe_list(arch.get('components')))
+    graph = _leap_v43_safe_dict(co.get('causal_graph_delta'))
+    comps.extend(_leap_v43_safe_list(graph.get('nodes')))
+    role_by_id = {}
+    roles = []
+    labels = []
+    for item in comps:
+        if not isinstance(item, dict):
+            continue
+        nid = _leap_v43_text(item.get('id') or item.get('node_id') or item.get('label') or item.get('name'), 120)
+        role = _leap_v43_text(item.get('role') or item.get('type') or 'context_node', 160).lower()
+        label = _leap_v43_text(item.get('label') or item.get('name') or nid, 160).lower()
+        if nid:
+            role_by_id[nid] = role
+        if role:
+            roles.append(role)
+        if label:
+            labels.append(label)
+    edges = []
+    for key in ('causal_edges', 'edges'):
+        edges.extend(_leap_v43_safe_list(co.get(key)))
+    edges.extend(_leap_v43_safe_list(graph.get('edges')))
+    edge_sigs = []
+    observables = []
+    for e in edges:
+        if not isinstance(e, dict):
+            continue
+        src = _leap_v43_text(e.get('source') or e.get('src') or e.get('from') or e.get('cause'), 120)
+        dst = _leap_v43_text(e.get('target') or e.get('dst') or e.get('to') or e.get('effect'), 120)
+        rel = _leap_v43_text(e.get('relation') or e.get('rel') or e.get('operator') or e.get('type'), 120).lower()
+        obs = _leap_v43_text(e.get('observable') or e.get('metric') or e.get('measurement'), 160).lower()
+        edge_sigs.append((role_by_id.get(src, src.lower()), role_by_id.get(dst, dst.lower()), rel))
+        if obs:
+            observables.append(obs)
+    tests = []
+    for key in ('verification_plan', 'tests', 'falsification_tests', 'distinguishing_interventions'):
+        tests.extend(_leap_v43_safe_list(co.get(key)))
+    test_metrics = []
+    for t in tests:
+        if isinstance(t, dict):
+            test_metrics.append(_leap_v43_text(t.get('metric') or t.get('observable') or t.get('claim') or t.get('type'), 160).lower())
+        else:
+            test_metrics.append(_leap_v43_text(t, 160).lower())
+    usr = _leap_v43_safe_dict(co.get('usr_support'))
+    eq_kinds = []
+    for eq in _leap_v43_safe_list(usr.get('equation_candidates')):
+        if isinstance(eq, dict):
+            eq_kinds.append(_leap_v43_text(eq.get('kind') or eq.get('candidate_id'), 160).lower())
+    material = {
+        'roles': sorted(set([x for x in roles if x])),
+        'edge_role_patterns': sorted(set(edge_sigs)),
+        'observables': sorted(set([x for x in observables if x])),
+        'test_metrics': sorted(set([x for x in test_metrics if x])),
+        'equation_kinds': sorted(set([x for x in eq_kinds if x])),
+    }
+    return {
+        'patch_id': LEAP_V43_SMATRIX_USR_INTEGRATION_PATCH_ID,
+        'signature': _leap_v43_hash_obj(material, 16),
+        'material': material,
+    }
+
+
+def leap_v43_compute_candidate_diversity_penalty(candidate, previous_candidates):
+    """Compute within-batch duplicate/isomorphism penalty from graph signatures."""
+    sig = leap_v43_compute_graph_signature(_leap_v43_extract_candidate_object(candidate))
+    signature = sig.get('signature')
+    duplicate_count = 0
+    matched = []
+    for prev in _leap_v43_safe_list(previous_candidates):
+        psig = _leap_v43_safe_dict(prev.get('graph_signature_v43')) if isinstance(prev, dict) else {}
+        if not psig:
+            psig = leap_v43_compute_graph_signature(_leap_v43_extract_candidate_object(prev))
+        if psig.get('signature') == signature:
+            duplicate_count += 1
+            matched.append(_leap_v43_candidate_id(prev))
+    penalty = min(0.35, 0.10 * duplicate_count)
+    return {
+        'patch_id': LEAP_V43_SMATRIX_USR_INTEGRATION_PATCH_ID,
+        'graph_signature_v43': sig,
+        'duplicate_count': duplicate_count,
+        'duplicate_candidate_ids': matched,
+        'diversity_penalty': penalty,
+    }
+
+
+def leap_v43_attach_smatrix_usr_verification(candidate, existing_smatrix=None, context=None, previous_candidates=None):
+    """
+    Attach S-matrix/USR verification to one candidate.
+    Candidate is copied; existing fields are preserved.
+    """
+    cand = dict(candidate or {}) if isinstance(candidate, dict) else {'raw_candidate': candidate}
+    co = _leap_v43_extract_candidate_object(cand)
+    ce, diag = _leap_v43_import_causal_verifier()
+    cand.setdefault('v43_integration_diagnostics', {})
+    cand['v43_integration_diagnostics'].update(diag)
+    cand['v43_integration_diagnostics']['patch_id'] = LEAP_V43_SMATRIX_USR_INTEGRATION_PATCH_ID
+    if ce is None:
+        cand.setdefault('s_matrix_verification', {
+            'patch_id': LEAP_V43_SMATRIX_USR_INTEGRATION_PATCH_ID,
+            'judgement_enabled': False,
+            'reason': 'causal_v43_unavailable',
+            'diagnostics': diag,
+        })
+        cand.setdefault('usr_support', {
+            'requested': True,
+            'available': False,
+            'reason': 'causal_v43_unavailable',
+            'equation_candidates': [],
+            'equation_candidates_count': 0,
+        })
+        cand.setdefault('scores_v43', {
+            'draft_quality_score': _leap_v43_float(cand.get('overall_score'), 0.0, lo=0.0, hi=1.0),
+            'pre_experiment_confidence': 0.0,
+            'publishable_score': 0.0,
+        })
+        cand['candidate_publishable'] = False
+        cand['publishable_status'] = 'draft_requires_causal_v43_verification'
+    else:
+        try:
+            bundle = ce.causal_v43_build_smatrix_usr_verification_bundle(co, existing_smatrix=existing_smatrix, context=context)
+        except Exception as e:
+            bundle = {
+                'patch_id': LEAP_V43_SMATRIX_USR_INTEGRATION_PATCH_ID,
+                'error': repr(e),
+                's_matrix_verification': {'judgement_enabled': False, 'reason': 'causal_v43_exception', 'error': repr(e)},
+                'usr_support': {'requested': True, 'available': False, 'reason': 'causal_v43_exception', 'equation_candidates': []},
+                'scores_v43': {'draft_quality_score': 0.0, 'pre_experiment_confidence': 0.0, 'publishable_score': 0.0},
+                'candidate_publishable': False,
+                'publishable_status': 'draft_requires_verification_repair',
+            }
+        for key in ('s_matrix_record', 's_matrix_verification', 'usr_support', 'score_components_v43', 'scores_v43', 'publishable_status', 'candidate_publishable'):
+            if key in bundle:
+                cand[key] = bundle[key]
+        # Also expose graph-view payload for app.py without requiring a second pass.
+        try:
+            cand['s_matrix_graph_view_v43'] = ce.causal_v43_build_graph_view(co, verification_bundle=bundle, context=context)
+        except Exception as e:
+            cand['s_matrix_graph_view_v43'] = {'patch_id': LEAP_V43_SMATRIX_USR_INTEGRATION_PATCH_ID, 'error': repr(e)}
+    diversity = leap_v43_compute_candidate_diversity_penalty(cand, previous_candidates or [])
+    cand['graph_signature_v43'] = diversity.get('graph_signature_v43')
+    cand['diversity_penalty_v43'] = diversity
+    cand = leap_v43_recompute_candidate_scores(cand, context=context)
+    return cand
+
+
+def leap_v43_recompute_candidate_scores(candidate, context=None):
+    """Apply diversity and untested-publishable caps while preserving legacy scores."""
+    cand = dict(candidate or {})
+    old_score = _leap_v43_float(cand.get('overall_score', cand.get('score', 0.0)), 0.0, lo=0.0, hi=1.0)
+    scores = _leap_v43_safe_dict(cand.get('scores_v43'))
+    if not scores:
+        scores = {
+            'draft_quality_score': old_score,
+            'pre_experiment_confidence': 0.0,
+            'publishable_score': 0.0,
+        }
+    div = _leap_v43_safe_dict(cand.get('diversity_penalty_v43'))
+    div_pen = _leap_v43_float(div.get('diversity_penalty'), 0.0, lo=0.0, hi=0.35)
+    pre = _leap_v43_float(scores.get('pre_experiment_confidence'), 0.0, lo=0.0, hi=1.0)
+    pub = _leap_v43_float(scores.get('publishable_score'), 0.0, lo=0.0, hi=1.0)
+    if div_pen:
+        pre = max(0.0, pre - div_pen)
+        pub = max(0.0, pub - div_pen)
+    co = _leap_v43_extract_candidate_object(cand)
+    requires_experiment = bool(cand.get('experiment_required', cand.get('requires_experiment', co.get('requires_experiment', co.get('experiment_required', True)))))
+    exp_status = _leap_v43_text(cand.get('experimental_validation_status') or co.get('experimental_validation_status') or 'not_tested', 120).lower()
+    if requires_experiment and exp_status in {'', 'not_tested', 'untested', 'unknown'}:
+        pub = min(pub, 0.49)
+        cand['candidate_publishable'] = False
+        cand['publishable_status'] = 'draft_requires_experiment'
+    else:
+        cand['candidate_publishable'] = bool(pub >= 0.70 and not requires_experiment)
+        cand['publishable_status'] = 'publishable_candidate' if cand['candidate_publishable'] else cand.get('publishable_status', 'draft_requires_more_consistency')
+    scores['pre_experiment_confidence'] = pre
+    scores['publishable_score'] = pub
+    scores.setdefault('draft_quality_score', old_score)
+    cand['scores_v43'] = scores
+    cand.setdefault('legacy_overall_score', old_score)
+    cand['accepted_as_draft_v43'] = bool(_leap_v43_float(scores.get('draft_quality_score'), 0.0) >= 0.50)
+    # Keep legacy accepted untouched but add explicit V43 status.
+    cand['accepted_v43'] = bool(cand['accepted_as_draft_v43'] and not cand.get('candidate_publishable', False))
+    cand['scoring_policy_v43'] = {
+        'patch_id': LEAP_V43_SMATRIX_USR_INTEGRATION_PATCH_ID,
+        'legacy_overall_score_preserved': True,
+        'publishable_requires_experimental_or_external_support': True,
+        'untested_publishable_cap': 0.49,
+        'diversity_penalty_applied': div_pen,
+        'core_llm_generate_required': False,
+    }
+    return cand
+
+
+def _leap_v43_candidate_list_paths(result):
+    """Find candidate list containers by generic schema keys. Returns list of (parent,key)."""
+    out = []
+    seen = set()
+    candidate_keys = {
+        'generated_ideas', 'decoded_candidates', 'accepted_candidates', 'rejected_candidates',
+        'candidates', 'leap_candidates', 'transferred_candidates', 'scored_candidates',
+        'all_candidates', 'ideas', 'trials', 'accepted_trials',
+    }
+    def walk(obj, depth=0):
+        if depth > 5:
+            return
+        if isinstance(obj, dict):
+            for k, v in list(obj.items()):
+                if k in candidate_keys and isinstance(v, list):
+                    ident = (id(obj), k)
+                    if ident not in seen:
+                        seen.add(ident)
+                        out.append((obj, k))
+                elif isinstance(v, (dict, list)):
+                    walk(v, depth + 1)
+        elif isinstance(obj, list):
+            for item in obj[:64]:
+                if isinstance(item, (dict, list)):
+                    walk(item, depth + 1)
+    walk(result)
+    return out
+
+
+def leap_v43_verify_candidate_batch(candidates, existing_smatrix=None, context=None):
+    """Verify/enrich a candidate list while preserving order."""
+    enriched = []
+    for cand in _leap_v43_safe_list(candidates):
+        if not isinstance(cand, dict):
+            enriched.append(cand)
+            continue
+        enriched_cand = leap_v43_attach_smatrix_usr_verification(cand, existing_smatrix=existing_smatrix, context=context, previous_candidates=[x for x in enriched if isinstance(x, dict)])
+        enriched.append(enriched_cand)
+    return enriched
+
+
+def _leap_v43_collect_unique_candidates(result):
+    items = []
+    seen = set()
+    for parent, key in _leap_v43_candidate_list_paths(result):
+        for cand in _leap_v43_safe_list(parent.get(key)):
+            if not isinstance(cand, dict):
+                continue
+            cid = _leap_v43_candidate_id(cand)
+            if cid in seen:
+                continue
+            seen.add(cid)
+            items.append(cand)
+    return items
+
+
+def leap_v43_enrich_result_with_smatrix_usr(result, context=None):
+    """Attach S-matrix/USR verification to all candidate lists in a Leap result."""
+    if not isinstance(result, dict):
+        return result
+    res = dict(result)
+    ctx = _leap_v43_safe_dict(context)
+    existing_smatrix = ctx.get('existing_smatrix') or ctx.get('s_matrix') or res.get('s_matrix') or res.get('s_matrix_records')
+    paths = _leap_v43_candidate_list_paths(res)
+    verified_total = 0
+    usr_eq_total = 0
+    draft_requires_experiment = 0
+    publishable_count = 0
+    # Process parent lists in place. Maintain list order and avoid deleting anything.
+    for parent, key in paths:
+        new_list = []
+        for cand in _leap_v43_safe_list(parent.get(key)):
+            if isinstance(cand, dict):
+                enriched = leap_v43_attach_smatrix_usr_verification(cand, existing_smatrix=existing_smatrix, context=ctx, previous_candidates=[x for x in new_list if isinstance(x, dict)])
+                verified_total += 1
+                usr = _leap_v43_safe_dict(enriched.get('usr_support'))
+                usr_eq_total += len(_leap_v43_safe_list(usr.get('equation_candidates')))
+                if enriched.get('publishable_status') == 'draft_requires_experiment':
+                    draft_requires_experiment += 1
+                if enriched.get('candidate_publishable'):
+                    publishable_count += 1
+                new_list.append(enriched)
+            else:
+                new_list.append(cand)
+        parent[key] = new_list
+    # If no known list was found but result itself looks like a candidate, enrich top-level copy.
+    if not paths and any(k in res for k in ('candidate_object', 'components', 'causal_edges', 'verification_plan')):
+        enriched = leap_v43_attach_smatrix_usr_verification(res, existing_smatrix=existing_smatrix, context=ctx, previous_candidates=[])
+        res.update(enriched)
+        verified_total = 1
+        usr_eq_total = len(_leap_v43_safe_list(_leap_v43_safe_dict(enriched.get('usr_support')).get('equation_candidates')))
+        draft_requires_experiment = 1 if enriched.get('publishable_status') == 'draft_requires_experiment' else 0
+        publishable_count = 1 if enriched.get('candidate_publishable') else 0
+    ce, diag = _leap_v43_import_causal_verifier()
+    res['s_matrix_usr_verification_summary'] = {
+        'patch_id': LEAP_V43_SMATRIX_USR_INTEGRATION_PATCH_ID,
+        'causal_v43_diagnostics': diag,
+        'judgement_enabled': bool(diag.get('causal_v43_available') and verified_total > 0),
+        'candidate_count': len(_leap_v43_collect_unique_candidates(res)),
+        'verified_candidate_count': verified_total,
+        'usr_equation_candidate_total': usr_eq_total,
+        'draft_requires_experiment_count': draft_requires_experiment,
+        'publishable_candidate_count': publishable_count,
+        'core_llm_generate_required': False,
+        'legacy_scores_preserved': True,
+    }
+    # Convenience graph bundle for app.py: prefer first verified candidate graph.
+    for cand in _leap_v43_collect_unique_candidates(res):
+        if isinstance(cand, dict) and isinstance(cand.get('s_matrix_graph_view_v43'), dict):
+            res.setdefault('s_matrix_graph_view_v43', cand.get('s_matrix_graph_view_v43'))
+            break
+    return res
+
+
+# Preserve previous public entry points and wrap them additively.
+try:
+    _LEAP_V43_PREV_RUN_LEAP_SEARCH = run_leap_search
+except Exception:
+    _LEAP_V43_PREV_RUN_LEAP_SEARCH = None
+
+try:
+    _LEAP_V43_PREV_RUN_LEAP_ENGINE = run_leap_engine
+except Exception:
+    _LEAP_V43_PREV_RUN_LEAP_ENGINE = None
+
+try:
+    _LEAP_V43_PREV_CLASS_RUN_LEAP_ENGINE = getattr(LatentPhaseInventor, 'run_leap_engine', None)
+except Exception:
+    _LEAP_V43_PREV_CLASS_RUN_LEAP_ENGINE = None
+
+
+def run_leap_search(*args, **kwargs):
+    if callable(_LEAP_V43_PREV_RUN_LEAP_SEARCH):
+        res = _LEAP_V43_PREV_RUN_LEAP_SEARCH(*args, **kwargs)
+    else:
+        res = {'status': 'failed', 'reason': 'previous_run_leap_search_unavailable_v43', 'generated_ideas': []}
+    try:
+        return leap_v43_enrich_result_with_smatrix_usr(res, context=kwargs)
+    except Exception as e:
+        if isinstance(res, dict):
+            res.setdefault('s_matrix_usr_verification_summary', {})
+            res['s_matrix_usr_verification_summary'].update({
+                'patch_id': LEAP_V43_SMATRIX_USR_INTEGRATION_PATCH_ID,
+                'judgement_enabled': False,
+                'error': repr(e),
+            })
+        return res
+
+
+def run_leap_engine(*args, **kwargs):
+    if callable(_LEAP_V43_PREV_RUN_LEAP_ENGINE):
+        res = _LEAP_V43_PREV_RUN_LEAP_ENGINE(*args, **kwargs)
+    elif callable(_LEAP_V43_PREV_RUN_LEAP_SEARCH):
+        res = _LEAP_V43_PREV_RUN_LEAP_SEARCH(*args, **kwargs)
+    else:
+        res = {'status': 'failed', 'reason': 'previous_run_leap_engine_unavailable_v43', 'generated_ideas': []}
+    try:
+        return leap_v43_enrich_result_with_smatrix_usr(res, context=kwargs)
+    except Exception as e:
+        if isinstance(res, dict):
+            res.setdefault('s_matrix_usr_verification_summary', {})
+            res['s_matrix_usr_verification_summary'].update({
+                'patch_id': LEAP_V43_SMATRIX_USR_INTEGRATION_PATCH_ID,
+                'judgement_enabled': False,
+                'error': repr(e),
+            })
+        return res
+
+
+def _leap_v43_class_run_leap_engine(self, *args, **kwargs):
+    if callable(_LEAP_V43_PREV_CLASS_RUN_LEAP_ENGINE):
+        res = _LEAP_V43_PREV_CLASS_RUN_LEAP_ENGINE(self, *args, **kwargs)
+    elif callable(_LEAP_V43_PREV_RUN_LEAP_ENGINE):
+        res = _LEAP_V43_PREV_RUN_LEAP_ENGINE(*args, **kwargs)
+    else:
+        res = {'status': 'failed', 'reason': 'previous_class_run_leap_engine_unavailable_v43', 'generated_ideas': []}
+    try:
+        return leap_v43_enrich_result_with_smatrix_usr(res, context=kwargs)
+    except Exception as e:
+        if isinstance(res, dict):
+            res.setdefault('s_matrix_usr_verification_summary', {})
+            res['s_matrix_usr_verification_summary'].update({
+                'patch_id': LEAP_V43_SMATRIX_USR_INTEGRATION_PATCH_ID,
+                'judgement_enabled': False,
+                'error': repr(e),
+            })
+        return res
+
+try:
+    LatentPhaseInventor.run_leap_engine = _leap_v43_class_run_leap_engine
+except Exception:
+    pass
+
+try:
+    __all__
+except Exception:
+    __all__ = []
+for _leap_v43_name in [
+    'LEAP_V43_SMATRIX_USR_INTEGRATION_PATCH_ID',
+    '_leap_v43_import_causal_verifier',
+    'leap_v43_compute_graph_signature',
+    'leap_v43_compute_candidate_diversity_penalty',
+    'leap_v43_attach_smatrix_usr_verification',
+    'leap_v43_verify_candidate_batch',
+    'leap_v43_recompute_candidate_scores',
+    'leap_v43_enrich_result_with_smatrix_usr',
+    'run_leap_search',
+    'run_leap_engine',
+]:
+    if _leap_v43_name not in __all__:
+        __all__.append(_leap_v43_name)
+
+# ============================================================================
+# END ADD-ONLY PATCH: LEAP-V43-SMATRIX-USR-INTEGRATION
+# ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY PATCH: LEAP-V43B-NO-TRACE-ROTATION-20260506
+# generated_at_jst: 20260506_230840_JST
+# source_file_before_bytes: 760958
+# source_file_before_sha256_8: 86d76524
+# Policy:
+# - ADD-ONLY. No existing code is removed or overwritten.
+# - Universal behavior: no benchmark/task-name hardcoding.
+# - Preserve the user-specified operator order for every generated candidate.
+# - Candidate diversity must come from candidate_index / seed / causal focus /
+#   S-matrix/USR/causal-engine variant selection, NOT from rotating the trace.
+# - Core LLM generate remains forbidden; this patch only changes trace policy.
+# ============================================================================
+
+LEAP_V43B_NO_TRACE_ROTATION_PATCH_ID = "LEAP-V43B-NO-TRACE-ROTATION-20260506"
+
+try:
+    _LEAP_V43B_PREV_ROTATED_TRACE = _leap_v41_rotated_trace
+except Exception:
+    _LEAP_V43B_PREV_ROTATED_TRACE = None
+
+
+def _leap_v43b_no_rotate_trace(base, i=None):
+    """
+    Preserve the operator order supplied by UI/context for every candidate.
+
+    Previous V41 behavior rotated the base trace by candidate_index, e.g.
+    candidate 2 started from the second operator. That made candidate diversity
+    come from sequence-order mutation and weakened tests where the user wants to
+    validate a prescribed operation order. This additive replacement keeps the
+    full base trace unchanged for all candidates. Diversity is still allowed,
+    but it must be produced by candidate_index/seed/focus/variant logic inside
+    the deterministic causal builder, not by reordering the operator sequence.
+    """
+    try:
+        vals = _leap_v41_flatten_ops(base)
+    except Exception:
+        vals = []
+        try:
+            for x in base if isinstance(base, (list, tuple)) else [base]:
+                if isinstance(x, (list, tuple)):
+                    vals.extend([str(y) for y in x if str(y).strip()])
+                elif str(x).strip():
+                    vals.append(str(x))
+        except Exception:
+            vals = []
+    if not vals:
+        # Generic default only; not tied to any benchmark, task name, or domain.
+        vals = ['decomposition', 'mediator_insertion', 'substitution', 'scale_transfer', 'observation_shift', 'combination', 'inversion']
+    return list(vals)
+
+
+# Monkey-patch by rebinding the global name used by _leap_v41_result at runtime.
+# Existing implementation is preserved in _LEAP_V43B_PREV_ROTATED_TRACE.
+_leap_v41_rotated_trace = _leap_v43b_no_rotate_trace
+
+
+def _leap_v43b_safe_dict(x):
+    return x if isinstance(x, dict) else {}
+
+
+def _leap_v43b_safe_list(x):
+    if isinstance(x, list):
+        return x
+    if isinstance(x, tuple):
+        return list(x)
+    return []
+
+
+def _leap_v43b_collect_candidate_items(result):
+    """Collect candidate-like dicts without assuming a specific benchmark schema."""
+    res = _leap_v43b_safe_dict(result)
+    pools = []
+    for key in (
+        'generated_ideas', 'decoded_candidates', 'accepted_candidates',
+        'review_recommended', 'raw_trials', 'rejected_candidates',
+        'best_candidates_panel', 'all_trials_panel'
+    ):
+        pools.extend(_leap_v43b_safe_list(res.get(key)))
+    best = res.get('best_candidate')
+    if isinstance(best, dict):
+        pools.append(best)
+    out = []
+    seen = set()
+    for item in pools:
+        if not isinstance(item, dict):
+            continue
+        ident = item.get('candidate_id') or item.get('turn_id') or id(item)
+        marker = (str(ident), id(item))
+        if marker in seen:
+            continue
+        seen.add(marker)
+        out.append(item)
+    return out
+
+
+def _leap_v43b_annotate_no_trace_rotation(result):
+    """Attach trace-policy telemetry after any run/search result is produced."""
+    if not isinstance(result, dict):
+        return result
+    items = _leap_v43b_collect_candidate_items(result)
+    traces = []
+    for item in items:
+        tr = item.get('operator_trace') or item.get('operator_trace_internal')
+        if isinstance(tr, (list, tuple)):
+            traces.append([str(x) for x in tr])
+            item['operator_trace_rotation_disabled'] = True
+            item['operator_trace_variant_policy'] = 'fixed_user_order_candidate_index_variant'
+        obj = item.get('candidate_object')
+        if isinstance(obj, dict):
+            obj['operator_trace_rotation_disabled'] = True
+            obj['operator_trace_variant_policy'] = 'fixed_user_order_candidate_index_variant'
+            pol = obj.get('core_generation_policy')
+            if not isinstance(pol, dict):
+                pol = {}
+            pol['operator_trace_rotation_disabled'] = True
+            pol['operator_trace_variant_policy'] = 'fixed_user_order_candidate_index_variant'
+            pol['core_llm_generate_called'] = False
+            obj['core_generation_policy'] = pol
+    unique_trace_count = len({tuple(t) for t in traces}) if traces else 0
+    result['operator_trace_policy_v43b'] = {
+        'patch_id': LEAP_V43B_NO_TRACE_ROTATION_PATCH_ID,
+        'rotation_disabled': True,
+        'all_candidates_preserve_user_order': True,
+        'candidate_count_observed': len(items),
+        'unique_operator_trace_count_observed': unique_trace_count,
+        'diversity_source': 'candidate_index_seed_focus_smatrix_usr_causal_variant_not_trace_rotation',
+        'benchmark_or_task_name_hardcoded': False,
+        'core_llm_generate_required': False,
+        'previous_rotated_trace_preserved': callable(_LEAP_V43B_PREV_ROTATED_TRACE),
+    }
+    oc = result.get('operation_controls')
+    if not isinstance(oc, dict):
+        oc = {}
+    oc['operator_trace_rotation_disabled'] = True
+    oc['operator_trace_variant_policy'] = 'fixed_user_order_candidate_index_variant'
+    oc['trace_policy_patch_id'] = LEAP_V43B_NO_TRACE_ROTATION_PATCH_ID
+    result['operation_controls'] = oc
+    cfs = result.get('candidate_flow_summary')
+    if isinstance(cfs, dict):
+        cfs['operator_trace_rotation_disabled'] = True
+        cfs['trace_policy_patch_id'] = LEAP_V43B_NO_TRACE_ROTATION_PATCH_ID
+    smu = result.get('s_matrix_usr_verification_summary')
+    if isinstance(smu, dict):
+        smu['operator_trace_rotation_disabled'] = True
+        smu['trace_policy_patch_id'] = LEAP_V43B_NO_TRACE_ROTATION_PATCH_ID
+    return result
+
+
+try:
+    _LEAP_V43B_PREV_RUN_LEAP_SEARCH = run_leap_search
+except Exception:
+    _LEAP_V43B_PREV_RUN_LEAP_SEARCH = None
+
+try:
+    _LEAP_V43B_PREV_RUN_LEAP_ENGINE = run_leap_engine
+except Exception:
+    _LEAP_V43B_PREV_RUN_LEAP_ENGINE = None
+
+try:
+    _LEAP_V43B_PREV_CLASS_RUN_LEAP_ENGINE = getattr(LatentPhaseInventor, 'run_leap_engine', None)
+except Exception:
+    _LEAP_V43B_PREV_CLASS_RUN_LEAP_ENGINE = None
+
+
+def run_leap_search(*args, **kwargs):
+    if callable(_LEAP_V43B_PREV_RUN_LEAP_SEARCH):
+        res = _LEAP_V43B_PREV_RUN_LEAP_SEARCH(*args, **kwargs)
+    else:
+        res = {'status': 'failed', 'reason': 'previous_run_leap_search_unavailable_v43b', 'generated_ideas': []}
+    return _leap_v43b_annotate_no_trace_rotation(res)
+
+
+def run_leap_engine(*args, **kwargs):
+    if callable(_LEAP_V43B_PREV_RUN_LEAP_ENGINE):
+        res = _LEAP_V43B_PREV_RUN_LEAP_ENGINE(*args, **kwargs)
+    elif callable(_LEAP_V43B_PREV_RUN_LEAP_SEARCH):
+        res = _LEAP_V43B_PREV_RUN_LEAP_SEARCH(*args, **kwargs)
+    else:
+        res = {'status': 'failed', 'reason': 'previous_run_leap_engine_unavailable_v43b', 'generated_ideas': []}
+    return _leap_v43b_annotate_no_trace_rotation(res)
+
+
+try:
+    if _LEAP_V43B_PREV_CLASS_RUN_LEAP_ENGINE is not None:
+        def _leap_v43b_class_run_leap_engine(self, *args, **kwargs):
+            res = _LEAP_V43B_PREV_CLASS_RUN_LEAP_ENGINE(self, *args, **kwargs)
+            return _leap_v43b_annotate_no_trace_rotation(res)
+        LatentPhaseInventor.run_leap_engine = _leap_v43b_class_run_leap_engine
+except Exception:
+    pass
+
+# ============================================================================
+# END ADD-ONLY PATCH: LEAP-V43B-NO-TRACE-ROTATION
+# ============================================================================

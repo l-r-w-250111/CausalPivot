@@ -2430,3 +2430,1096 @@ def runtime_v23_capabilities():
         'endpoints': ['/latent/v23/status', '/latent/v23/generate', '/latent/v23/cancel'],
         'mem': _lv23_cuda_mem_snapshot(),
     }
+
+
+# ============================================================================
+# ADD-ONLY PATCH: RUNTIME_V31_BAD_PREFIX_REJECT_AND_ROUTE_REBIND_20260505
+# generated_at_jst: 20260505_181417
+# source_file_before_bytes: 93779
+# source_file_before_sha256_8: 258fd44a
+# purpose:
+# - Detect bad prefixes such as "Thinking Process" / request-analysis echo on
+#   the runtime side and reject the generation as non-publishable.
+# - Preserve raw generated text for diagnostics; do not let prompt echo be ok=True.
+# - Keep hidden-hook execution requirement intact; no fallback/template success.
+# - Rebind existing FastAPI /latent/v23/generate route endpoint without deleting it.
+# existing_code_deleted: false
+# ============================================================================
+
+RUNTIME_V31_BAD_PREFIX_REJECT_PATCH_ID = 'RUNTIME_V31_BAD_PREFIX_REJECT_AND_ROUTE_REBIND_20260505'
+
+try:
+    _RUNTIME_V31_PREV_LATENT_V23_GENERATE = latent_v23_generate
+except Exception:
+    _RUNTIME_V31_PREV_LATENT_V23_GENERATE = None
+
+
+def _rtv31_text(x, limit=24000):
+    try:
+        s = '' if x is None else str(x)
+    except Exception:
+        s = ''
+    return s[:max(0, int(limit))]
+
+
+def _rtv31_bad_prefix_report(text):
+    t = _rtv31_text(text, 4000).lstrip()
+    low = t.lower()
+    prefix_markers = [
+        'thinking process',
+        'analyze the request',
+        '**analyze the request:**',
+        '* **task:**',
+        '* **constraint:**',
+        '* **format:**',
+        'task:',
+        'constraint:',
+        'format:',
+        'role:',
+    ]
+    body_markers = [
+        'generate a final invention candidate based on',
+        'return only the final invention candidate',
+        'no thinking process',
+        'problem:',
+        'candidate index:',
+    ]
+    prefix_hits = [m for m in prefix_markers if low.startswith(m) or low[:300].find(m) >= 0]
+    body_hits = [m for m in body_markers if m in low[:1200]]
+    bad = bool(prefix_hits or (len(body_hits) >= 2))
+    return {
+        'bad_prefix_detected': bad,
+        'prefix_hits': prefix_hits,
+        'body_hits': body_hits,
+        'checked_prefix_chars': min(len(t), 1200),
+    }
+
+
+def _rtv31_reject_bad_prefix_response(resp):
+    if not isinstance(resp, dict):
+        return resp
+    raw = resp.get('generated_text') or resp.get('text') or ''
+    rep = _rtv31_bad_prefix_report(raw)
+    resp.setdefault('generation_quality_runtime_v31', rep)
+    resp['generation_quality_runtime_v31']['patch_id'] = RUNTIME_V31_BAD_PREFIX_REJECT_PATCH_ID
+    if rep.get('bad_prefix_detected'):
+        # Preserve hook diagnostics and raw text, but reject as a generation.
+        resp['ok'] = False
+        resp['status'] = 'rejected'
+        resp['reason'] = 'runtime_rejected_bad_prefix_v31'
+        resp['bad_prefix_rejected'] = True
+        resp['raw_generation_preserved'] = True
+        resp['publishable'] = False
+        resp['candidate_publishable'] = False
+        resp['generation_backend'] = str(resp.get('generation_backend') or 'remote_runtime_hidden_hook_v23_guarded') + '+bad_prefix_reject_v31'
+    return resp
+
+
+def latent_v23_generate_v31(payload: dict):
+    payload = dict(payload or {})
+    if callable(_RUNTIME_V31_PREV_LATENT_V23_GENERATE):
+        resp = _RUNTIME_V31_PREV_LATENT_V23_GENERATE(payload)
+    else:
+        resp = {'ok': False, 'status': 'failed', 'reason': 'previous_latent_v23_generate_missing_v31', 'generated_text': ''}
+    return _rtv31_reject_bad_prefix_response(resp)
+
+# Route rebinding: FastAPI stores the original function object in each APIRoute.
+# We do not remove any route; we update endpoint/dependant.call additively so the
+# already-declared /latent/v23/generate path uses V31 rejection semantics.
+try:
+    for _route in list(getattr(app, 'routes', [])):
+        if getattr(_route, 'path', '') == '/latent/v23/generate' and 'POST' in set(getattr(_route, 'methods', []) or []):
+            _route.endpoint = latent_v23_generate_v31
+            try:
+                _route.dependant.call = latent_v23_generate_v31
+            except Exception:
+                pass
+except Exception:
+    pass
+
+try:
+    latent_v23_generate = latent_v23_generate_v31
+except Exception:
+    pass
+# ============================================================================
+# END ADD-ONLY PATCH: RUNTIME_V31_BAD_PREFIX_REJECT_AND_ROUTE_REBIND_20260505
+# ============================================================================
+
+
+# BEGIN_ADD_ONLY_PATCH_IDEATION_PHASE
+
+# ADD-ONLY: Phase-gated LLM usage (Pre/Post only).
+# This patch introduces a global guard to prevent text generation during ideation while preserving latent/hook usage.
+
+class _LLMPhaseGuard:
+    PHASE_IDEATION = 'ideation'
+    PHASE_PRE = 'pre'
+    PHASE_POST = 'post'
+    PHASE_CHAT = 'chat'
+    _phase = PHASE_CHAT
+
+    @classmethod
+    def set(cls, phase):
+        cls._phase = phase
+    @classmethod
+    def get(cls):
+        return cls._phase
+
+# Monkey-patch generate calls to be no-op during ideation (latent ops still allowed upstream).
+def _guarded_generate(original_generate):
+    def wrapper(*args, **kwargs):
+        if _LLMPhaseGuard.get() == _LLMPhaseGuard.PHASE_IDEATION:
+            return ''
+        return original_generate(*args, **kwargs)
+    return wrapper
+
+try:
+    # Patch common generate entry points if present
+    if hasattr(globals().get('llm', None), 'generate'):
+        llm.generate = _guarded_generate(llm.generate)
+except Exception:
+    pass
+
+# Public helpers to be used by engines
+def enter_ideation(): _LLMPhaseGuard.set(_LLMPhaseGuard.PHASE_IDEATION)
+def enter_pre(): _LLMPhaseGuard.set(_LLMPhaseGuard.PHASE_PRE)
+def enter_post(): _LLMPhaseGuard.set(_LLMPhaseGuard.PHASE_POST)
+def enter_chat(): _LLMPhaseGuard.set(_LLMPhaseGuard.PHASE_CHAT)
+
+# END_ADD_ONLY_PATCH_IDEATION_PHASE
+
+
+# ============================================================================
+# ADD-ONLY PATCH RUNTIME-V35-CORRECT-GENERATION-BUDGET-ROUTE-REPLACE
+# generated_at_jst: 20260505_152303
+# source_byte_count_before: 99545
+# source_sha256_8_before: 0cb7a20c
+# Root cause fixed:
+#   A normal-chat request using max_new_tokens=8192 can keep GPU busy until EOS
+#   or until all 8192 tokens are decoded. This is not a timeout problem; it is
+#   an incorrect decoding budget policy. 8192 is kept as the hard ceiling, but
+#   the runtime now enforces an effective normal-chat budget unless the caller
+#   explicitly marks long generation. Existing old routes are removed at runtime
+#   and replaced with dict-body routes to avoid Pydantic le=4096 validation.
+# Policy:
+#   ADD-ONLY source patch. No benchmark/task-name hardcoding.
+# ============================================================================
+
+RUNTIME_V35_CORRECT_GENERATION_BUDGET_PATCH_ID = 'RUNTIME-V35-CORRECT-GENERATION-BUDGET-ROUTE-REPLACE-20260505_152303'
+RUNTIME_V35_MAX_NEW_TOKENS_CEILING = 8192
+RUNTIME_V35_NORMAL_CHAT_DEFAULT_BUDGET = 768
+RUNTIME_V35_NORMAL_CHAT_MIN_BUDGET = 192
+RUNTIME_V35_NORMAL_CHAT_SOFT_MAX_BUDGET = 1536
+
+
+def _rtv35_int(x, default=0, lo=None, hi=None):
+    try:
+        v = int(x)
+    except Exception:
+        v = int(default)
+    if lo is not None:
+        v = max(int(lo), v)
+    if hi is not None:
+        v = min(int(hi), v)
+    return v
+
+
+def _rtv35_text_len(x) -> int:
+    try:
+        return len(str(x or ''))
+    except Exception:
+        return 0
+
+
+def _rtv35_long_answer_requested(text: str) -> bool:
+    t = str(text or '').lower()
+    markers = ['long', 'detailed', 'comprehensive', 'full', 'exhaustive', 'step by step', '長文', '詳細', '網羅', '包括', '全文', '完全', '詳しく', 'ステップ']
+    return any(m in t for m in markers)
+
+
+def _rtv35_explicit_8192_requested(text: str) -> bool:
+    t = str(text or '').lower()
+    return ('8192' in t) or ('max_new_tokens' in t and '8192' in t) or ('tokens=8192' in t)
+
+
+def _rtv35_cap_ceiling(x, default=8192):
+    return _rtv35_int(x, default=default, lo=1, hi=RUNTIME_V35_MAX_NEW_TOKENS_CEILING)
+
+
+def _rtv35_effective_max_new_tokens(req: dict) -> int:
+    requested = _rtv35_cap_ceiling(req.get('max_new_tokens', req.get('requested_max_new_tokens', RUNTIME_V35_MAX_NEW_TOKENS_CEILING)), default=RUNTIME_V35_MAX_NEW_TOKENS_CEILING)
+    mode = str(req.get('generation_mode') or req.get('mode') or '').strip().lower()
+    prompt = str(req.get('prompt') or '')
+    allow_long = bool(req.get('allow_long_generation', False) or req.get('long_generation_requested', False))
+    # Non-normal routes can use the requested value up to the 8192 ceiling.
+    if mode not in {'normal_chat', 'chat', 'assistant'}:
+        return requested
+    if allow_long or _rtv35_explicit_8192_requested(prompt):
+        return requested
+    estimated = RUNTIME_V35_NORMAL_CHAT_DEFAULT_BUDGET + min(768, max(0, _rtv35_text_len(prompt) // 8))
+    if _rtv35_long_answer_requested(prompt):
+        estimated = max(estimated, 2048)
+    else:
+        estimated = min(estimated, RUNTIME_V35_NORMAL_CHAT_SOFT_MAX_BUDGET)
+    estimated = max(RUNTIME_V35_NORMAL_CHAT_MIN_BUDGET, min(RUNTIME_V35_MAX_NEW_TOKENS_CEILING, int(estimated)))
+    return min(requested, estimated)
+
+
+def _rtv35_payload_dict(payload):
+    return dict(payload or {}) if isinstance(payload, dict) else {}
+
+
+def _rtv35_build_chat_text(tokenizer, user_prompt: str) -> str:
+    try:
+        return _build_chat_text(tokenizer, user_prompt)
+    except Exception:
+        return f'User: {user_prompt}\nAssistant:'
+
+
+def _rtv35_plain_generate_guarded(kind: str, processor, tokenizer, model, prompt: str, max_new_tokens: int) -> str:
+    import torch
+    text = _rtv35_build_chat_text(tokenizer, prompt)
+    pad_token_id = getattr(tokenizer, 'pad_token_id', None)
+    eos_token_id = getattr(tokenizer, 'eos_token_id', None)
+    if pad_token_id is None and eos_token_id is not None:
+        pad_token_id = eos_token_id
+    common_kwargs = {
+        'max_new_tokens': int(max_new_tokens),
+        'do_sample': False,
+        'use_cache': True,
+        'num_beams': 1,
+    }
+    if pad_token_id is not None:
+        common_kwargs['pad_token_id'] = int(pad_token_id)
+    if eos_token_id is not None:
+        common_kwargs['eos_token_id'] = int(eos_token_id)
+    if kind == 'image_text_to_text' and processor is not None:
+        inputs = processor(text=text, images=None, return_tensors='pt')
+        inputs = {k: v.to(model.device) if hasattr(v, 'to') else v for k, v in inputs.items()}
+        input_len = int(inputs['input_ids'].shape[-1]) if hasattr(inputs.get('input_ids'), 'shape') else 0
+        with torch.inference_mode():
+            output = model.generate(**inputs, **common_kwargs)
+        if input_len and getattr(output, 'ndim', 0) >= 2 and output.shape[-1] > input_len:
+            output = output[:, input_len:]
+        if hasattr(processor, 'batch_decode'):
+            return processor.batch_decode(output, skip_special_tokens=True)[0].strip()
+    inputs = tokenizer(text, return_tensors='pt')
+    inputs = {k: v.to(model.device) if hasattr(v, 'to') else v for k, v in inputs.items()}
+    input_len = int(inputs['input_ids'].shape[-1]) if 'input_ids' in inputs else 0
+    with torch.inference_mode():
+        output = model.generate(**inputs, **common_kwargs)
+    if getattr(output, 'ndim', 0) >= 2 and output.shape[-1] > input_len:
+        gen_ids = output[:, input_len:]
+    else:
+        gen_ids = output
+    return tokenizer.decode(gen_ids[0], skip_special_tokens=True).strip()
+
+
+def _rtv35_runtime_generate_impl(payload: dict):
+    import time as _time
+    t0 = _time.time()
+    req = _rtv35_payload_dict(payload)
+    requested = _rtv35_cap_ceiling(req.get('max_new_tokens', req.get('requested_max_new_tokens', RUNTIME_V35_MAX_NEW_TOKENS_CEILING)))
+    effective = _rtv35_effective_max_new_tokens(req)
+    try:
+        kind, processor, tokenizer, model, loaded_path, loaded_quant = _ensure_loaded(req.get('model_path'), req.get('quantization'))
+        txt = _rtv35_plain_generate_guarded(kind, processor, tokenizer, model, str(req.get('prompt') or ''), effective)
+        return {
+            'ok': bool(str(txt).strip()),
+            'patch_id': RUNTIME_V35_CORRECT_GENERATION_BUDGET_PATCH_ID,
+            'generation_backend': 'remote_runtime_plain_generate_v35_correct_budget',
+            'text': txt,
+            'generated_text': txt,
+            'model_loaded': True,
+            'model_path': loaded_path,
+            'loader_kind': kind,
+            'quantization': loaded_quant,
+            'requested_max_new_tokens': requested,
+            'effective_max_new_tokens': effective,
+            'max_new_tokens_used': effective,
+            'ceiling_8192_preserved': True,
+            'budget_policy': 'intent_and_prompt_size_not_fixed_timeout',
+            'elapsed_ms': int((_time.time() - t0) * 1000),
+            'gpu': _runtime_v19_gpu_diag() if callable(globals().get('_runtime_v19_gpu_diag')) else {},
+        }
+    except Exception as e:
+        return {
+            'ok': False,
+            'patch_id': RUNTIME_V35_CORRECT_GENERATION_BUDGET_PATCH_ID,
+            'generation_backend': 'remote_runtime_plain_generate_v35_correct_budget',
+            'text': '',
+            'generated_text': '',
+            'reason': 'generate_exception_v35_correct_budget',
+            'error': repr(e),
+            'requested_max_new_tokens': requested,
+            'effective_max_new_tokens': effective,
+            'elapsed_ms': int((_time.time() - t0) * 1000),
+            'gpu': _runtime_v19_gpu_diag() if callable(globals().get('_runtime_v19_gpu_diag')) else {},
+        }
+
+
+def _rtv35_structured_json_impl(payload: dict):
+    # Structured JSON is not normal chat. Preserve caller's requested budget up
+    # to 8192, but route through old validation-free dict endpoint implementation
+    # if available to avoid le=4096 Pydantic validation.
+    req = _rtv35_payload_dict(payload)
+    req['max_new_tokens'] = _rtv35_cap_ceiling(req.get('max_new_tokens', RUNTIME_V35_MAX_NEW_TOKENS_CEILING))
+    if callable(globals().get('_rtv34b_structured_json_impl')):
+        return _rtv34b_structured_json_impl(req)
+    if callable(globals().get('structured_json_generate_v34_tokens8192')):
+        return structured_json_generate_v34_tokens8192(req)
+    return {'ok': False, 'json_ok': False, 'schema_ok': False, 'text': '', 'error': 'structured_json_impl_unavailable_v35', 'patch_id': RUNTIME_V35_CORRECT_GENERATION_BUDGET_PATCH_ID}
+
+
+def _rtv35_remove_post_routes(paths):
+    removed = []
+    try:
+        keep = []
+        wanted = set(paths)
+        for route in list(getattr(app.router, 'routes', [])):
+            p = getattr(route, 'path', '')
+            methods = set(getattr(route, 'methods', []) or [])
+            if p in wanted and 'POST' in methods:
+                removed.append({'path': p, 'name': getattr(route, 'name', ''), 'endpoint': getattr(getattr(route, 'endpoint', None), '__name__', '')})
+                continue
+            keep.append(route)
+        app.router.routes = keep
+    except Exception as e:
+        removed.append({'error': repr(e)})
+    return removed
+
+try:
+    _RUNTIME_V35_REMOVED_ROUTES = _rtv35_remove_post_routes(['/generate', '/structured-json/generate'])
+except Exception as _rtv35_rm_e:
+    _RUNTIME_V35_REMOVED_ROUTES = [{'error': repr(_rtv35_rm_e)}]
+
+try:
+    @app.post('/generate')
+    def runtime_generate_v35_correct_budget(payload: dict):
+        return _rtv35_runtime_generate_impl(payload)
+
+    @app.post('/structured-json/generate')
+    def structured_json_generate_v35_correct_budget(payload: dict):
+        return _rtv35_structured_json_impl(payload)
+
+    @app.get('/runtime/v35/generation-budget/status')
+    def runtime_v35_generation_budget_status():
+        return {
+            'patch_id': RUNTIME_V35_CORRECT_GENERATION_BUDGET_PATCH_ID,
+            'max_new_tokens_ceiling': RUNTIME_V35_MAX_NEW_TOKENS_CEILING,
+            'normal_chat_default_budget': RUNTIME_V35_NORMAL_CHAT_DEFAULT_BUDGET,
+            'normal_chat_soft_max_budget': RUNTIME_V35_NORMAL_CHAT_SOFT_MAX_BUDGET,
+            'removed_routes': _RUNTIME_V35_REMOVED_ROUTES,
+            'active_generate_endpoint': 'runtime_generate_v35_correct_budget',
+            'active_structured_json_endpoint': 'structured_json_generate_v35_correct_budget',
+        }
+except Exception as _rtv35_add_e:
+    try:
+        _RUNTIME_V35_ROUTE_ADD_ERROR = repr(_rtv35_add_e)
+    except Exception:
+        pass
+# ============================================================================
+# END ADD-ONLY PATCH RUNTIME-V35-CORRECT-GENERATION-BUDGET-ROUTE-REPLACE
+# ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY PATCH RUNTIME-V36-ADAPTIVE-GENERATION-BUDGET-ROUTE-REPLACE
+# generated_at_jst: 20260505_154253
+# source_byte_count_before: 110314
+# source_sha256_8_before: 05b15594
+# Purpose:
+#   Keep hard ceiling=8192 but make normal-chat decode budget explicit,
+#   measurable, and resource-safe. Adds generated_tokens/tokens_per_sec/
+#   finish_reason/offload diagnostics and single-flight normal /generate guard.
+# ============================================================================
+
+RUNTIME_V36_ADAPTIVE_GENERATION_BUDGET_PATCH_ID = 'RUNTIME-V36-ADAPTIVE-GENERATION-BUDGET-ROUTE-REPLACE-20260505_154253'
+RUNTIME_V36_MAX_NEW_TOKENS_CEILING = 8192
+RUNTIME_V36_GENERATE_LOCK = threading.Lock()
+
+
+def _rtv36_int(x, default=0, lo=None, hi=None):
+    try:
+        v = int(x)
+    except Exception:
+        v = int(default)
+    if lo is not None:
+        v = max(int(lo), v)
+    if hi is not None:
+        v = min(int(hi), v)
+    return v
+
+
+def _rtv36_payload_dict(payload):
+    return dict(payload or {}) if isinstance(payload, dict) else {}
+
+
+def _rtv36_effective_max_new_tokens(req: dict) -> int:
+    requested = _rtv36_int(req.get('max_new_tokens', req.get('requested_max_new_tokens', 384)), default=384, lo=1, hi=RUNTIME_V36_MAX_NEW_TOKENS_CEILING)
+    mode = str(req.get('generation_mode') or req.get('mode') or '').strip().lower()
+    if mode not in {'normal_chat', 'chat', 'assistant'}:
+        return requested
+    # App normally sends an already-balanced effective value. Runtime still
+    # enforces a generic safety net if legacy callers send 8192 for normal chat.
+    profile = str(req.get('generation_profile') or 'balanced').strip().lower()
+    if bool(req.get('allow_long_generation', False)) or profile == 'max8192':
+        return requested
+    caps = {'concise': 192, 'balanced': 384, 'detailed': 1024, 'long': 2048, 'custom': requested}
+    return max(16, min(requested, caps.get(profile, 384), RUNTIME_V36_MAX_NEW_TOKENS_CEILING))
+
+
+def _rtv36_model_device_diag(model):
+    out = {'model_device': 'unknown', 'cpu_offload_detected': False, 'device_map': ''}
+    try:
+        out['device_map'] = str(getattr(model, 'hf_device_map', '') or '')[:1000]
+        if 'cpu' in out['device_map'].lower() or 'disk' in out['device_map'].lower():
+            out['cpu_offload_detected'] = True
+    except Exception:
+        pass
+    try:
+        p = next(model.parameters())
+        out['model_device'] = str(p.device)
+    except Exception:
+        pass
+    try:
+        # sample up to a few parameters to detect mixed CPU/GPU placement
+        devs = []
+        for idx, p in enumerate(model.parameters()):
+            if idx >= 8:
+                break
+            devs.append(str(p.device))
+        out['sample_parameter_devices'] = devs
+        if any(d.startswith('cpu') for d in devs):
+            out['cpu_offload_detected'] = True
+    except Exception:
+        pass
+    return out
+
+
+def _rtv36_build_chat_text(tokenizer, user_prompt: str) -> str:
+    try:
+        return _build_chat_text(tokenizer, user_prompt)
+    except Exception:
+        return f'User: {user_prompt}\nAssistant:'
+
+
+def _rtv36_plain_generate_measured(kind: str, processor, tokenizer, model, prompt: str, max_new_tokens: int):
+    import time as _time
+    import torch
+    gen_t0 = _time.time()
+    text = _rtv36_build_chat_text(tokenizer, prompt)
+    pad_token_id = getattr(tokenizer, 'pad_token_id', None)
+    eos_token_id = getattr(tokenizer, 'eos_token_id', None)
+    if pad_token_id is None and eos_token_id is not None:
+        pad_token_id = eos_token_id
+    gen_kwargs = {'max_new_tokens': int(max_new_tokens), 'do_sample': False, 'use_cache': True, 'num_beams': 1}
+    if pad_token_id is not None:
+        gen_kwargs['pad_token_id'] = int(pad_token_id)
+    if eos_token_id is not None:
+        gen_kwargs['eos_token_id'] = int(eos_token_id)
+    if kind == 'image_text_to_text' and processor is not None:
+        inputs = processor(text=text, images=None, return_tensors='pt')
+        inputs = {k: v.to(model.device) if hasattr(v, 'to') else v for k, v in inputs.items()}
+        input_len = int(inputs['input_ids'].shape[-1]) if hasattr(inputs.get('input_ids'), 'shape') else 0
+        with torch.inference_mode():
+            output = model.generate(**inputs, **gen_kwargs)
+        if input_len and getattr(output, 'ndim', 0) >= 2 and output.shape[-1] > input_len:
+            gen_ids = output[:, input_len:]
+        else:
+            gen_ids = output
+        txt = processor.batch_decode(gen_ids, skip_special_tokens=True)[0].strip() if hasattr(processor, 'batch_decode') else str(gen_ids)
+    else:
+        inputs = tokenizer(text, return_tensors='pt')
+        inputs = {k: v.to(model.device) if hasattr(v, 'to') else v for k, v in inputs.items()}
+        input_len = int(inputs['input_ids'].shape[-1]) if 'input_ids' in inputs else 0
+        with torch.inference_mode():
+            output = model.generate(**inputs, **gen_kwargs)
+        if getattr(output, 'ndim', 0) >= 2 and output.shape[-1] > input_len:
+            gen_ids = output[:, input_len:]
+        else:
+            gen_ids = output
+        txt = tokenizer.decode(gen_ids[0], skip_special_tokens=True).strip()
+    elapsed = max(1e-6, _time.time() - gen_t0)
+    try:
+        generated_tokens = int(gen_ids.shape[-1]) if hasattr(gen_ids, 'shape') else 0
+    except Exception:
+        generated_tokens = 0
+    finish_reason = 'max_new_tokens' if generated_tokens >= int(max_new_tokens) else 'eos_or_stop'
+    return txt, {'generated_tokens': generated_tokens, 'generation_elapsed_sec': elapsed, 'tokens_per_sec': float(generated_tokens / elapsed) if generated_tokens else 0.0, 'finish_reason': finish_reason, 'input_tokens': int(input_len)}
+
+
+def _rtv36_runtime_generate_impl(payload: dict):
+    import time as _time
+    t0 = _time.time()
+    req = _rtv36_payload_dict(payload)
+    requested = _rtv36_int(req.get('requested_max_new_tokens', req.get('max_new_tokens', 384)), default=384, lo=1, hi=RUNTIME_V36_MAX_NEW_TOKENS_CEILING)
+    effective = _rtv36_effective_max_new_tokens(req)
+    if not RUNTIME_V36_GENERATE_LOCK.acquire(blocking=False):
+        return {'ok': False, 'patch_id': RUNTIME_V36_ADAPTIVE_GENERATION_BUDGET_PATCH_ID, 'generation_backend': 'remote_runtime_plain_generate_v36_adaptive_budget', 'text': '', 'generated_text': '', 'reason': 'gpu_generate_busy_v36_single_flight_guard', 'requested_max_new_tokens': requested, 'effective_max_new_tokens': effective, 'elapsed_ms': int((_time.time()-t0)*1000), 'gpu': _runtime_v19_gpu_diag() if callable(globals().get('_runtime_v19_gpu_diag')) else {}}
+    try:
+        kind, processor, tokenizer, model, loaded_path, loaded_quant = _ensure_loaded(req.get('model_path'), req.get('quantization'))
+        txt, meas = _rtv36_plain_generate_measured(kind, processor, tokenizer, model, str(req.get('prompt') or ''), effective)
+        devdiag = _rtv36_model_device_diag(model)
+        return {
+            'ok': bool(str(txt).strip()),
+            'patch_id': RUNTIME_V36_ADAPTIVE_GENERATION_BUDGET_PATCH_ID,
+            'generation_backend': 'remote_runtime_plain_generate_v36_adaptive_budget',
+            'text': txt,
+            'generated_text': txt,
+            'model_loaded': True,
+            'model_path': loaded_path,
+            'loader_kind': kind,
+            'quantization': loaded_quant,
+            'requested_max_new_tokens': requested,
+            'effective_max_new_tokens': effective,
+            'max_new_tokens_used': effective,
+            'generated_tokens': meas.get('generated_tokens'),
+            'input_tokens': meas.get('input_tokens'),
+            'generation_elapsed_sec': meas.get('generation_elapsed_sec'),
+            'tokens_per_sec': meas.get('tokens_per_sec'),
+            'decode_tokens_per_sec': meas.get('tokens_per_sec'),
+            'finish_reason': meas.get('finish_reason'),
+            'ceiling_8192_preserved': True,
+            'budget_policy': 'adaptive_profile_target_seconds_observed_tps',
+            'generation_profile': req.get('generation_profile'),
+            'target_seconds': req.get('target_seconds'),
+            'device_diagnostics': devdiag,
+            'cpu_offload_detected': bool(devdiag.get('cpu_offload_detected')),
+            'elapsed_ms': int((_time.time() - t0) * 1000),
+            'gpu': _runtime_v19_gpu_diag() if callable(globals().get('_runtime_v19_gpu_diag')) else {},
+        }
+    except Exception as e:
+        return {'ok': False, 'patch_id': RUNTIME_V36_ADAPTIVE_GENERATION_BUDGET_PATCH_ID, 'generation_backend': 'remote_runtime_plain_generate_v36_adaptive_budget', 'text': '', 'generated_text': '', 'reason': 'generate_exception_v36_adaptive_budget', 'error': repr(e), 'requested_max_new_tokens': requested, 'effective_max_new_tokens': effective, 'elapsed_ms': int((_time.time()-t0)*1000), 'gpu': _runtime_v19_gpu_diag() if callable(globals().get('_runtime_v19_gpu_diag')) else {}}
+    finally:
+        try:
+            RUNTIME_V36_GENERATE_LOCK.release()
+        except Exception:
+            pass
+
+
+def _rtv36_remove_post_routes(paths):
+    removed = []
+    try:
+        keep = []
+        wanted = set(paths)
+        for route in list(getattr(app.router, 'routes', [])):
+            p = getattr(route, 'path', '')
+            methods = set(getattr(route, 'methods', []) or [])
+            if p in wanted and 'POST' in methods:
+                removed.append({'path': p, 'name': getattr(route, 'name', ''), 'endpoint': getattr(getattr(route, 'endpoint', None), '__name__', '')})
+                continue
+            keep.append(route)
+        app.router.routes = keep
+    except Exception as e:
+        removed.append({'error': repr(e)})
+    return removed
+
+try:
+    _RUNTIME_V36_REMOVED_ROUTES = _rtv36_remove_post_routes(['/generate'])
+except Exception as _rtv36_rm_e:
+    _RUNTIME_V36_REMOVED_ROUTES = [{'error': repr(_rtv36_rm_e)}]
+
+try:
+    @app.post('/generate')
+    def runtime_generate_v36_adaptive_budget(payload: dict):
+        return _rtv36_runtime_generate_impl(payload)
+
+    @app.get('/runtime/v36/generation-budget/status')
+    def runtime_v36_generation_budget_status():
+        return {'patch_id': RUNTIME_V36_ADAPTIVE_GENERATION_BUDGET_PATCH_ID, 'max_new_tokens_ceiling': RUNTIME_V36_MAX_NEW_TOKENS_CEILING, 'single_flight_normal_generate': True, 'removed_routes': _RUNTIME_V36_REMOVED_ROUTES, 'active_generate_endpoint': 'runtime_generate_v36_adaptive_budget'}
+except Exception as _rtv36_add_e:
+    try:
+        _RUNTIME_V36_ROUTE_ADD_ERROR = repr(_rtv36_add_e)
+    except Exception:
+        pass
+# ============================================================================
+# END ADD-ONLY PATCH RUNTIME-V36-ADAPTIVE-GENERATION-BUDGET-ROUTE-REPLACE
+# ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY PATCH: RUNTIME-V37-INVENTION-TELEMETRY-FOR-DEBUG-FULL-RESULT
+# generated_at_jst: 20260505_230500
+# source_patch_policy: ADD-ONLY; no existing endpoint source deleted.
+# purpose:
+# - Add consistent telemetry to /generate and latent generation responses so the
+#   app/leap debug_full_result can identify non-completion root causes.
+# - Generic: no task, benchmark, or prompt-name hardcoding.
+# ============================================================================
+
+RUNTIME_V37_INVENTION_TELEMETRY_PATCH_ID = 'RUNTIME-V37-INVENTION-TELEMETRY-FOR-DEBUG-FULL-RESULT-20260505_230500'
+
+try:
+    _RUNTIME_V37_PREV_GENERATE = runtime_generate_v36_adaptive_budget
+except Exception:
+    _RUNTIME_V37_PREV_GENERATE = None
+try:
+    _RUNTIME_V37_PREV_LATENT_V23 = latent_v23_generate
+except Exception:
+    _RUNTIME_V37_PREV_LATENT_V23 = None
+try:
+    _RUNTIME_V37_PREV_LATENT_V21 = latent_v21_generate
+except Exception:
+    _RUNTIME_V37_PREV_LATENT_V21 = None
+
+
+def _rtv37_now():
+    import time as _time
+    return float(_time.time())
+
+
+def _rtv37_text(x, limit=1200):
+    try:
+        s = '' if x is None else str(x)
+    except Exception:
+        try:
+            s = repr(x)
+        except Exception:
+            s = ''
+    return s[:max(0, int(limit))]
+
+
+def _rtv37_payload_snapshot(payload):
+    p = dict(payload or {}) if isinstance(payload, dict) else {}
+    out = {}
+    for k in ['max_new_tokens', 'requested_max_new_tokens', 'effective_max_new_tokens', 'generation_mode', 'generation_profile', 'target_seconds', 'operator', 'operator_name', 'theta', 'rotation_magnitude', 'manual_layer_path', 'manual_layer_index', 'layer', 'server_timeout_s', 'remote_timeout', 'job_id', 'request_id', 'model_path', 'quantization']:
+        if k in p:
+            out[k] = p.get(k)
+    if 'prompt' in p or 'input' in p:
+        txt = str(p.get('prompt') or p.get('input') or '')
+        out['prompt_chars'] = len(txt)
+        try:
+            import hashlib as _hashlib
+            out['prompt_sha256_12'] = _hashlib.sha256(txt.encode('utf-8')).hexdigest()[:12]
+        except Exception:
+            pass
+    return out
+
+
+def _rtv37_extract_response_numbers(resp):
+    r = dict(resp or {}) if isinstance(resp, dict) else {}
+    out = {}
+    for k in ['requested_max_new_tokens', 'effective_max_new_tokens', 'max_new_tokens_used', 'generated_tokens', 'input_tokens', 'generation_elapsed_sec', 'tokens_per_sec', 'decode_tokens_per_sec', 'finish_reason', 'hook_call_count', 'hook_used', 'hidden_intervention_used', 'cpu_offload_detected', 'elapsed_ms', 'reason', 'error', 'status', 'ok', 'generation_backend', 'backend']:
+        if k in r and not isinstance(r.get(k), (dict, list, tuple)):
+            out[k] = r.get(k)
+    try:
+        lr = r.get('latent_result') if isinstance(r.get('latent_result'), dict) else {}
+        for k in ['hook_call_count', 'generated_tokens', 'tokens_per_sec', 'finish_reason', 'elapsed_ms']:
+            if k in lr and k not in out:
+                out[k] = lr.get(k)
+    except Exception:
+        pass
+    return out
+
+
+def _rtv37_attach_response_telemetry(resp, payload, endpoint, started_at, mem_before=None, exception_text=''):
+    if not isinstance(resp, dict):
+        resp = {'ok': False, 'status': 'failed', 'reason': 'non_dict_response_wrapped_v37', 'raw_response_repr': _rtv37_text(resp, 2000)}
+    finished = _rtv37_now()
+    mem_after = _lv23_cuda_mem_snapshot() if callable(globals().get('_lv23_cuda_mem_snapshot')) else (_runtime_v19_gpu_diag() if callable(globals().get('_runtime_v19_gpu_diag')) else {})
+    tel = {
+        'patch_id': RUNTIME_V37_INVENTION_TELEMETRY_PATCH_ID,
+        'schema_version': 1,
+        'endpoint': str(endpoint or ''),
+        'started_at_epoch': float(started_at or finished),
+        'finished_at_epoch': finished,
+        'elapsed_ms_v37': int(max(0.0, finished - float(started_at or finished)) * 1000),
+        'payload_snapshot': _rtv37_payload_snapshot(payload),
+        'response_measurements': _rtv37_extract_response_numbers(resp),
+        'gpu_mem_before': mem_before or {},
+        'gpu_mem_after': mem_after or {},
+        'exception_text': _rtv37_text(exception_text, 2000),
+        'debug_full_result_fields_provided': ['endpoint', 'elapsed_ms_v37', 'payload_snapshot', 'response_measurements', 'gpu_mem_before', 'gpu_mem_after'],
+    }
+    resp['runtime_debug_telemetry_v37'] = tel
+    resp.setdefault('diagnostics', {})
+    if isinstance(resp.get('diagnostics'), dict):
+        resp['diagnostics']['runtime_debug_telemetry_v37'] = tel
+    return resp
+
+
+def runtime_generate_v37_debug_telemetry(payload: dict):
+    started = _rtv37_now()
+    mem_before = _lv23_cuda_mem_snapshot() if callable(globals().get('_lv23_cuda_mem_snapshot')) else (_runtime_v19_gpu_diag() if callable(globals().get('_runtime_v19_gpu_diag')) else {})
+    try:
+        if not callable(_RUNTIME_V37_PREV_GENERATE):
+            raise RuntimeError('previous /generate handler unavailable for runtime v37 telemetry')
+        resp = _RUNTIME_V37_PREV_GENERATE(payload)
+        return _rtv37_attach_response_telemetry(resp, payload, '/generate', started, mem_before=mem_before)
+    except Exception as e:
+        resp = {'ok': False, 'status': 'failed', 'reason': 'runtime_v37_generate_exception', 'error': repr(e), 'generated_text': '', 'text': ''}
+        return _rtv37_attach_response_telemetry(resp, payload, '/generate', started, mem_before=mem_before, exception_text=e)
+
+
+def latent_v23_generate_v37_debug_telemetry(payload: dict):
+    started = _rtv37_now()
+    mem_before = _lv23_cuda_mem_snapshot() if callable(globals().get('_lv23_cuda_mem_snapshot')) else (_runtime_v19_gpu_diag() if callable(globals().get('_runtime_v19_gpu_diag')) else {})
+    try:
+        if not callable(_RUNTIME_V37_PREV_LATENT_V23):
+            raise RuntimeError('previous /latent/v23/generate handler unavailable for runtime v37 telemetry')
+        resp = _RUNTIME_V37_PREV_LATENT_V23(payload)
+        return _rtv37_attach_response_telemetry(resp, payload, '/latent/v23/generate', started, mem_before=mem_before)
+    except Exception as e:
+        resp = {'ok': False, 'status': 'failed', 'reason': 'runtime_v37_latent_v23_exception', 'error': repr(e), 'generated_text': ''}
+        return _rtv37_attach_response_telemetry(resp, payload, '/latent/v23/generate', started, mem_before=mem_before, exception_text=e)
+
+
+def latent_v21_generate_v37_debug_telemetry(payload: dict):
+    started = _rtv37_now()
+    mem_before = _lv23_cuda_mem_snapshot() if callable(globals().get('_lv23_cuda_mem_snapshot')) else (_runtime_v19_gpu_diag() if callable(globals().get('_runtime_v19_gpu_diag')) else {})
+    try:
+        if not callable(_RUNTIME_V37_PREV_LATENT_V21):
+            raise RuntimeError('previous /latent/v21/generate handler unavailable for runtime v37 telemetry')
+        resp = _RUNTIME_V37_PREV_LATENT_V21(payload)
+        return _rtv37_attach_response_telemetry(resp, payload, '/latent/v21/generate', started, mem_before=mem_before)
+    except Exception as e:
+        resp = {'ok': False, 'status': 'failed', 'reason': 'runtime_v37_latent_v21_exception', 'error': repr(e), 'generated_text': ''}
+        return _rtv37_attach_response_telemetry(resp, payload, '/latent/v21/generate', started, mem_before=mem_before, exception_text=e)
+
+
+def _rtv37_rebind_post_route(path, endpoint_func):
+    try:
+        for _route in list(getattr(app, 'routes', [])):
+            if getattr(_route, 'path', '') == path and 'POST' in set(getattr(_route, 'methods', []) or []):
+                _route.endpoint = endpoint_func
+                try:
+                    _route.dependant.call = endpoint_func
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+try:
+    if callable(_RUNTIME_V37_PREV_GENERATE):
+        runtime_generate_v36_adaptive_budget = runtime_generate_v37_debug_telemetry
+        _rtv37_rebind_post_route('/generate', runtime_generate_v37_debug_telemetry)
+except Exception:
+    pass
+try:
+    if callable(_RUNTIME_V37_PREV_LATENT_V23):
+        latent_v23_generate = latent_v23_generate_v37_debug_telemetry
+        _rtv37_rebind_post_route('/latent/v23/generate', latent_v23_generate_v37_debug_telemetry)
+except Exception:
+    pass
+try:
+    if callable(_RUNTIME_V37_PREV_LATENT_V21):
+        latent_v21_generate = latent_v21_generate_v37_debug_telemetry
+        _rtv37_rebind_post_route('/latent/v21/generate', latent_v21_generate_v37_debug_telemetry)
+except Exception:
+    pass
+# ============================================================================
+# END ADD-ONLY PATCH: RUNTIME-V37-INVENTION-TELEMETRY-FOR-DEBUG-FULL-RESULT
+# ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY PATCH: RUNTIME-V43-PHASE-TELEMETRY-GUARD
+# generated_at_jst: 20260506
+# source_file_before_bytes: 129922
+# source_file_before_sha256_8: 763a1c55
+# Policy:
+# - ADD-ONLY. No existing code is removed or overwritten.
+# - No benchmark/task-name hardcoding. Phase is detected only from generic request
+#   fields such as generation_phase / phase / llm_phase / runtime_phase.
+# - Normal chat/pre/post/UI/explain generation is allowed.
+# - Core/ideation/search-core/candidate-core/verification-core generation is
+#   rejected before model.generate, and the decision is recorded as telemetry.
+# ============================================================================
+
+RUNTIME_V43_PHASE_TELEMETRY_PATCH_ID = "RUNTIME-V43-PHASE-TELEMETRY-GUARD-20260506"
+
+try:
+    _RUNTIME_V43_PHASE_TELEMETRY_EVENTS
+except Exception:
+    _RUNTIME_V43_PHASE_TELEMETRY_EVENTS = []
+
+RUNTIME_V43_FORBIDDEN_GENERATION_PHASES = {
+    "core",
+    "ideation",
+    "search_core",
+    "candidate_core",
+    "verification_core",
+    "coreoperation",
+    "core_operation",
+}
+
+RUNTIME_V43_ALLOWED_GENERATION_PHASES = {
+    "chat",
+    "pre",
+    "post",
+    "ui",
+    "explain",
+    "normal",
+    "unknown",
+}
+
+
+def runtime_v43_safe_dict(x):
+    return x if isinstance(x, dict) else {}
+
+
+def runtime_v43_text(x, limit=2000):
+    try:
+        s = "" if x is None else str(x)
+    except Exception:
+        s = repr(x)
+    s = " ".join(s.split())
+    return s[:max(0, int(limit))]
+
+
+def runtime_v43_now_ms():
+    try:
+        import time as _time
+        return int(_time.time() * 1000)
+    except Exception:
+        return 0
+
+
+def runtime_v43_record_telemetry(event):
+    """Append bounded telemetry without depending on any external service."""
+    try:
+        ev = dict(event or {})
+        ev.setdefault("patch_id", RUNTIME_V43_PHASE_TELEMETRY_PATCH_ID)
+        ev.setdefault("ts_ms", runtime_v43_now_ms())
+        _RUNTIME_V43_PHASE_TELEMETRY_EVENTS.append(ev)
+        max_len = 300
+        try:
+            import os as _os
+            max_len = int(_os.getenv("RUNTIME_V43_TELEMETRY_MAX", "300") or 300)
+        except Exception:
+            pass
+        if len(_RUNTIME_V43_PHASE_TELEMETRY_EVENTS) > max_len:
+            del _RUNTIME_V43_PHASE_TELEMETRY_EVENTS[:len(_RUNTIME_V43_PHASE_TELEMETRY_EVENTS) - max_len]
+    except Exception:
+        pass
+
+
+def runtime_v43_get_phase_from_payload(payload):
+    """
+    Generic phase extraction.
+
+    Supported fields:
+    - generation_phase
+    - phase
+    - llm_phase
+    - runtime_phase
+    - context.generation_phase / context.phase / context.llm_phase / context.runtime_phase
+    - meta.generation_phase / meta.phase
+    """
+    p = runtime_v43_safe_dict(payload)
+    phase = (
+        p.get("generation_phase")
+        or p.get("phase")
+        or p.get("llm_phase")
+        or p.get("runtime_phase")
+    )
+    ctx = runtime_v43_safe_dict(p.get("context"))
+    meta = runtime_v43_safe_dict(p.get("meta"))
+    phase = phase or ctx.get("generation_phase") or ctx.get("phase") or ctx.get("llm_phase") or ctx.get("runtime_phase")
+    phase = phase or meta.get("generation_phase") or meta.get("phase") or meta.get("llm_phase") or meta.get("runtime_phase")
+    phase = runtime_v43_text(phase or "unknown", 120).lower().strip()
+    return phase or "unknown"
+
+
+def runtime_v43_guard_core_generation(payload, route_name="/generate"):
+    """
+    Decide whether a generation request is allowed.
+
+    This is deliberately phase-based rather than prompt/content/domain based.
+    It does not know benchmark names, tasks, or invention topics.
+    """
+    p = runtime_v43_safe_dict(payload)
+    phase = runtime_v43_get_phase_from_payload(p)
+    unknown_policy = runtime_v43_text(p.get("unknown_phase_policy") or "allow", 40).lower()
+    rejected = phase in RUNTIME_V43_FORBIDDEN_GENERATION_PHASES
+    if phase == "unknown" and unknown_policy in {"reject", "deny", "forbid"}:
+        rejected = True
+    event = {
+        "patch_id": RUNTIME_V43_PHASE_TELEMETRY_PATCH_ID,
+        "ts_ms": runtime_v43_now_ms(),
+        "route_name": route_name,
+        "generation_phase": phase,
+        "ok": not rejected,
+        "reason": "core_generation_forbidden_v43" if rejected else "phase_allowed_v43",
+        "core_llm_generate_allowed": not rejected,
+    }
+    runtime_v43_record_telemetry(event)
+    return event
+
+
+def runtime_v43_get_phase_telemetry(limit=100):
+    try:
+        n = max(1, min(int(limit), 500))
+    except Exception:
+        n = 100
+    return {
+        "patch_id": RUNTIME_V43_PHASE_TELEMETRY_PATCH_ID,
+        "count": len(_RUNTIME_V43_PHASE_TELEMETRY_EVENTS),
+        "events": list(_RUNTIME_V43_PHASE_TELEMETRY_EVENTS[-n:]),
+        "forbidden_phases": sorted(RUNTIME_V43_FORBIDDEN_GENERATION_PHASES),
+        "allowed_phases": sorted(RUNTIME_V43_ALLOWED_GENERATION_PHASES),
+    }
+
+
+def runtime_v43_is_generate_route(path):
+    """Generic route classifier: guard only generation-like routes."""
+    s = runtime_v43_text(path, 300).lower()
+    if not s:
+        return False
+    # Generic route tokens only. No benchmark or domain names.
+    tokens = ("generate", "structured_json_generate", "autonomous_growth_run", "latent_generate")
+    return any(t in s for t in tokens)
+
+
+# ---- Wrap common in-process generation helpers without removing originals. ----
+try:
+    _RUNTIME_V43_PREV_PLAIN_GENERATE = _plain_generate
+except Exception:
+    _RUNTIME_V43_PREV_PLAIN_GENERATE = None
+
+try:
+    _RUNTIME_V43_PREV_OUTLINES_GENERATE = _outlines_generate
+except Exception:
+    _RUNTIME_V43_PREV_OUTLINES_GENERATE = None
+
+try:
+    _RUNTIME_V43_PREV_GUIDANCE_GENERATE = _guidance_generate
+except Exception:
+    _RUNTIME_V43_PREV_GUIDANCE_GENERATE = None
+
+
+def _runtime_v43_payload_from_args_kwargs(args, kwargs):
+    if kwargs and isinstance(kwargs.get("payload"), dict):
+        return dict(kwargs.get("payload"))
+    if kwargs and isinstance(kwargs.get("request"), dict):
+        return dict(kwargs.get("request"))
+    if kwargs:
+        # Carry only generic phase fields, not model tensors or domain text.
+        return {k: v for k, v in kwargs.items() if k in {"generation_phase", "phase", "llm_phase", "runtime_phase", "context", "meta", "unknown_phase_policy"}}
+    for a in args:
+        if isinstance(a, dict):
+            return a
+        if hasattr(a, "dict"):
+            try:
+                d = a.dict()
+                if isinstance(d, dict):
+                    return d
+            except Exception:
+                pass
+        if hasattr(a, "model_dump"):
+            try:
+                d = a.model_dump()
+                if isinstance(d, dict):
+                    return d
+            except Exception:
+                pass
+    return {"generation_phase": "unknown"}
+
+
+def _runtime_v43_blocked_text_result(reason="core_generation_forbidden_v43", phase="core"):
+    return ""
+
+
+def _plain_generate(*args, **kwargs):
+    payload = _runtime_v43_payload_from_args_kwargs(args, kwargs)
+    guard = runtime_v43_guard_core_generation(payload, route_name="_plain_generate")
+    if not guard.get("ok"):
+        return _runtime_v43_blocked_text_result(guard.get("reason"), guard.get("generation_phase"))
+    if callable(_RUNTIME_V43_PREV_PLAIN_GENERATE):
+        return _RUNTIME_V43_PREV_PLAIN_GENERATE(*args, **kwargs)
+    return ""
+
+
+def _outlines_generate(*args, **kwargs):
+    payload = _runtime_v43_payload_from_args_kwargs(args, kwargs)
+    guard = runtime_v43_guard_core_generation(payload, route_name="_outlines_generate")
+    if not guard.get("ok"):
+        return _runtime_v43_blocked_text_result(guard.get("reason"), guard.get("generation_phase"))
+    if callable(_RUNTIME_V43_PREV_OUTLINES_GENERATE):
+        return _RUNTIME_V43_PREV_OUTLINES_GENERATE(*args, **kwargs)
+    return ""
+
+
+def _guidance_generate(*args, **kwargs):
+    payload = _runtime_v43_payload_from_args_kwargs(args, kwargs)
+    guard = runtime_v43_guard_core_generation(payload, route_name="_guidance_generate")
+    if not guard.get("ok"):
+        return _runtime_v43_blocked_text_result(guard.get("reason"), guard.get("generation_phase"))
+    if callable(_RUNTIME_V43_PREV_GUIDANCE_GENERATE):
+        return _RUNTIME_V43_PREV_GUIDANCE_GENERATE(*args, **kwargs)
+    return ""
+
+
+# ---- FastAPI middleware and diagnostic endpoints. ----
+try:
+    _runtime_v43_app_obj = app
+except Exception:
+    _runtime_v43_app_obj = None
+
+try:
+    from fastapi.responses import JSONResponse as _RuntimeV43JSONResponse
+except Exception:
+    _RuntimeV43JSONResponse = None
+
+if _runtime_v43_app_obj is not None and hasattr(_runtime_v43_app_obj, "middleware"):
+    @_runtime_v43_app_obj.middleware("http")
+    async def runtime_v43_phase_guard_middleware(request, call_next):
+        path = runtime_v43_text(getattr(getattr(request, "url", None), "path", ""), 300)
+        method = runtime_v43_text(getattr(request, "method", ""), 20).upper()
+        if method == "POST" and runtime_v43_is_generate_route(path):
+            payload = {}
+            body = b""
+            try:
+                body = await request.body()
+                if body:
+                    import json as _json
+                    parsed = _json.loads(body.decode("utf-8"))
+                    if isinstance(parsed, dict):
+                        payload = parsed
+            except Exception as e:
+                payload = {"generation_phase": "unknown", "body_parse_error_v43": repr(e)}
+            guard = runtime_v43_guard_core_generation(payload, route_name=path)
+            if not guard.get("ok"):
+                if _RuntimeV43JSONResponse is not None:
+                    return _RuntimeV43JSONResponse(status_code=403, content={
+                        "ok": False,
+                        "text": "",
+                        "reason": guard.get("reason"),
+                        "generation_phase": guard.get("generation_phase"),
+                        "patch_id": RUNTIME_V43_PHASE_TELEMETRY_PATCH_ID,
+                    })
+            # Re-inject body so downstream handlers can read it normally.
+            async def receive():
+                return {"type": "http.request", "body": body, "more_body": False}
+            try:
+                request._receive = receive
+            except Exception:
+                pass
+        return await call_next(request)
+
+    @_runtime_v43_app_obj.get("/v43/phase_telemetry")
+    async def runtime_v43_phase_telemetry_endpoint(limit: int = 100):
+        return runtime_v43_get_phase_telemetry(limit=limit)
+
+    @_runtime_v43_app_obj.post("/v43/guard")
+    async def runtime_v43_guard_endpoint(payload: dict):
+        return runtime_v43_guard_core_generation(payload, route_name="/v43/guard")
+
+try:
+    __all__
+except Exception:
+    __all__ = []
+for _runtime_v43_name in [
+    "RUNTIME_V43_PHASE_TELEMETRY_PATCH_ID",
+    "runtime_v43_get_phase_from_payload",
+    "runtime_v43_guard_core_generation",
+    "runtime_v43_get_phase_telemetry",
+    "runtime_v43_is_generate_route",
+]:
+    if _runtime_v43_name not in __all__:
+        __all__.append(_runtime_v43_name)
+
+# ============================================================================
+# END ADD-ONLY PATCH: RUNTIME-V43-PHASE-TELEMETRY-GUARD
+# ============================================================================

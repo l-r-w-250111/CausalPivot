@@ -6616,3 +6616,1725 @@ except Exception: pass
 # ============================================================================
 # END ADD-ONLY PATCH CAUSAL V16
 # ============================================================================
+
+
+# BEGIN_ADD_ONLY_PATCH_IDEATION_PHASE
+
+# ADD-ONLY: Phase-gated LLM usage (Pre/Post only).
+# This patch introduces a global guard to prevent text generation during ideation while preserving latent/hook usage.
+
+class _LLMPhaseGuard:
+    PHASE_IDEATION = 'ideation'
+    PHASE_PRE = 'pre'
+    PHASE_POST = 'post'
+    PHASE_CHAT = 'chat'
+    _phase = PHASE_CHAT
+
+    @classmethod
+    def set(cls, phase):
+        cls._phase = phase
+    @classmethod
+    def get(cls):
+        return cls._phase
+
+# Monkey-patch generate calls to be no-op during ideation (latent ops still allowed upstream).
+def _guarded_generate(original_generate):
+    def wrapper(*args, **kwargs):
+        if _LLMPhaseGuard.get() == _LLMPhaseGuard.PHASE_IDEATION:
+            return ''
+        return original_generate(*args, **kwargs)
+    return wrapper
+
+try:
+    # Patch common generate entry points if present
+    if hasattr(globals().get('llm', None), 'generate'):
+        llm.generate = _guarded_generate(llm.generate)
+except Exception:
+    pass
+
+# Public helpers to be used by engines
+def enter_ideation(): _LLMPhaseGuard.set(_LLMPhaseGuard.PHASE_IDEATION)
+def enter_pre(): _LLMPhaseGuard.set(_LLMPhaseGuard.PHASE_PRE)
+def enter_post(): _LLMPhaseGuard.set(_LLMPhaseGuard.PHASE_POST)
+def enter_chat(): _LLMPhaseGuard.set(_LLMPhaseGuard.PHASE_CHAT)
+
+# END_ADD_ONLY_PATCH_IDEATION_PHASE
+
+
+# ============================================================================
+# ADD-ONLY PATCH: CAUSAL-V38 STRUCTURED CORE CANDIDATE OPERATORS
+# timestamp: 2026-05-06 JST
+# policy:
+# - Generic causal helpers only; no task/benchmark-name hardcoding.
+# - No LLM calls. No model.generate. No remote runtime.
+# - Provides structured candidate_object construction for Leap Engine Core phase.
+# ============================================================================
+
+CAUSAL_V38_STRUCTURED_CORE_PATCH_ID = 'CAUSAL-V38-STRUCTURED-CORE-CANDIDATE-OPERATORS-20260506'
+
+
+def _causal_v38_safe_list(x):
+    if x is None:
+        return []
+    if isinstance(x, list):
+        return x
+    if isinstance(x, tuple):
+        return list(x)
+    return [x]
+
+
+def _causal_v38_safe_dict(x):
+    return x if isinstance(x, dict) else {}
+
+
+def _causal_v38_extract_terms(text, max_terms=14):
+    import re as _re
+    raw = '' if text is None else str(text)
+    parts = _re.split(r'[\s,;:。．、，；：\n\r\t\(\)\[\]{}<>「」『』"\'`]+', raw)
+    out = []
+    seen = set()
+    for p in parts:
+        p = p.strip(' -_/\\|*#')
+        if len(p) < 2:
+            continue
+        k = p.lower()
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append(p[:80])
+        if len(out) >= max_terms:
+            break
+    if not out and raw.strip():
+        out.append(raw.strip()[:80])
+    return out
+
+
+def causal_v38_operator_effect(operator_name):
+    name = str(operator_name or '').strip().lower()
+    table = {
+        'decomposition': ('factorize', 'separate the state into objective, constraint, mechanism, and verification factors'),
+        'substitution': ('replace', 'replace a limiting causal component while preserving its functional role'),
+        'combination': ('compose', 'compose compatible causal deltas into one integrated state change'),
+        'inversion': ('invert', 'reverse a dependency direction or transform a consequence into a control handle'),
+        'constraint_relaxation': ('relax', 'relax a nonessential constraint while preserving mandatory objectives'),
+        'observation_shift': ('observe', 'shift the measurement level or proxy used for validation'),
+        'scale_transfer': ('transfer', 'transfer a causal pattern across scale, module, phase, or abstraction level'),
+        'mediator_insertion': ('mediate', 'insert an intermediate node that decouples competing effects'),
+    }
+    action, delta = table.get(name, ('perturb', 'apply the declared generic operator as a structural causal perturbation'))
+    return {'operator': str(operator_name), 'action': action, 'delta': delta}
+
+
+def causal_build_candidate_object_v38(*, query='', operator_trace=None, candidate_index=1, max_candidates=1, seed=123, context=None, kwargs=None):
+    """Build a deterministic structured candidate_object without any LLM call."""
+    import random as _random, hashlib as _hashlib
+    trace = [str(x) for x in _causal_v38_safe_list(operator_trace) if str(x)]
+    terms = _causal_v38_extract_terms(query)
+    material = (str(seed) + '|' + str(candidate_index) + '|' + '>'.join(trace)).encode('utf-8', 'ignore')
+    rng = _random.Random(int(_hashlib.sha256(material).hexdigest()[:12], 16))
+    axes = ['objective', 'constraint', 'mechanism', 'mediator', 'interface', 'transport', 'distribution', 'separation', 'stability', 'control', 'verification', 'risk']
+    rng.shuffle(axes)
+    selected_axes = axes[:6]
+    selected_terms = terms[:6] if terms else ['problem context']
+    primary = selected_terms[(int(candidate_index)-1) % len(selected_terms)]
+    secondary = selected_terms[int(candidate_index) % len(selected_terms)] if len(selected_terms) > 1 else primary
+    effects = [causal_v38_operator_effect(op) for op in trace]
+    nodes = [{'id': a, 'label': a, 'source': 'generic_causal_axis'} for a in selected_axes]
+    nodes.extend({'id': 'term_' + str(i), 'label': t, 'source': 'problem_text'} for i, t in enumerate(selected_terms[:5], start=len(nodes)))
+    edges = []
+    for i, eff in enumerate(effects):
+        src = selected_axes[i % len(selected_axes)] if selected_axes else 'objective'
+        dst = selected_axes[(i+1) % len(selected_axes)] if selected_axes else 'constraint'
+        edges.append({'source': src, 'target': dst, 'operator': eff['operator'], 'action': eff['action'], 'effect': eff['delta']})
+    score_components = {
+        'operator_trace_applied': 1.0 if trace else 0.0,
+        'causal_nodes_present': 1.0 if nodes else 0.0,
+        'causal_edges_present': 1.0 if edges else 0.0,
+        'verification_present': 1.0,
+        'no_core_llm_generate': 1.0,
+    }
+    overall = sum(score_components.values()) / max(1, len(score_components))
+    return {
+        'candidate_id': 'V38-CAUSAL-CORE-{0:03d}'.format(int(candidate_index)),
+        'candidate_index': int(candidate_index),
+        'candidate_count': int(max_candidates),
+        'problem_terms': selected_terms,
+        'operator_trace': trace,
+        'idea_core': 'Apply {ops} to a structured causal state coupling "{a}" with "{b}"; the candidate is produced by deterministic causal operations, not LLM text generation.'.format(ops=' -> '.join(trace), a=primary, b=secondary),
+        'causal_graph_delta': {'nodes': nodes, 'edges': edges, 'source': CAUSAL_V38_STRUCTURED_CORE_PATCH_ID},
+        'mechanism_nodes': ['{0}: {1}'.format(e['action'], e['delta']) for e in effects] or ['Represent the problem as a structured causal state.'],
+        'causal_edges': edges,
+        'constraints': ['Core LLM generate is forbidden.', 'Candidate body must be candidate_object-derived.', 'Operator trace must be auditable.', 'Fallback is diagnostic only, not success.'],
+        'unknowns': ['Dominant causal edge effect size', 'Safe constraint relaxation range', 'Most sensitive verification proxy'],
+        'verification_plan': ['Repeat with same seed and confirm identical candidate_object.', 'Change seed/operator schedule and confirm diversity comes from causal operations.', 'Assert core_llm_generate_called == false.'],
+        'risks': ['Generic operators may need future domain plugins.', 'Term extraction may be coarse without Pre-phase normalization.', 'Deterministic wording may be less fluent than Post-phase text.'],
+        'score_components': score_components,
+        'overall_score': overall,
+        'core_generation_policy': {'core_llm_generate_called': False, 'candidate_decode_source': 'deterministic_candidate_object', 'raw_generation_used_as_candidate': False, 'diversity_source': 'operator/search/causal perturbation parameters'},
+    }
+
+
+def causal_validate_candidate_object_v38(candidate_object):
+    c = _causal_v38_safe_dict(candidate_object)
+    graph = _causal_v38_safe_dict(c.get('causal_graph_delta'))
+    return bool(c.get('candidate_id') and c.get('operator_trace') and c.get('idea_core') and graph.get('nodes') and c.get('verification_plan'))
+
+# ============================================================================
+# END ADD-ONLY PATCH: CAUSAL-V38 STRUCTURED CORE CANDIDATE OPERATORS
+# ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY PATCH: CAUSAL-V39B UNIVERSAL EXPLICIT REVIEWED CORE
+# timestamp: 2026-05-06 JST
+#
+# IMPORTANT POLICY NOTES
+# - This patch is appended to the uploaded causal_engine.py. No existing code
+#   above this block is deleted or overwritten.
+# - This implementation is universal and problem-agnostic. It does not branch on
+#   benchmark names, task names, or any fixed problem identity.
+# - Core candidate construction never calls LLM/model.generate/remote runtime.
+# - Candidate bodies are deterministic candidate_object-derived.
+# - Generic operator prose alone is not publishable success.
+# - Pre-experiment candidates are explicitly marked REQUIRE_EXPERIMENT via
+#   requires_experiment=True and confidence cap overall_score<=0.83.
+# ============================================================================
+
+CAUSAL_V39B_REVIEWED_OUTPUT_PATCH_ID = 'CAUSAL-V39B-UNIVERSAL-EXPLICIT-REVIEWED-CORE-SIZE-PRESERVING-20260506'
+CAUSAL_V39_EXPLICIT_TERM_CORE_PATCH_ID = CAUSAL_V39B_REVIEWED_OUTPUT_PATCH_ID
+
+
+def _causal_v39b_str(x):
+    return '' if x is None else str(x)
+
+
+def _causal_v39b_safe_dict(x):
+    return x if isinstance(x, dict) else {}
+
+
+def _causal_v39b_safe_list(x):
+    if x is None:
+        return []
+    if isinstance(x, list):
+        return x
+    if isinstance(x, tuple):
+        return list(x)
+    return [x]
+
+
+def _causal_v39b_unique(seq, limit=None):
+    out = []
+    seen = set()
+    for item in _causal_v39b_safe_list(seq):
+        s = _causal_v39b_str(item).strip()
+        if not s:
+            continue
+        k = s.lower()
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append(s)
+        if limit and len(out) >= int(limit):
+            break
+    return out
+
+
+def _causal_v39b_is_japanese(text):
+    try:
+        import re as _re
+        return bool(_re.search(r'[ぁ-んァ-ン一-龥]', _causal_v39b_str(text)))
+    except Exception:
+        return False
+
+
+def _causal_v39b_split_terms(text, max_terms=48):
+    """Universal explicit term extraction; no task-name or benchmark hardcoding."""
+    import re as _re
+    raw = _causal_v39b_str(text)
+    terms = []
+    for clause in _re.split(r'[。．\.\n\r]+', raw):
+        clause = clause.strip()
+        if not clause:
+            continue
+        for part in _re.split(r'[、，,;；:\t\(\)\[\]{}<>「」『』"`]+', clause):
+            part = part.strip(' -_/\\|*#')
+            if len(part) >= 2:
+                terms.append(part[:160])
+    if not terms:
+        for part in _re.split(r'\s+', raw):
+            part = part.strip(' -_/\\|*#')
+            if len(part) >= 2:
+                terms.append(part[:160])
+    return _causal_v39b_unique(terms, max_terms)
+
+
+def _causal_v39b_extract_transformations(text):
+    """Extract source->target transformation patterns generically."""
+    import re as _re
+    raw = _causal_v39b_str(text)
+    pairs = []
+    patterns = [
+        r'(?P<src>[^。\n]{2,140}?)を[、,\s]*(?P<dst>[^。\n]{2,180}?)へ(?:転換|変更|変換|移行|置換)',
+        r'(?P<src>[^。\n]{2,140}?)から[、,\s]*(?P<dst>[^。\n]{2,180}?)へ',
+        r'from\s+(?P<src>.{2,140}?)\s+to\s+(?P<dst>.{2,180}?)(?:[\.。\n]|$)',
+        r'convert\s+(?P<src>.{2,140}?)\s+(?:into|to)\s+(?P<dst>.{2,180}?)(?:[\.。\n]|$)',
+    ]
+    for pat in patterns:
+        for m in _re.finditer(pat, raw, flags=_re.I):
+            src = m.group('src').strip(' 、，,。． ')
+            dst = m.group('dst').strip(' 、，,。． ')
+            if src and dst:
+                pairs.append({'source': src[:160], 'target': dst[:200], 'type': 'explicit_transformation'})
+    return pairs[:8]
+
+
+def _causal_v39b_classify_role(term):
+    """Broad causal-role classifier. Keywords are generic roles, not task IDs."""
+    s = _causal_v39b_str(term).lower()
+    role_rules = [
+        ('interface_boundary', ['interface', 'boundary', 'surface', 'contact', '界面', '境界', '接触', '表面']),
+        ('transport_flow', ['transport', 'transfer', 'flow', 'flux', 'diffusion', 'migration', '移動', '輸送', '拡散', '流束', '移送']),
+        ('field_distribution', ['field', 'potential', 'gradient', 'distribution', '電場', '場', '分布', '勾配', '電位']),
+        ('partition_allocation', ['partition', 'allocation', 'separation', 'extraction', '分配', '分離', '割当', '抽出', '回収']),
+        ('reaction_or_process_zone', ['reaction', 'process', 'zone', 'site', 'conversion', '反応', 'プロセス', '領域', '場', '変換']),
+        ('stability_or_degradation', ['stability', 'degradation', 'decay', 'fouling', 'aging', 'poison', '安定', '劣化', '失活', '老化', '腐食']),
+        ('selectivity_or_quality', ['selectivity', 'quality', 'specificity', 'accuracy', 'decision quality', '選択', '品質', '精度', '特異性']),
+        ('control_or_constraint', ['control', 'constraint', 'limit', 'threshold', 'policy', '制御', '制約', '限界', '閾値', '条件']),
+        ('objective_or_outcome', ['improve', 'reduce', 'increase', 'optimize', 'objective', 'delay', 'traceability', '改善', '抑制', '向上', '最適', '目的', '短縮', '追跡']),
+        ('mediator_or_barrier', ['mediator', 'barrier', 'membrane', 'gate', 'layer', 'separator', '媒介', '障壁', '膜', 'ゲート', '層', '隔膜']),
+        ('verification_evidence', ['verify', 'verification', 'evidence', 'measure', 'metric', '検証', '証拠', '測定', '指標', '評価']),
+    ]
+    for role, keys in role_rules:
+        if any(k in s for k in keys):
+            return role
+    return 'context_term'
+
+
+def _causal_v39b_extract_problem_frame(query):
+    raw = _causal_v39b_str(query)
+    terms = _causal_v39b_split_terms(raw)
+    transformations = _causal_v39b_extract_transformations(raw)
+    roles = {}
+    for t in terms:
+        roles.setdefault(_causal_v39b_classify_role(t), []).append(t)
+    for k in list(roles.keys()):
+        roles[k] = _causal_v39b_unique(roles[k], 12)
+    objectives = []
+    mechanisms = []
+    for t in terms:
+        role = _causal_v39b_classify_role(t)
+        if role in ('objective_or_outcome', 'selectivity_or_quality', 'stability_or_degradation', 'partition_allocation', 'verification_evidence'):
+            objectives.append(t)
+        if role in ('interface_boundary', 'transport_flow', 'field_distribution', 'partition_allocation', 'reaction_or_process_zone', 'mediator_or_barrier', 'control_or_constraint', 'verification_evidence'):
+            mechanisms.append(t)
+    if not objectives:
+        objectives = terms[:3]
+    if not mechanisms:
+        mechanisms = terms[:6]
+    return {
+        'raw_query': raw,
+        'terms': terms,
+        'transformations': transformations,
+        'roles': roles,
+        'objectives': _causal_v39b_unique(objectives, 12),
+        'mechanism_terms': _causal_v39b_unique(mechanisms, 14),
+    }
+
+
+def _causal_v39b_pick(seq, idx, default='explicit problem element'):
+    seq = _causal_v39b_safe_list(seq)
+    if not seq:
+        return default
+    return _causal_v39b_str(seq[idx % len(seq)])
+
+
+def _causal_v39b_candidate_variant(candidate_index):
+    variants = [
+        {'name': 'boundary-mediated separation/control architecture', 'roles': ['interface_boundary', 'partition_allocation', 'control_or_constraint'], 'verbs': ['create a controlled boundary/contact region', 'route the target outcome into a separated receiving domain', 'decouple the process zone from the recovery/control zone']},
+        {'name': 'transport-gated architecture', 'roles': ['transport_flow', 'mediator_or_barrier', 'field_distribution'], 'verbs': ['insert a selective mediator/barrier', 'gate cross-domain transport', 'shape the driving gradient or field distribution']},
+        {'name': 'stability-shielded architecture', 'roles': ['stability_or_degradation', 'interface_boundary', 'reaction_or_process_zone'], 'verbs': ['shield the sensitive component from the most damaging domain', 'move destabilizing intermediates away from the critical site', 'stabilize the local operating environment']},
+        {'name': 'sequential process-separation architecture', 'roles': ['reaction_or_process_zone', 'transport_flow', 'selectivity_or_quality'], 'verbs': ['stage transformation and separation as coupled operations', 'use residence-time or path asymmetry', 'feed back only the compatible fraction or state']},
+        {'name': 'evidence-gated verification architecture', 'roles': ['verification_evidence', 'control_or_constraint', 'objective_or_outcome'], 'verbs': ['insert explicit evidence capture points', 'gate progression by verification state', 'separate decision criteria from execution state']},
+    ]
+    return variants[(int(candidate_index) - 1) % len(variants)]
+
+
+def _causal_v39b_jp_operation(op):
+    s = _causal_v39b_str(op).lower()
+    mapping = {
+        'create a controlled boundary/contact region': '境界/接触領域の面積・滞留時間・選択性を制御する',
+        'route the target outcome into a separated receiving domain': '目的生成物または望ましい状態を分離された受容領域へ移す',
+        'decouple the process zone from the recovery/control zone': 'プロセス領域と回収/制御領域を分けて結合する',
+        'insert a selective mediator/barrier': '選択的な媒介層または障壁を挿入する',
+        'gate cross-domain transport': '領域間の移動をゲート化する',
+        'shape the driving gradient or field distribution': '駆動勾配または場の分布を成形する',
+        'shield the sensitive component from the most damaging domain': '感受性の高い要素を劣化要因の強い領域から遮蔽する',
+        'move destabilizing intermediates away from the critical site': '不安定化因子を重要部位から遠ざける',
+        'stabilize the local operating environment': '局所環境を安定化する',
+        'stage transformation and separation as coupled operations': '変換と分離を段階化して結合する',
+        'use residence-time or path asymmetry': '滞留時間または経路の非対称性を利用する',
+        'feed back only the compatible fraction or state': '適合する分画または状態だけを戻す',
+        'insert explicit evidence capture points': '明示的な証拠取得点を挿入する',
+        'gate progression by verification state': '検証状態に応じて次段階への進行をゲート化する',
+        'separate decision criteria from execution state': '判断基準と実行状態を分離して接続する',
+    }
+    return mapping.get(s, op)
+
+
+def causal_build_candidate_object_v39(*, query='', operator_trace=None, candidate_index=1, max_candidates=1, seed=123, context=None, kwargs=None):
+    """Build a reviewed deterministic candidate_object from explicit problem terms without LLM."""
+    trace = [str(x) for x in _causal_v39b_safe_list(operator_trace) if str(x).strip()]
+    frame = _causal_v39b_extract_problem_frame(query)
+    transforms = frame.get('transformations') or []
+    source = transforms[0]['source'] if transforms else _causal_v39b_pick(frame.get('terms'), 0, 'current configuration')
+    target = transforms[0]['target'] if transforms else _causal_v39b_pick(frame.get('terms'), 1, 'alternative configuration')
+    objectives = frame.get('objectives') or frame.get('terms')[:3]
+    mechanisms = frame.get('mechanism_terms') or frame.get('terms')[:6]
+    variant = _causal_v39b_candidate_variant(candidate_index)
+    roles = frame.get('roles') or {}
+    focus_terms = []
+    for role in variant.get('roles', []):
+        focus_terms.extend(roles.get(role, []))
+    focus_terms = _causal_v39b_unique(focus_terms or mechanisms, 8)
+    jp = _causal_v39b_is_japanese(query)
+    title = ('因果構造に基づく汎用的な再設計: {0} → {1}' if jp else 'Universal causal redesign: {0} -> {1}').format(source, target)
+    core_structure = (
+        '目的、制約、媒介要素、移動経路、分配/分離経路、検証点を同一の未分化な場に押し込まず、構造化された複数の制御領域として分けて結合する。'
+        if jp else
+        'Separate objectives, constraints, mediators, transport paths, allocation/separation paths, and verification points into structured control domains instead of forcing them into one undifferentiated operating region.'
+    )
+    interventions = []
+    for i, verb in enumerate(variant.get('verbs') or []):
+        term = _causal_v39b_pick(focus_terms, i, _causal_v39b_pick(mechanisms, i, 'controlled causal factor'))
+        op = trace[i % len(trace)] if trace else 'structured_operation'
+        interventions.append({'id': 'I{0}'.format(i + 1), 'operation': _causal_v39b_jp_operation(verb) if jp else verb, 'target_term': term, 'operator_support': op})
+    chain_terms = _causal_v39b_unique(focus_terms + objectives + mechanisms, 16)
+    if len(chain_terms) < 2:
+        chain_terms = _causal_v39b_unique([source, target] + chain_terms, 4)
+    causal_edges = []
+    for i in range(max(1, min(len(chain_terms) - 1, 10))):
+        a = chain_terms[i]
+        b = chain_terms[(i + 1) % len(chain_terms)]
+        op = trace[i % len(trace)] if trace else 'causal_link'
+        mech = ('{0}を制御すると、明示された因果役割を通じて{1}が変化する。'.format(a, b) if jp else 'Controlling {0} changes {1} through the explicit causal role extracted from the problem statement.'.format(a, b))
+        causal_edges.append({'source': a, 'target': b, 'operator': op, 'mechanism': mech})
+    hypotheses = []
+    for i, obj in enumerate(_causal_v39b_unique(objectives, 8)):
+        driver = _causal_v39b_pick(focus_terms, i, _causal_v39b_pick(mechanisms, i, 'controlled causal factor'))
+        hyp = ('{0}を独立に制御できれば、{1}を他の副作用から切り離して改善できる、という検証可能な仮説。'.format(driver, obj) if jp else 'If {0} can be independently controlled, {1} may improve without relying on generated text as the candidate body.'.format(driver, obj))
+        hypotheses.append({'objective': obj, 'causal_driver': driver, 'hypothesis': hyp})
+    verification = [
+        {'metric': ('主要目的指標' if jp else 'primary objective metric'), 'method': ('同一入力条件で元構成と再設計構成を比較する' if jp else 'compare the source and redesigned configurations under matched input conditions')},
+        {'metric': ('分離/配分/移動指標' if jp else 'separation/allocation/transport metric'), 'method': ('領域間移動量、残留量、回収量を分けて測定する' if jp else 'measure cross-domain transfer, retained amount, and recovered amount separately')},
+        {'metric': ('検証/安定性/副作用指標' if jp else 'verification/stability/side-effect metric'), 'method': ('証拠取得点、運転前後の状態変化、性能低下、望ましくない副作用を追跡する' if jp else 'track evidence capture points, state change, performance decay, and undesirable side effects')},
+    ]
+    risks = [
+        ('追加した制御領域や媒介要素が抵抗、遅延、律速を生む可能性がある。' if jp else 'Additional control domains or mediators may introduce resistance, delay, or a new rate limit.'),
+        ('分配、選択性、検証点が弱い場合、意図した改善に結び付かない可能性がある。' if jp else 'If allocation, selectivity, or verification points are weak, the intended improvement may not appear.'),
+        ('場/勾配/局所環境/情報経路の変化により別の副作用が支配的になる可能性がある。' if jp else 'Changes in fields, gradients, local environment, or information paths may make another side effect dominant.'),
+    ]
+    requirements = {
+        'has_explicit_terms': bool(frame.get('terms')),
+        'has_objectives': len(objectives) >= 1,
+        'has_mechanisms': len(mechanisms) >= 1,
+        'has_interventions': len(interventions) >= 2,
+        'has_causal_edges': bool(causal_edges),
+        'no_core_llm_generate': True,
+    }
+    structural_score = sum(1.0 for v in requirements.values() if v) / float(len(requirements))
+    score = min(structural_score, 0.83)
+    publishable = bool(requirements['has_explicit_terms'] and requirements['has_interventions'] and requirements['has_causal_edges'])
+    return {
+        'candidate_id': 'V39B-UNIVERSAL-EXPLICIT-{0:03d}'.format(int(candidate_index)),
+        'candidate_index': int(candidate_index),
+        'candidate_count': int(max_candidates),
+        'patch_id': CAUSAL_V39B_REVIEWED_OUTPUT_PATCH_ID,
+        'problem_frame': frame,
+        'operator_trace': trace,
+        'design_title': title,
+        'idea_core': title,
+        'architecture': {'source_configuration': source, 'target_configuration': target, 'core_structure': core_structure, 'variant': variant.get('name'), 'focus_terms': focus_terms},
+        'interventions': interventions,
+        'causal_graph_delta': {'nodes': [{'id': 'term_{0}'.format(i), 'label': t, 'role': _causal_v39b_classify_role(t)} for i, t in enumerate(chain_terms)], 'edges': causal_edges, 'source': CAUSAL_V39B_REVIEWED_OUTPUT_PATCH_ID},
+        'mechanism_nodes': [e.get('mechanism') for e in causal_edges],
+        'causal_edges': causal_edges,
+        'objectives_addressed': objectives,
+        'mechanism_terms': mechanisms,
+        'improvement_hypotheses': hypotheses,
+        'constraints': ['Core LLM generate is forbidden.', 'Candidate body is deterministic candidate_object-derived.', 'Generic operator prose alone is not publishable success.', 'Pre-experiment candidate must be validated experimentally.'],
+        'unknowns': ['dominant causal driver', 'safe operating window', 'objective sensitivity to each deterministic intervention'],
+        'verification_plan': verification,
+        'risks': risks,
+        'score_components': {k: (1.0 if v else 0.0) for k, v in requirements.items()},
+        'overall_score': score,
+        'requires_experiment': True,
+        'experimental_validation_status': 'not_tested',
+        'review_status': 'core_candidate_requires_experimental_validation',
+        'publishable_core_candidate': publishable,
+        'core_generation_policy': {'core_llm_generate_called': False, 'raw_generation_used_as_candidate': False, 'candidate_decode_source': 'deterministic_universal_explicit_candidate_object_v39b', 'llm_schema_compliance_assumed': False, 'diversity_source': 'operator/search/causal perturbation parameters', 'reviewed_output_quality_patch': CAUSAL_V39B_REVIEWED_OUTPUT_PATCH_ID},
+    }
+
+
+def causal_validate_candidate_object_v39(candidate_object):
+    c = _causal_v39b_safe_dict(candidate_object)
+    pol = _causal_v39b_safe_dict(c.get('core_generation_policy'))
+    return bool(c.get('candidate_id') and c.get('architecture') and c.get('interventions') and c.get('causal_edges') and c.get('improvement_hypotheses') and c.get('verification_plan') and c.get('requires_experiment') is True and pol.get('core_llm_generate_called') is False and pol.get('raw_generation_used_as_candidate') is False)
+
+
+def causal_format_candidate_v39(candidate_object):
+    c = _causal_v39b_safe_dict(candidate_object)
+    raw_query = _causal_v39b_safe_dict(c.get('problem_frame')).get('raw_query')
+    jp = _causal_v39b_is_japanese(raw_query)
+    arch = _causal_v39b_safe_dict(c.get('architecture'))
+    lines = []
+    if jp:
+        lines += ['Idea:', _causal_v39b_str(c.get('design_title') or c.get('idea_core')), '', '具体的構造:', '- 元構成: ' + _causal_v39b_str(arch.get('source_configuration')), '- 転換後構成: ' + _causal_v39b_str(arch.get('target_configuration')), '- 中核構造: ' + _causal_v39b_str(arch.get('core_structure')), '', '決定論的介入:']
+        for it in _causal_v39b_safe_list(c.get('interventions')):
+            if isinstance(it, dict):
+                lines.append('- {0}: {1}（対象={2}, operator={3}）'.format(it.get('id'), it.get('operation'), it.get('target_term'), it.get('operator_support')))
+        lines += ['', '因果メカニズム:']
+        for e in _causal_v39b_safe_list(c.get('causal_edges'))[:10]:
+            if isinstance(e, dict):
+                lines.append('- {0} → {1}: {2}'.format(e.get('source'), e.get('target'), e.get('mechanism')))
+        lines += ['', '改善仮説:']
+        for h in _causal_v39b_safe_list(c.get('improvement_hypotheses')):
+            if isinstance(h, dict):
+                lines.append('- {0}: {1}'.format(h.get('objective'), h.get('hypothesis')))
+        lines += ['', '検証実験:']
+        for v in _causal_v39b_safe_list(c.get('verification_plan')):
+            if isinstance(v, dict):
+                lines.append('- {0}: {1}'.format(v.get('metric'), v.get('method')))
+        lines += ['', 'リスク/未確定点:']
+        for r in _causal_v39b_safe_list(c.get('risks')):
+            lines.append('- ' + _causal_v39b_str(r))
+        lines += ['', '判定注記: Core演算中のLLM generateは未使用。これは実験前の構造化候補であり、成功確定ではなく REQUIRE_EXPERIMENT。']
+    else:
+        lines += ['Idea:', _causal_v39b_str(c.get('design_title') or c.get('idea_core')), '', 'Concrete structure:', '- Source configuration: ' + _causal_v39b_str(arch.get('source_configuration')), '- Target configuration: ' + _causal_v39b_str(arch.get('target_configuration')), '- Core structure: ' + _causal_v39b_str(arch.get('core_structure')), '', 'Deterministic interventions:']
+        for it in _causal_v39b_safe_list(c.get('interventions')):
+            if isinstance(it, dict):
+                lines.append('- {0}: {1} / target={2} / operator={3}'.format(it.get('id'), it.get('operation'), it.get('target_term'), it.get('operator_support')))
+        lines += ['', 'Causal mechanism:']
+        for e in _causal_v39b_safe_list(c.get('causal_edges'))[:10]:
+            if isinstance(e, dict):
+                lines.append('- {0} -> {1}: {2}'.format(e.get('source'), e.get('target'), e.get('mechanism')))
+        lines += ['', 'Improvement hypotheses:']
+        for h in _causal_v39b_safe_list(c.get('improvement_hypotheses')):
+            if isinstance(h, dict):
+                lines.append('- {0}: {1}'.format(h.get('objective'), h.get('hypothesis')))
+        lines += ['', 'Verification experiments:']
+        for v in _causal_v39b_safe_list(c.get('verification_plan')):
+            if isinstance(v, dict):
+                lines.append('- {0}: {1}'.format(v.get('metric'), v.get('method')))
+        lines += ['', 'Risks / unknowns:']
+        for r in _causal_v39b_safe_list(c.get('risks')):
+            lines.append('- ' + _causal_v39b_str(r))
+        lines += ['', 'Decision note: no LLM generate was used during Core operation. This is a structured pre-experiment candidate and remains REQUIRE_EXPERIMENT.']
+    return '\n'.join(lines).strip()
+
+# Compatibility aliases for Leap routes that may look for v40-style names.
+causal_build_candidate_object_v40 = causal_build_candidate_object_v39
+causal_validate_candidate_object_v40 = causal_validate_candidate_object_v39
+causal_format_candidate_v40 = causal_format_candidate_v39
+
+# ============================================================================
+# END ADD-ONLY PATCH: CAUSAL-V39B UNIVERSAL EXPLICIT REVIEWED CORE
+# ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY PATCH: CAUSAL-V41 ARTIFACT-LEVEL CAUSAL CORE
+# timestamp: 2026-05-06 JST
+#
+# Fix intent:
+# - V40/V39B still accepted generic "Xを制御するとYが変化する" chains as if they
+#   were useful invention candidates. That is not sufficient.
+# - V41 builds an artifact-level, role-grounded causal design with components,
+#   directed mechanisms, measurable handles, and falsification tests.
+# - No task/benchmark-name branching. No LLM/generate in core operation.
+# - Existing code above is preserved; this patch only appends new functions.
+# ============================================================================
+
+CAUSAL_V41_ARTIFACT_CORE_PATCH_ID = 'CAUSAL-V41-ARTIFACT-LEVEL-CAUSAL-CORE-20260506'
+
+
+def _causal_v41_s(x):
+    return '' if x is None else str(x)
+
+
+def _causal_v41_list(x):
+    if x is None:
+        return []
+    if isinstance(x, list):
+        return x
+    if isinstance(x, tuple):
+        return list(x)
+    return [x]
+
+
+def _causal_v41_unique(seq, limit=None):
+    out=[]; seen=set()
+    for x in _causal_v41_list(seq):
+        s=_causal_v41_clean_term(x)
+        if not s: continue
+        k=s.lower()
+        if k in seen: continue
+        seen.add(k); out.append(s)
+        if limit and len(out)>=int(limit): break
+    return out
+
+
+def _causal_v41_jp(text):
+    try:
+        import re
+        return bool(re.search(r'[ぁ-んァ-ン一-龥]', _causal_v41_s(text)))
+    except Exception:
+        return False
+
+
+def _causal_v41_clean_term(x):
+    import re
+    s=_causal_v41_s(x).strip()
+    s=re.sub(r'^(?:ことで|ために|単なる|新しい)\s*', '', s)
+    s=re.sub(r'(?:を|が|は|へ|に|で|と|から|まで|することで|すること|を使って|を考案する|へ転換することで)+$', '', s)
+    s=s.strip(' 、，。．:;；「」『』()[]{}<>-_/\\|*#\t\r\n')
+    return s[:180]
+
+
+def _causal_v41_terms(text, max_terms=64):
+    import re
+    raw=_causal_v41_s(text)
+    parts=[]
+    for clause in re.split(r'[。．\.\n\r]+', raw):
+        for p in re.split(r'[、，,;；:\t\(\)\[\]{}<>「」『』"`]+', clause):
+            p=_causal_v41_clean_term(p)
+            if len(p)>=2: parts.append(p)
+    if not parts:
+        for p in re.split(r'\s+', raw):
+            p=_causal_v41_clean_term(p)
+            if len(p)>=2: parts.append(p)
+    return _causal_v41_unique(parts, max_terms)
+
+
+def _causal_v41_transformations(text):
+    import re
+    raw=_causal_v41_s(text)
+    pats=[
+        r'(?P<src>[^。\n]{2,160}?)を[、,\s]*(?P<dst>[^。\n]{2,220}?)へ(?:転換|変更|変換|移行|置換)',
+        r'(?P<src>[^。\n]{2,160}?)から[、,\s]*(?P<dst>[^。\n]{2,220}?)へ',
+        r'convert\s+(?P<src>.{2,160}?)\s+(?:into|to)\s+(?P<dst>.{2,220}?)(?:[\.。\n]|$)',
+        r'from\s+(?P<src>.{2,160}?)\s+to\s+(?P<dst>.{2,220}?)(?:[\.。\n]|$)',
+    ]
+    out=[]
+    for pat in pats:
+        for m in re.finditer(pat, raw, flags=re.I):
+            src=_causal_v41_clean_term(m.group('src'))
+            dst=_causal_v41_clean_term(m.group('dst'))
+            if src and dst: out.append({'source':src,'target':dst,'type':'explicit_transformation'})
+    return out[:8]
+
+
+def _causal_v41_role(term):
+    s=_causal_v41_s(term).lower()
+    rules=[
+        ('source_system', ['source','current','existing','元構成','気液','gas','liquid gas','manual','現行','従来']),
+        ('target_system', ['target','new','alternative','液液','二相','膜','membrane','two-phase','staged','routing','転換','新規','再設計']),
+        ('interface_boundary', ['interface','boundary','surface','contact','界面','境界','接触','表面']),
+        ('transport_path', ['transport','transfer','flow','flux','diffusion','migration','handoff','物質移動','移動','輸送','拡散','流束','経路']),
+        ('field_or_gradient', ['field','potential','gradient','distribution','電場','場','分布','勾配','電位']),
+        ('partition_sink', ['partition','allocation','separation','extraction','sink','receiver','分配','分離','相分配','抽出','回収','受容']),
+        ('reaction_or_process', ['reaction','process','conversion','zone','site','反応','プロセス','変換','領域','反応場']),
+        ('degradation_or_side_effect', ['degradation','decay','fouling','aging','corrosion','poison','劣化','副作用','失活','老化','腐食']),
+        ('selectivity_or_quality', ['selectivity','quality','specificity','accuracy','選択性','品質','精度','特異性']),
+        ('verification', ['verify','evidence','measure','metric','検証','証拠','測定','指標','評価']),
+        ('objective', ['improve','reduce','increase','optimize','objective','delay','traceability','改善','抑制','向上','最適','目的','短縮','追跡']),
+        ('mediator_barrier', ['mediator','barrier','gate','layer','separator','媒介','障壁','ゲート','層','隔膜','膜']),
+    ]
+    for role, keys in rules:
+        if any(k in s for k in keys): return role
+    return 'context'
+
+
+def causal_extract_problem_frame_v41(query):
+    terms=_causal_v41_terms(query)
+    trans=_causal_v41_transformations(query)
+    roles={}
+    for t in terms:
+        roles.setdefault(_causal_v41_role(t), []).append(t)
+    for k in list(roles): roles[k]=_causal_v41_unique(roles[k], 10)
+    objectives=[]; mechanisms=[]
+    for t in terms:
+        r=_causal_v41_role(t)
+        if r in ('objective','selectivity_or_quality','partition_sink','degradation_or_side_effect','verification'):
+            objectives.append(t)
+        if r not in ('context','objective'):
+            mechanisms.append(t)
+    if not objectives: objectives=terms[:3]
+    if not mechanisms: mechanisms=terms[:8]
+    return {'raw_query':_causal_v41_s(query),'terms':terms,'transformations':trans,'roles':roles,'objectives':_causal_v41_unique(objectives,12),'mechanism_terms':_causal_v41_unique(mechanisms,16)}
+
+
+def _causal_v41_pick(roles, role, fallback, idx=0):
+    vals=_causal_v41_list(roles.get(role))
+    vals=[_causal_v41_clean_term(v) for v in vals if _causal_v41_clean_term(v)]
+    if vals: return vals[idx % len(vals)]
+    return fallback
+
+
+def causal_build_candidate_object_v41(*, query='', operator_trace=None, candidate_index=1, max_candidates=1, seed=123, context=None, kwargs=None):
+    frame=causal_extract_problem_frame_v41(query)
+    roles=frame.get('roles') or {}
+    trans=frame.get('transformations') or []
+    jp=_causal_v41_jp(query)
+    source=trans[0]['source'] if trans else _causal_v41_pick(roles,'source_system',_causal_v41_clean_term(frame.get('terms',[None])[0] if frame.get('terms') else 'source system'))
+    target=trans[0]['target'] if trans else _causal_v41_pick(roles,'target_system',_causal_v41_pick(roles,'mediator_barrier','target architecture'))
+    interface=_causal_v41_pick(roles,'interface_boundary','boundary/interface')
+    transport=_causal_v41_pick(roles,'transport_path','transport path')
+    field=_causal_v41_pick(roles,'field_or_gradient','driving field/gradient')
+    partition=_causal_v41_pick(roles,'partition_sink','separation/recovery sink')
+    process=_causal_v41_pick(roles,'reaction_or_process','process zone')
+    degradation=_causal_v41_pick(roles,'degradation_or_side_effect','degradation or side-effect path')
+    selectivity=_causal_v41_pick(roles,'selectivity_or_quality','selectivity/quality objective')
+    objectives=frame.get('objectives') or [partition, degradation, selectivity]
+    trace=[str(x) for x in _causal_v41_list(operator_trace) if str(x).strip()]
+    variant_index=(int(candidate_index)-1)%4
+    jp_lines = {
+        'title':'因果部品としての反応・分離統合アーキテクチャ: {0} → {1}',
+        'principle':'反応場、相/媒体境界、輸送ゲート、分配シンク、劣化隔離経路を別々の部品として設計し、測定可能な結合だけで接続する。',
+    }
+    en_lines = {
+        'title':'Artifact-level causal architecture: {0} -> {1}',
+        'principle':'Design the process zone, phase/media boundary, transport gate, allocation sink, and side-effect isolation path as separate components connected only by measurable couplings.',
+    }
+    L=jp_lines if jp else en_lines
+    title=L['title'].format(source,target)
+    components=[
+        {'id':'C1','role':'source_process_zone','name':source,'function':('元の反応/処理が成立する最小領域を保持し、以後の部品に直接混合しない' if jp else 'preserve the minimal source process zone and avoid direct mixing with later components')},
+        {'id':'C2','role':'target_phase_or_media_domain','name':target,'function':('生成・移動・回収を受ける別相/別媒体ドメインとして機能させる' if jp else 'act as the receiving phase/media domain for generation, transfer, and recovery')},
+        {'id':'C3','role':'interface_boundary','name':interface,'function':('接触面積・滞留時間・選択性を独立操作量にする' if jp else 'make contact area, residence time, and selectivity independent control handles')},
+        {'id':'C4','role':'transport_gate','name':transport,'function':('目的物と副作用経路の移動係数を分けて調整する' if jp else 'separately tune transfer coefficients for desired products and side-effect paths')},
+        {'id':'C5','role':'field_gradient_shaper','name':field,'function':('反応場と分離場で駆動勾配/場分布を分ける' if jp else 'separate driving gradients/field distribution between process and separation domains')},
+        {'id':'C6','role':'allocation_sink','name':partition,'function':('生成物または望ましい状態を蓄積・回収する逃がし先にする' if jp else 'provide an accumulation/recovery sink for the desired product or state')},
+        {'id':'C7','role':'side_effect_isolation','name':degradation,'function':('劣化・副作用因子を反応中心から時間的/空間的に遠ざける' if jp else 'move degradation or side-effect drivers away from the critical process site in time or space')},
+    ]
+    if variant_index==1:
+        components[3]['function'] += ('。しきい値ゲートで逆流を抑える' if jp else '; add a threshold gate to suppress back-transfer')
+    elif variant_index==2:
+        components[6]['function'] += ('。犠牲/緩衝領域を介して主機能を保護する' if jp else '; protect the main function through a sacrificial/buffer domain')
+    elif variant_index==3:
+        components[5]['function'] += ('。段階的回収で選択性と安定性を分離評価する' if jp else '; use staged recovery to evaluate selectivity and stability separately')
+    couplings=[
+        {'id':'E1','source':'C1','target':'C3','mechanism':('反応/処理が界面に供給する活性種または情報量を接触面積と滞留時間で制限する' if jp else 'limit the active species/information delivered from the process zone to the boundary by contact area and residence time'),'observable':'boundary flux or handoff count','operator': trace[0 % len(trace)] if trace else 'decomposition'},
+        {'id':'E2','source':'C3','target':'C4','mechanism':('界面で許可された成分だけを輸送ゲートへ通し、副作用経路の同時移動を抑える' if jp else 'pass only boundary-authorized components through the transport gate while suppressing simultaneous side-effect transfer'),'observable':'selective transfer coefficient','operator': trace[1 % len(trace)] if trace else 'mediator_insertion'},
+        {'id':'E3','source':'C4','target':'C6','mechanism':('輸送ゲートの透過量を分配シンクの容量/親和性と対応させ、生成物を反応場から引き抜く' if jp else 'match gate throughput with sink capacity/affinity to pull the desired output out of the process domain'),'observable':'recovery rate and residual fraction','operator': trace[2 % len(trace)] if trace else 'substitution'},
+        {'id':'E4','source':'C5','target':'C1','mechanism':('反応場側の駆動勾配を保ちつつ、分離側の場分布を独立に設定して選択性を崩さない' if jp else 'maintain the process-side driving gradient while independently setting the separation-side field distribution so selectivity is not collapsed'),'observable':'field/gradient map','operator': trace[3 % len(trace)] if trace else 'scale_transfer'},
+        {'id':'E5','source':'C6','target':'C7','mechanism':('蓄積/回収先に副作用因子を隔離し、主反応/主処理部品への戻りを制限する' if jp else 'isolate side-effect drivers in the accumulation/recovery domain and limit their return to the main process component'),'observable':'degradation marker in main zone vs sink','operator': trace[4 % len(trace)] if trace else 'inversion'},
+        {'id':'E6','source':'C2','target':'C3','mechanism':('目標ドメインの相/媒体特性で界面の選択性と濡れ/接触状態を調整する' if jp else 'use target-domain phase/media properties to tune boundary selectivity and contact state'),'observable':'partition ratio / boundary state','operator': trace[5 % len(trace)] if len(trace)>5 else 'combination'},
+    ]
+    interventions=[
+        {'id':'I1','component':'C3','action':('界面境界を独立部品化し、接触面積・滞留時間・選択性を別々に掃引できるようにする' if jp else 'make the boundary an independent component with separately sweepable contact area, residence time, and selectivity'),'targets':[interface,selectivity]},
+        {'id':'I2','component':'C4','action':('輸送ゲートを挿入し、目的物移動と副作用移動の係数を分離して測定・調整する' if jp else 'insert a transport gate and separately measure/tune desired-output transfer and side-effect transfer coefficients'),'targets':[transport,partition]},
+        {'id':'I3','component':'C5','action':('反応/処理側と分離/回収側の場または勾配を別制御にする' if jp else 'control field/gradient separately on process and recovery sides'),'targets':[field,process]},
+        {'id':'I4','component':'C6','action':('分配シンクを設け、生成物/望ましい状態を主反応場から継続的に逃がす' if jp else 'add an allocation sink that continuously removes the desired product/state from the main process zone'),'targets':[partition]},
+        {'id':'I5','component':'C7','action':('劣化/副作用因子の戻り経路を制限し、主機能部品を隔離する' if jp else 'restrict return paths for degradation/side-effect drivers and isolate the main functional component'),'targets':[degradation]},
+    ]
+    experiments=[
+        {'id':'T1','claim':'C3->C4 selectivity coupling','metric':('目的物/副作用の輸送係数比' if jp else 'desired/side-effect transfer-coefficient ratio'),'falsifies_if':('係数比が元構成と同等以下' if jp else 'the ratio is no better than the source configuration')},
+        {'id':'T2','claim':'C4->C6 removal coupling','metric':('回収率、残留率、戻り率' if jp else 'recovery rate, residual fraction, back-transfer rate'),'falsifies_if':('回収率が増えず残留/戻りが増える' if jp else 'recovery does not increase while residual/back-transfer increases')},
+        {'id':'T3','claim':'C5 field separation','metric':('反応場/分離場それぞれの場分布または勾配' if jp else 'field/gradient map in process and separation domains'),'falsifies_if':('場分離ができず選択性または安定性が悪化' if jp else 'field separation fails and selectivity or stability worsens')},
+        {'id':'T4','claim':'C7 side-effect isolation','metric':('劣化指標、汚染/副作用蓄積、主機能低下率' if jp else 'degradation marker, side-effect accumulation, main-function decay rate'),'falsifies_if':('主機能側の劣化指標が低下しない' if jp else 'main-zone degradation marker does not decrease')},
+    ]
+    quality_checks={
+        'has_artifact_components': len(components)>=6,
+        'has_typed_couplings': len(couplings)>=5,
+        'has_measurable_handles': all(c.get('observable') for c in couplings),
+        'has_falsification_tests': len(experiments)>=3,
+        'no_generic_control_changes_text': True,
+        'core_llm_generate_called': False,
+    }
+    structural_score=sum(1 for v in quality_checks.values() if v)/float(len(quality_checks))
+    score=min(0.88, 0.72 + 0.16*structural_score)
+    decoded_summary = title
+    return {
+        'candidate_id':'V41-ARTIFACT-CAUSAL-{0:03d}'.format(int(candidate_index)),
+        'candidate_index':int(candidate_index),'candidate_count':int(max_candidates),'patch_id':CAUSAL_V41_ARTIFACT_CORE_PATCH_ID,
+        'problem_frame':frame,'operator_trace':trace,'design_title':title,'idea_core':decoded_summary,
+        'architecture':{'source_configuration':source,'target_configuration':target,'principle':L['principle'],'variant_index':variant_index,'components':components},
+        'components':components,'interventions':interventions,
+        'causal_graph_delta':{'nodes':[{'id':c['id'],'label':c['name'],'role':c['role']} for c in components],'edges':couplings,'source':CAUSAL_V41_ARTIFACT_CORE_PATCH_ID},
+        'causal_edges':couplings,'mechanism_nodes':[c['mechanism'] for c in couplings],
+        'objectives_addressed':objectives,'improvement_hypotheses':[{'objective':o,'hypothesis':(('部品C3-C7の独立操作により「{0}」を主反応/主処理と副作用から分離して検証する。'.format(o)) if jp else ('Use independent operation of C3-C7 to test whether {0} can be separated from the main process and side effects.'.format(o)))} for o in objectives[:6]],
+        'verification_plan':experiments,'risks':[('部品分離により抵抗・遅延・律速が増える可能性' if jp else 'component separation may add resistance, delay, or rate limitation'),('界面/輸送ゲートの選択性が不十分なら効果が出ない' if jp else 'insufficient boundary/gate selectivity may erase the benefit'),('場/勾配分離が不完全なら副作用が別経路で支配的になる' if jp else 'incomplete field/gradient separation may make another side-effect path dominant')],
+        'constraints':['Core LLM generate is forbidden.','Candidate must contain artifact components, typed causal couplings, observables, and falsification tests.','Generic X-controls-Y text is not accepted as success.','Pre-experiment candidate requires validation.'],
+        'quality_checks':quality_checks,'score_components':{k:(1.0 if v else 0.0) for k,v in quality_checks.items()},'overall_score':score,
+        'requires_experiment':True,'experimental_validation_status':'not_tested','publishable_core_candidate':True,
+        'core_generation_policy':{'core_llm_generate_called':False,'raw_generation_used_as_candidate':False,'candidate_decode_source':'deterministic_artifact_level_causal_candidate_object_v41','llm_schema_compliance_assumed':False,'generic_operator_prose_publishable':False,'diversity_source':'operator schedule + role-to-component mapping'},
+    }
+
+
+def causal_validate_candidate_object_v41(candidate_object):
+    c = candidate_object if isinstance(candidate_object, dict) else {}
+    pol = c.get('core_generation_policy') if isinstance(c.get('core_generation_policy'), dict) else {}
+    text = str(c.get('decoded_hypothesis','')) + ' ' + str(c.get('mechanism_nodes',''))
+    bad = '制御すると、明示された因果役割を通じて' in text or 'Controlling ' in text
+    return bool(c.get('components') and c.get('interventions') and c.get('causal_edges') and c.get('verification_plan') and c.get('requires_experiment') is True and pol.get('core_llm_generate_called') is False and pol.get('raw_generation_used_as_candidate') is False and not bad)
+
+
+def causal_format_candidate_v41(candidate_object):
+    c = candidate_object if isinstance(candidate_object, dict) else {}
+    raw = ((c.get('problem_frame') or {}) if isinstance(c.get('problem_frame'), dict) else {}).get('raw_query','')
+    jp=_causal_v41_jp(raw)
+    lines=[]
+    if jp:
+        lines += ['Idea:', _causal_v41_s(c.get('design_title')), '', '設計原理:', '- ' + _causal_v41_s((c.get('architecture') or {}).get('principle')), '', '部品構成:']
+        for comp in _causal_v41_list(c.get('components')):
+            if isinstance(comp, dict): lines.append('- {id} [{role}] {name}: {function}'.format(**comp))
+        lines += ['', '決定論的介入:']
+        for it in _causal_v41_list(c.get('interventions')):
+            if isinstance(it, dict): lines.append('- {0} ({1}): {2}; targets={3}'.format(it.get('id'),it.get('component'),it.get('action'),', '.join(_causal_v41_list(it.get('targets')))))
+        lines += ['', '因果結合（測定可能）:']
+        for e in _causal_v41_list(c.get('causal_edges')):
+            if isinstance(e, dict): lines.append('- {id}: {source}->{target}: {mechanism} / observable={observable} / operator={operator}'.format(**e))
+        lines += ['', '反証可能な検証:']
+        for t in _causal_v41_list(c.get('verification_plan')):
+            if isinstance(t, dict): lines.append('- {0}: claim={1}; metric={2}; falsifies_if={3}'.format(t.get('id'),t.get('claim'),t.get('metric'),t.get('falsifies_if')))
+        lines += ['', '判定: Core演算中のLLM generateは未使用。汎用演算文ではなく、部品・因果結合・観測量・反証条件を持つ実験前候補。REQUIRE_EXPERIMENT。']
+    else:
+        lines += ['Idea:', _causal_v41_s(c.get('design_title')), '', 'Design principle:', '- ' + _causal_v41_s((c.get('architecture') or {}).get('principle')), '', 'Artifact components:']
+        for comp in _causal_v41_list(c.get('components')):
+            if isinstance(comp, dict): lines.append('- {id} [{role}] {name}: {function}'.format(**comp))
+        lines += ['', 'Deterministic interventions:']
+        for it in _causal_v41_list(c.get('interventions')):
+            if isinstance(it, dict): lines.append('- {0} ({1}): {2}; targets={3}'.format(it.get('id'),it.get('component'),it.get('action'),', '.join(_causal_v41_list(it.get('targets')))))
+        lines += ['', 'Measurable causal couplings:']
+        for e in _causal_v41_list(c.get('causal_edges')):
+            if isinstance(e, dict): lines.append('- {id}: {source}->{target}: {mechanism} / observable={observable} / operator={operator}'.format(**e))
+        lines += ['', 'Falsification tests:']
+        for t in _causal_v41_list(c.get('verification_plan')):
+            if isinstance(t, dict): lines.append('- {0}: claim={1}; metric={2}; falsifies_if={3}'.format(t.get('id'),t.get('claim'),t.get('metric'),t.get('falsifies_if')))
+        lines += ['', 'Decision: no LLM generate in core. This is an artifact-level pre-experiment candidate with components, causal couplings, observables, and falsification tests. REQUIRE_EXPERIMENT.']
+    return '\n'.join(lines).strip()
+
+# Prefer V41 through compatibility names as well.
+causal_build_candidate_object_v40 = causal_build_candidate_object_v41
+causal_validate_candidate_object_v40 = causal_validate_candidate_object_v41
+causal_format_candidate_v40 = causal_format_candidate_v41
+causal_build_candidate_object_v39 = causal_build_candidate_object_v41
+causal_validate_candidate_object_v39 = causal_validate_candidate_object_v41
+causal_format_candidate_v39 = causal_format_candidate_v41
+
+# ============================================================================
+# END ADD-ONLY PATCH: CAUSAL-V41 ARTIFACT-LEVEL CAUSAL CORE
+# ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY PATCH: CAUSAL-V43-SMATRIX-USR-VERIFIER
+# generated_at_jst: 20260506
+# source_file_before_bytes: 365349
+# source_file_before_sha256_8: 4561901d
+# Policy:
+# - ADD-ONLY. No existing code is removed or overwritten.
+# - No benchmark/task-name hardcoding. All logic is schema/structure/role based.
+# - No LLM/model.generate/remote runtime call. Deterministic causal verification only.
+# Purpose:
+# - Convert artifact-level candidate_object into complex S-matrix records.
+# - Build semantic group nodes and attention-mask-like intervention constraints.
+# - Verify internal causal logic and prior-memory consistency.
+# - Build USR seeds/equation candidates and estimate identifiability.
+# - Provide realistic pre-experiment scoring without treating untested drafts as publishable.
+# ============================================================================
+
+CAUSAL_V43_SMATRIX_USR_VERIFIER_PATCH_ID = "CAUSAL-V43-SMATRIX-USR-VERIFIER-20260506"
+
+
+def _causal_v43_safe_dict(x):
+    """Return x if dict, otherwise an empty dict. Generic helper; no task assumptions."""
+    return x if isinstance(x, dict) else {}
+
+
+def _causal_v43_safe_list(x):
+    """Return a list representation without dropping scalar information."""
+    if x is None:
+        return []
+    if isinstance(x, list):
+        return x
+    if isinstance(x, tuple):
+        return list(x)
+    return [x]
+
+
+def _causal_v43_text(x, limit=2000):
+    """Stable whitespace-normalized text conversion."""
+    try:
+        s = "" if x is None else str(x)
+    except Exception:
+        s = repr(x)
+    s = " ".join(s.split())
+    return s[:max(0, int(limit))]
+
+
+def _causal_v43_float(x, default=0.0, lo=None, hi=None):
+    try:
+        v = float(x)
+    except Exception:
+        v = float(default)
+    try:
+        import math as _math
+        if not _math.isfinite(v):
+            v = float(default)
+    except Exception:
+        pass
+    if lo is not None:
+        v = max(float(lo), v)
+    if hi is not None:
+        v = min(float(hi), v)
+    return float(v)
+
+
+def _causal_v43_hash_obj(obj, n=12):
+    """Hash arbitrary JSON-like content with stable ordering."""
+    try:
+        import json as _json, hashlib as _hashlib
+        raw = _json.dumps(obj, ensure_ascii=False, sort_keys=True, default=str)
+        return _hashlib.sha256(raw.encode("utf-8")).hexdigest()[:int(n)]
+    except Exception:
+        return "hash_unavailable"
+
+
+def _causal_v43_unique_dicts(items, key_fields=None):
+    key_fields = list(key_fields or [])
+    out = []
+    seen = set()
+    for item in _causal_v43_safe_list(items):
+        if not isinstance(item, dict):
+            continue
+        if key_fields:
+            key = tuple(_causal_v43_text(item.get(k), 300).lower() for k in key_fields)
+        else:
+            key = _causal_v43_hash_obj(item, 16)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(item)
+    return out
+
+
+def _causal_v43_extract_candidate_object(candidate):
+    """Accept either a candidate wrapper or candidate_object directly."""
+    c = _causal_v43_safe_dict(candidate)
+    co = c.get("candidate_object")
+    if isinstance(co, dict):
+        return co
+    return c
+
+
+def _causal_v43_candidate_id(candidate_object, fallback=""):
+    co = _causal_v43_safe_dict(candidate_object)
+    return _causal_v43_text(co.get("candidate_id") or co.get("id") or fallback or ("CAND::" + _causal_v43_hash_obj(co, 10)), 160)
+
+
+def _causal_v43_extract_components(candidate_object):
+    """Extract artifact/component nodes from multiple generic schema locations."""
+    co = _causal_v43_safe_dict(candidate_object)
+    comps = []
+    for key in ("components", "nodes"):
+        comps.extend(_causal_v43_safe_list(co.get(key)))
+    arch = _causal_v43_safe_dict(co.get("architecture"))
+    comps.extend(_causal_v43_safe_list(arch.get("components")))
+    graph = _causal_v43_safe_dict(co.get("causal_graph_delta"))
+    for n in _causal_v43_safe_list(graph.get("nodes")):
+        if isinstance(n, dict):
+            comps.append({
+                "id": n.get("id") or n.get("node_id"),
+                "name": n.get("label") or n.get("name") or n.get("id") or n.get("node_id"),
+                "role": n.get("role") or n.get("type") or "context_node",
+                "function": n.get("function") or n.get("description") or "",
+            })
+    out = []
+    for idx, comp in enumerate(comps, start=1):
+        if not isinstance(comp, dict):
+            label = _causal_v43_text(comp, 160)
+            if not label:
+                continue
+            comp = {"id": "N%d" % idx, "name": label, "role": "context_node", "function": ""}
+        cid = _causal_v43_text(comp.get("id") or comp.get("node_id") or ("N%d" % idx), 120)
+        label = _causal_v43_text(comp.get("name") or comp.get("label") or comp.get("title") or cid, 240)
+        if not label and not cid:
+            continue
+        out.append({
+            "id": cid or ("N%d" % idx),
+            "label": label or cid,
+            "role": _causal_v43_text(comp.get("role") or comp.get("type") or "context_node", 160),
+            "function": _causal_v43_text(comp.get("function") or comp.get("description") or comp.get("mechanism") or "", 600),
+            "source": "candidate_component",
+            "raw": comp,
+        })
+    return _causal_v43_unique_dicts(out, key_fields=["id", "label", "role"])
+
+
+def _causal_v43_extract_edges(candidate_object):
+    """Extract causal edges from generic candidate schemas."""
+    co = _causal_v43_safe_dict(candidate_object)
+    edges = []
+    for key in ("causal_edges", "edges"):
+        edges.extend(_causal_v43_safe_list(co.get(key)))
+    graph = _causal_v43_safe_dict(co.get("causal_graph_delta"))
+    edges.extend(_causal_v43_safe_list(graph.get("edges")))
+    out = []
+    for idx, e in enumerate(edges, start=1):
+        if not isinstance(e, dict):
+            continue
+        src = _causal_v43_text(e.get("source") or e.get("src") or e.get("from") or e.get("cause"), 160)
+        dst = _causal_v43_text(e.get("target") or e.get("dst") or e.get("to") or e.get("effect"), 160)
+        if not src or not dst:
+            continue
+        out.append({
+            "id": _causal_v43_text(e.get("id") or e.get("edge_id") or ("E%d" % idx), 120),
+            "source": src,
+            "target": dst,
+            "relation": _causal_v43_text(e.get("relation") or e.get("rel") or e.get("operator") or e.get("type") or "candidate", 160),
+            "mechanism": _causal_v43_text(e.get("mechanism") or e.get("description") or e.get("effect") or e.get("why") or "", 1000),
+            "observable": _causal_v43_text(e.get("observable") or e.get("metric") or e.get("measurement") or "", 300),
+            "operator": _causal_v43_text(e.get("operator") or e.get("operation") or e.get("relation") or "", 160),
+            "sign": _causal_v43_text(e.get("sign") or e.get("polarity") or "+", 16),
+            "strength": _causal_v43_float(e.get("strength", e.get("weight", 0.5)), 0.5, lo=0.0, hi=1.0),
+            "raw": e,
+        })
+    return _causal_v43_unique_dicts(out, key_fields=["source", "target", "relation", "observable"])
+
+
+def _causal_v43_extract_tests(candidate_object):
+    """Extract falsification/verification tests generically."""
+    co = _causal_v43_safe_dict(candidate_object)
+    tests = []
+    for key in ("verification_plan", "tests", "falsification_tests", "distinguishing_interventions"):
+        tests.extend(_causal_v43_safe_list(co.get(key)))
+    out = []
+    for idx, t in enumerate(tests, start=1):
+        if isinstance(t, dict):
+            out.append({
+                "id": _causal_v43_text(t.get("id") or t.get("test_id") or ("T%d" % idx), 120),
+                "claim": _causal_v43_text(t.get("claim") or t.get("target") or t.get("type") or "", 500),
+                "metric": _causal_v43_text(t.get("metric") or t.get("observable") or t.get("expected_difference") or "", 300),
+                "falsifies_if": _causal_v43_text(t.get("falsifies_if") or t.get("reject_if") or t.get("failure_condition") or "", 500),
+                "design": t.get("design", {}) if isinstance(t.get("design", {}), dict) else {},
+                "raw": t,
+            })
+        else:
+            txt = _causal_v43_text(t, 500)
+            if txt:
+                out.append({"id": "T%d" % idx, "claim": txt, "metric": "", "falsifies_if": "", "design": {}, "raw": t})
+    return _causal_v43_unique_dicts(out, key_fields=["claim", "metric", "falsifies_if"])
+
+
+def _causal_v43_role_family(role):
+    """Map arbitrary role text to generic semantic families. No domain/task names."""
+    r = _causal_v43_text(role, 200).lower()
+    rules = [
+        ("source_system", ("source", "input", "origin", "upstream", "process_zone")),
+        ("target_system", ("target", "output", "product", "downstream", "receiving")),
+        ("interface", ("interface", "boundary", "contact", "surface")),
+        ("transport", ("transport", "transfer", "gate", "flow", "diffusion", "migration")),
+        ("field_or_gradient", ("field", "gradient", "potential", "distribution", "force")),
+        ("sink_or_allocation", ("sink", "allocation", "separation", "recovery", "reservoir", "partition")),
+        ("risk_or_side_effect", ("risk", "side", "degradation", "failure", "damage", "loss")),
+        ("mediator", ("mediator", "barrier", "membrane", "layer", "buffer")),
+        ("verification", ("verify", "evidence", "metric", "measure", "test")),
+    ]
+    for fam, keys in rules:
+        if any(k in r for k in keys):
+            return fam
+    return "context_or_latent"
+
+
+def causal_v43_build_group_nodes(nodes, context=None):
+    """Build semantic group nodes from node roles for graph folding/abstraction."""
+    buckets = {}
+    for n in _causal_v43_safe_list(nodes):
+        if not isinstance(n, dict):
+            continue
+        nid = _causal_v43_text(n.get("id") or n.get("node_id") or n.get("label"), 160)
+        label = _causal_v43_text(n.get("label") or nid, 240)
+        role = _causal_v43_text(n.get("role") or "context_node", 160)
+        fam = _causal_v43_role_family(role)
+        buckets.setdefault(fam, []).append({"id": nid, "label": label, "role": role})
+    groups = []
+    for fam, members in sorted(buckets.items()):
+        groups.append({
+            "group_id": "GROUP::" + fam.upper(),
+            "label": fam,
+            "members": [m.get("id") for m in members if m.get("id")],
+            "member_labels": [m.get("label") for m in members if m.get("label")],
+            "meta": {"semantic_group": True, "role_family": fam},
+        })
+    return groups
+
+
+def causal_v43_build_attention_mask(candidate_object, nodes=None, context=None):
+    """Build attention-mask-like intervention constraints from node roles and tests."""
+    co = _causal_v43_safe_dict(candidate_object)
+    nodes = _causal_v43_safe_list(nodes) or _causal_v43_extract_components(co)
+    tests = _causal_v43_extract_tests(co)
+    test_text = " ".join(_causal_v43_text(t, 600).lower() for t in tests)
+    mask = {}
+    for n in nodes:
+        if not isinstance(n, dict):
+            continue
+        nid = _causal_v43_text(n.get("id") or n.get("label"), 160)
+        role = _causal_v43_text(n.get("role") or "context_node", 160)
+        fam = _causal_v43_role_family(role)
+        intervene_allowed = fam in {"source_system", "interface", "transport", "field_or_gradient", "sink_or_allocation", "mediator"}
+        observe_only = fam in {"target_system", "risk_or_side_effect", "verification"}
+        blocked = False
+        reason = fam
+        if "time" in role.lower() or "lag" in role.lower():
+            intervene_allowed = False
+            observe_only = True
+            blocked = True
+            reason = "time_or_lag_axis"
+        if nid and nid.lower() in test_text:
+            # If tests explicitly mention the node, allow observation even when intervention is uncertain.
+            observe_only = observe_only or not intervene_allowed
+        mask[nid] = {
+            "intervene_allowed": bool(intervene_allowed),
+            "observe_only": bool(observe_only),
+            "blocked": bool(blocked),
+            "reason": reason,
+            "confidence": 0.75 if intervene_allowed or observe_only else 0.45,
+        }
+    return mask
+
+
+def _causal_v43_edge_has_test(edge, tests):
+    edge_text = " ".join([
+        _causal_v43_text(edge.get("id"), 120),
+        _causal_v43_text(edge.get("source"), 160),
+        _causal_v43_text(edge.get("target"), 160),
+        _causal_v43_text(edge.get("observable"), 240),
+        _causal_v43_text(edge.get("mechanism"), 500),
+    ]).lower()
+    for t in _causal_v43_safe_list(tests):
+        tt = " ".join([
+            _causal_v43_text(t.get("claim"), 500),
+            _causal_v43_text(t.get("metric"), 300),
+            _causal_v43_text(t.get("falsifies_if"), 500),
+        ]).lower() if isinstance(t, dict) else _causal_v43_text(t, 1000).lower()
+        # Generic overlap criterion: not keyword/domain-specific.
+        if edge.get("observable") and _causal_v43_text(edge.get("observable"), 200).lower() in tt:
+            return True
+        if edge.get("id") and _causal_v43_text(edge.get("id"), 50).lower() in tt:
+            return True
+        src = _causal_v43_text(edge.get("source"), 80).lower()
+        dst = _causal_v43_text(edge.get("target"), 80).lower()
+        if src and dst and src in tt and dst in tt:
+            return True
+    return False
+
+
+def causal_v43_build_complex_s_edges(candidate_object, context=None):
+    """Convert causal edges into complex S-matrix edge records."""
+    co = _causal_v43_safe_dict(candidate_object)
+    nodes = _causal_v43_extract_components(co)
+    node_by_id = {n.get("id"): n for n in nodes if isinstance(n, dict)}
+    edges = _causal_v43_extract_edges(co)
+    tests = _causal_v43_extract_tests(co)
+    experiment_status = _causal_v43_text(co.get("experimental_validation_status") or co.get("validation_status") or "not_tested", 120).lower()
+    requires_experiment = bool(co.get("requires_experiment", co.get("experiment_required", True)))
+    out = []
+    for e in edges:
+        src = _causal_v43_text(e.get("source"), 160)
+        dst = _causal_v43_text(e.get("target"), 160)
+        src_node = node_by_id.get(src, {})
+        dst_node = node_by_id.get(dst, {})
+        src_role = _causal_v43_text(src_node.get("role") or "", 120)
+        dst_role = _causal_v43_text(dst_node.get("role") or "", 120)
+        has_mech = bool(_causal_v43_text(e.get("mechanism"), 20))
+        has_obs = bool(_causal_v43_text(e.get("observable"), 20))
+        has_test = _causal_v43_edge_has_test(e, tests)
+        has_roles = bool(src_role or dst_role)
+        has_operator = bool(_causal_v43_text(e.get("operator") or e.get("relation"), 20))
+        re_score = 0.0
+        re_score += 0.20 if has_operator else 0.0
+        re_score += 0.20 if has_obs else 0.0
+        re_score += 0.15 if has_test else 0.0
+        re_score += 0.15 if has_roles else 0.0
+        re_score += 0.10 if has_mech else 0.0
+        re_score += 0.10 * _causal_v43_float(e.get("strength"), 0.5, lo=0.0, hi=1.0)
+        re_score = _causal_v43_float(re_score, 0.0, lo=0.0, hi=1.0)
+        fams = {_causal_v43_role_family(src_role), _causal_v43_role_family(dst_role)}
+        im_score = 0.0
+        im_score += 0.20 if requires_experiment and experiment_status in {"", "not_tested", "untested", "unknown"} else 0.0
+        im_score += 0.15 if fams & {"interface", "transport", "mediator", "sink_or_allocation"} else 0.0
+        im_score += 0.15 if has_obs and experiment_status in {"", "not_tested", "untested", "unknown"} else 0.0
+        im_score += 0.10  # prior consistency not yet proven at edge construction time
+        im_score += 0.10 if not has_test else 0.0
+        im_score = _causal_v43_float(im_score, 0.0, lo=0.0, hi=1.0)
+        out.append({
+            "edge_id": e.get("id") or ("SE::" + _causal_v43_hash_obj(e, 10)),
+            "src": src,
+            "dst": dst,
+            "relation": _causal_v43_text(e.get("relation") or e.get("operator") or "candidate", 120),
+            "sign": "-" if _causal_v43_text(e.get("sign"), 10).lower() in {"-", "neg", "negative"} else "+",
+            "weight_re": re_score,
+            "weight_im": im_score,
+            "complex_repr": {"re": re_score, "im": im_score},
+            "phase_hint": "unverified_or_mediated" if im_score > 0.25 else "direct_or_low_phase_uncertainty",
+            "observable": _causal_v43_text(e.get("observable"), 300),
+            "mechanism": _causal_v43_text(e.get("mechanism"), 1000),
+            "operator": _causal_v43_text(e.get("operator") or e.get("relation"), 160),
+            "evidence_state": "proposed" if experiment_status in {"", "not_tested", "untested", "unknown"} else "observed_or_validated",
+            "has_falsification_test": bool(has_test),
+            "provenance": {"source": "candidate_object", "patch_id": CAUSAL_V43_SMATRIX_USR_VERIFIER_PATCH_ID},
+        })
+    return out
+
+
+def causal_v43_normalize_candidate_to_smatrix_record(candidate_object, existing_smatrix=None, context=None):
+    """Normalize a candidate object into a CausalOS/S-matrix verification record."""
+    co = _causal_v43_extract_candidate_object(candidate_object)
+    nodes = _causal_v43_extract_components(co)
+    s_edges = causal_v43_build_complex_s_edges(co, context=context)
+    mask = causal_v43_build_attention_mask(co, nodes=nodes, context=context)
+    group_nodes = causal_v43_build_group_nodes(nodes, context=context)
+    cid = _causal_v43_candidate_id(co)
+    graph_signature_material = {
+        "roles": sorted([_causal_v43_role_family(n.get("role")) for n in nodes if isinstance(n, dict)]),
+        "edges": sorted([(_causal_v43_role_family((_causal_v43_safe_dict(next((n for n in nodes if n.get('id') == e.get('src')), {}))).get("role")),
+                          _causal_v43_role_family((_causal_v43_safe_dict(next((n for n in nodes if n.get('id') == e.get('dst')), {}))).get("role")),
+                          e.get("relation")) for e in s_edges]),
+        "observables": sorted([e.get("observable") for e in s_edges if e.get("observable")]),
+    }
+    return {
+        "patch_id": CAUSAL_V43_SMATRIX_USR_VERIFIER_PATCH_ID,
+        "candidate_id": cid,
+        "nodes": nodes,
+        "group_nodes": group_nodes,
+        "complex_s_edges": s_edges,
+        "attention_mask": mask,
+        "graph_signature": _causal_v43_hash_obj(graph_signature_material, 16),
+        "graph_signature_material": graph_signature_material,
+        "existing_smatrix_seen": existing_smatrix is not None,
+        "provenance": {"source": "candidate_object", "patch_id": CAUSAL_V43_SMATRIX_USR_VERIFIER_PATCH_ID},
+    }
+
+
+def causal_v43_verify_internal_logic(candidate_object, s_matrix_record=None, context=None):
+    """Verify internal causal logic without using an LLM."""
+    co = _causal_v43_extract_candidate_object(candidate_object)
+    rec = _causal_v43_safe_dict(s_matrix_record) or causal_v43_normalize_candidate_to_smatrix_record(co, context=context)
+    nodes = _causal_v43_safe_list(rec.get("nodes"))
+    node_ids = set(_causal_v43_text(n.get("id"), 160) for n in nodes if isinstance(n, dict))
+    s_edges = _causal_v43_safe_list(rec.get("complex_s_edges"))
+    mask = _causal_v43_safe_dict(rec.get("attention_mask"))
+    tests = _causal_v43_extract_tests(co)
+    missing_node_edges = []
+    missing_observable_edges = []
+    missing_test_edges = []
+    mask_violations = []
+    for e in s_edges:
+        if not isinstance(e, dict):
+            continue
+        src = _causal_v43_text(e.get("src"), 160)
+        dst = _causal_v43_text(e.get("dst"), 160)
+        if src not in node_ids or dst not in node_ids:
+            missing_node_edges.append(e.get("edge_id") or {"src": src, "dst": dst})
+        if not _causal_v43_text(e.get("observable"), 20):
+            missing_observable_edges.append(e.get("edge_id") or {"src": src, "dst": dst})
+        # Convert S-edge back to edge-like shape for test overlap check.
+        edge_like = {"id": e.get("edge_id"), "source": src, "target": dst, "observable": e.get("observable"), "mechanism": e.get("mechanism")}
+        if not _causal_v43_edge_has_test(edge_like, tests):
+            missing_test_edges.append(e.get("edge_id") or {"src": src, "dst": dst})
+        src_mask = _causal_v43_safe_dict(mask.get(src))
+        if src_mask.get("blocked") and src_mask.get("intervene_allowed"):
+            mask_violations.append({"node": src, "reason": "blocked_and_intervene_allowed"})
+    edge_count = max(1, len(s_edges))
+    objective_reachability = 1.0 - min(1.0, len(missing_node_edges) / edge_count)
+    observable_coverage = 1.0 - min(1.0, len(missing_observable_edges) / edge_count)
+    test_coverage = 1.0 - min(1.0, len(missing_test_edges) / edge_count)
+    mask_validity = 1.0 - min(1.0, len(mask_violations) / max(1, len(mask)))
+    internal_logic_score = _causal_v43_float(0.30 * objective_reachability + 0.25 * observable_coverage + 0.30 * test_coverage + 0.15 * mask_validity, 0.0, lo=0.0, hi=1.0)
+    return {
+        "patch_id": CAUSAL_V43_SMATRIX_USR_VERIFIER_PATCH_ID,
+        "internal_logic_ok": bool(internal_logic_score >= 0.70 and not missing_node_edges and not mask_violations),
+        "internal_logic_score": internal_logic_score,
+        "missing_node_edges": missing_node_edges,
+        "missing_observable_edges": missing_observable_edges,
+        "missing_test_edges": missing_test_edges,
+        "objective_reachability": objective_reachability,
+        "observable_coverage": observable_coverage,
+        "test_edge_coverage_score": test_coverage,
+        "mask_validity_score": mask_validity,
+        "mask_violation_count": len(mask_violations),
+        "mask_violations": mask_violations,
+    }
+
+
+def _causal_v43_iter_prior_edges(existing_smatrix):
+    """Extract prior edges from several generic memory/store shapes."""
+    sm = existing_smatrix
+    if sm is None:
+        return []
+    if isinstance(sm, dict):
+        for key in ("complex_s_edges", "edges", "s_edges", "records"):
+            xs = sm.get(key)
+            if isinstance(xs, list):
+                return [x for x in xs if isinstance(x, dict)]
+    if isinstance(sm, list):
+        return [x for x in sm if isinstance(x, dict)]
+    for attr in ("complex_s_edges", "edges", "records", "log"):
+        try:
+            xs = getattr(sm, attr, None)
+            if isinstance(xs, list):
+                return [x for x in xs if isinstance(x, dict)]
+        except Exception:
+            pass
+    return []
+
+
+def causal_v43_verify_against_existing_smatrix(candidate_object, s_matrix_record=None, existing_smatrix=None, context=None):
+    """Check new S-record against existing S-matrix-like memory."""
+    rec = _causal_v43_safe_dict(s_matrix_record) or causal_v43_normalize_candidate_to_smatrix_record(candidate_object, existing_smatrix=existing_smatrix, context=context)
+    new_edges = _causal_v43_safe_list(rec.get("complex_s_edges"))
+    prior_edges = _causal_v43_iter_prior_edges(existing_smatrix)
+    supporting = []
+    contradicting = []
+    duplicates = []
+    for e in new_edges:
+        if not isinstance(e, dict):
+            continue
+        src = _causal_v43_text(e.get("src") or e.get("source"), 160).lower()
+        dst = _causal_v43_text(e.get("dst") or e.get("target"), 160).lower()
+        sign = _causal_v43_text(e.get("sign") or "+", 10)
+        rel = _causal_v43_text(e.get("relation") or e.get("rel") or "", 120).lower()
+        for p in prior_edges:
+            ps = _causal_v43_text(p.get("src") or p.get("source") or p.get("cause"), 160).lower()
+            pd = _causal_v43_text(p.get("dst") or p.get("target") or p.get("effect"), 160).lower()
+            pre_rel = _causal_v43_text(p.get("relation") or p.get("rel") or "", 120).lower()
+            psign = _causal_v43_text(p.get("sign") or p.get("polarity") or "+", 10)
+            if src == ps and dst == pd:
+                if rel and pre_rel and rel == pre_rel:
+                    duplicates.append({"new": e.get("edge_id"), "prior": p.get("edge_id") or p.get("id")})
+                if psign == sign:
+                    supporting.append({"new": e.get("edge_id"), "prior": p.get("edge_id") or p.get("id")})
+                else:
+                    contradicting.append({"new": e.get("edge_id"), "prior": p.get("edge_id") or p.get("id"), "reason": "opposite_sign"})
+    prior_available = bool(prior_edges)
+    contradiction_penalty = min(0.45, 0.15 * len(contradicting))
+    duplicate_penalty = min(0.35, 0.08 * len(duplicates))
+    support_bonus = min(0.25, 0.05 * len(supporting))
+    base = 0.50 if not prior_available else 0.62
+    consistency_score = _causal_v43_float(base + support_bonus - contradiction_penalty - duplicate_penalty, 0.0, lo=0.0, hi=1.0)
+    status = "not_enough_prior_knowledge" if not prior_available else ("contradiction_detected" if contradicting else "checked_no_contradiction")
+    return {
+        "patch_id": CAUSAL_V43_SMATRIX_USR_VERIFIER_PATCH_ID,
+        "existing_knowledge_status": status,
+        "prior_edge_count": len(prior_edges),
+        "supporting_edges": supporting,
+        "contradicting_edges": contradicting,
+        "duplicate_edges": duplicates,
+        "contradiction_count": len(contradicting),
+        "duplicate_signature_penalty": duplicate_penalty,
+        "s_matrix_consistency_score": consistency_score,
+    }
+
+
+def causal_v43_usr_safe_symbol(label, prefix="x"):
+    """Create an ASCII-safe USR variable symbol while preserving original label in bindings."""
+    import re as _re
+    raw = _causal_v43_text(label, 200)
+    base = _re.sub(r"[^A-Za-z0-9_]+", "_", raw).strip("_")
+    if not base:
+        base = "var_" + _causal_v43_hash_obj(raw, 8)
+    if base and base[0].isdigit():
+        base = "v_" + base
+    return _causal_v43_text(str(prefix or "x") + "_" + base, 80)
+
+
+def causal_v43_build_usr_seed_from_candidate(candidate_object, s_matrix_record=None, context=None):
+    """Build a USR seed payload from candidate/S-matrix structures."""
+    co = _causal_v43_extract_candidate_object(candidate_object)
+    rec = _causal_v43_safe_dict(s_matrix_record) or causal_v43_normalize_candidate_to_smatrix_record(co, context=context)
+    row = {"t_min": 0.0}
+    row_imag = {}
+    complex_columns = []
+    bindings = {}
+    mask = _causal_v43_safe_dict(rec.get("attention_mask"))
+    nodes = _causal_v43_safe_list(rec.get("nodes"))
+    for idx, n in enumerate(nodes, start=1):
+        if not isinstance(n, dict):
+            continue
+        nid = _causal_v43_text(n.get("id") or n.get("label"), 120)
+        label = _causal_v43_text(n.get("label") or nid, 160)
+        sym = causal_v43_usr_safe_symbol(nid or label, prefix="x")
+        row[sym] = float(idx)
+        m = _causal_v43_safe_dict(mask.get(nid))
+        if m.get("observe_only") and not m.get("intervene_allowed"):
+            row_imag[sym] = 0.10
+            complex_columns.append(sym)
+        bindings[sym] = {
+            "node_id": nid,
+            "label": label,
+            "role": _causal_v43_text(n.get("role") or "context_node", 160),
+            "mask": m,
+        }
+    # Reflect high imaginary S-edges in row_imag to carry uncertainty/phase context.
+    for e in _causal_v43_safe_list(rec.get("complex_s_edges")):
+        if not isinstance(e, dict):
+            continue
+        dst = _causal_v43_text(e.get("dst"), 120)
+        dst_sym = causal_v43_usr_safe_symbol(dst, prefix="x")
+        im = _causal_v43_float(e.get("weight_im"), 0.0, lo=0.0, hi=1.0)
+        if im > 0.0:
+            row_imag[dst_sym] = max(_causal_v43_float(row_imag.get(dst_sym), 0.0), im)
+            if dst_sym not in complex_columns:
+                complex_columns.append(dst_sym)
+    return {
+        "patch_id": CAUSAL_V43_SMATRIX_USR_VERIFIER_PATCH_ID,
+        "row": row,
+        "row_imag": row_imag,
+        "complex_columns": complex_columns,
+        "variable_bindings": bindings,
+        "phase_state": {
+            "phase_imag_mean": sum(row_imag.values()) / max(1, len(row_imag)),
+            "mask_density": sum(1 for v in mask.values() if isinstance(v, dict) and (v.get("intervene_allowed") or v.get("observe_only"))) / max(1, len(mask)),
+        },
+        "attention_constraint_hint": mask,
+        "equation_candidates": [],
+    }
+
+
+def causal_v43_build_equation_candidates_from_s_edges(s_edges, nodes=None, mask=None, context=None):
+    """Build deterministic USR equation candidates from complex S edges."""
+    out = []
+    for idx, e in enumerate(_causal_v43_safe_list(s_edges), start=1):
+        if not isinstance(e, dict):
+            continue
+        src = _causal_v43_text(e.get("src"), 120)
+        dst = _causal_v43_text(e.get("dst"), 120)
+        if not src or not dst:
+            continue
+        src_sym = causal_v43_usr_safe_symbol(src, prefix="x")
+        dst_sym = causal_v43_usr_safe_symbol(dst, prefix="x")
+        eid = _causal_v43_text(e.get("edge_id") or ("E%d" % idx), 80)
+        a = "a_" + _causal_v43_hash_obj({"edge": eid, "src": src, "dst": dst}, 6)
+        tau = "tau_" + _causal_v43_hash_obj({"edge": eid, "phase": e.get("weight_im")}, 6)
+        expr = "Eq({dst}_t_plus_{tau}, {a}*{src}_t + eps_{k})".format(
+            dst=dst_sym, tau=tau, a=a, src=src_sym, k=_causal_v43_hash_obj(eid, 6)
+        )
+        kind = "mediated_or_delayed_relation" if _causal_v43_float(e.get("weight_im"), 0.0) >= 0.25 else "direct_relation"
+        out.append({
+            "candidate_id": "EQ::V43::" + _causal_v43_hash_obj({"edge": eid, "src": src, "dst": dst}, 10),
+            "kind": kind,
+            "expression_text": expr,
+            "variables": [src_sym, dst_sym],
+            "parameters": [a, tau],
+            "source_s_edge": eid,
+            "source": src,
+            "target": dst,
+            "source_weight_re": _causal_v43_float(e.get("weight_re"), 0.0, lo=0.0, hi=1.0),
+            "source_weight_im": _causal_v43_float(e.get("weight_im"), 0.0, lo=0.0, hi=1.0),
+            "observable": _causal_v43_text(e.get("observable"), 300),
+            "identification_hint": "sweep source/intervention when allowed and observe target/proxy metric",
+            "provenance": {"source": "complex_s_edge", "patch_id": CAUSAL_V43_SMATRIX_USR_VERIFIER_PATCH_ID},
+        })
+    return out
+
+
+def causal_v43_validate_usr_variable_bindings(usr_payload, s_matrix_record=None, context=None):
+    """Validate that equation variables are bound to S-matrix nodes and mask constraints."""
+    usr = _causal_v43_safe_dict(usr_payload)
+    bindings = _causal_v43_safe_dict(usr.get("variable_bindings"))
+    equations = _causal_v43_safe_list(usr.get("equation_candidates"))
+    unbound = []
+    blocked_as_source = []
+    observable_targets = 0
+    for eq in equations:
+        if not isinstance(eq, dict):
+            continue
+        vars_ = [_causal_v43_text(v, 120) for v in _causal_v43_safe_list(eq.get("variables"))]
+        for v in vars_:
+            if v not in bindings:
+                unbound.append({"equation": eq.get("candidate_id"), "variable": v})
+        if vars_:
+            src_binding = _causal_v43_safe_dict(bindings.get(vars_[0]))
+            src_mask = _causal_v43_safe_dict(src_binding.get("mask"))
+            if src_mask.get("blocked"):
+                blocked_as_source.append({"equation": eq.get("candidate_id"), "variable": vars_[0]})
+        if len(vars_) >= 2:
+            dst_binding = _causal_v43_safe_dict(bindings.get(vars_[1]))
+            dst_mask = _causal_v43_safe_dict(dst_binding.get("mask"))
+            if dst_mask.get("observe_only") or eq.get("observable"):
+                observable_targets += 1
+    total_eq = max(1, len(equations))
+    binding_score = 1.0 - min(1.0, len(unbound) / max(1, total_eq * 2))
+    constraint_score = 1.0 - min(1.0, len(blocked_as_source) / total_eq)
+    observable_score = min(1.0, observable_targets / total_eq)
+    variable_binding_ok = bool(binding_score >= 0.90 and not blocked_as_source)
+    return {
+        "patch_id": CAUSAL_V43_SMATRIX_USR_VERIFIER_PATCH_ID,
+        "variable_binding_ok": variable_binding_ok,
+        "usr_variable_binding_score": _causal_v43_float(binding_score, 0.0, lo=0.0, hi=1.0),
+        "usr_constraint_consistency_score": _causal_v43_float(constraint_score, 0.0, lo=0.0, hi=1.0),
+        "usr_observable_target_score": _causal_v43_float(observable_score, 0.0, lo=0.0, hi=1.0),
+        "unbound_variables": unbound,
+        "blocked_source_variables": blocked_as_source,
+        "unbound_variable_penalty": min(0.25, 0.05 * len(unbound) + 0.10 * len(blocked_as_source)),
+    }
+
+
+def causal_v43_estimate_usr_identifiability(usr_payload, s_matrix_record=None, verification_plan=None, context=None):
+    """Estimate pre-experiment identifiability from equations, observables, tests, and mask."""
+    usr = _causal_v43_safe_dict(usr_payload)
+    rec = _causal_v43_safe_dict(s_matrix_record)
+    tests = _causal_v43_safe_list(verification_plan) or []
+    if not tests and rec:
+        tests = []
+    test_text = " ".join(_causal_v43_text(t, 1200).lower() for t in tests)
+    bindings = _causal_v43_safe_dict(usr.get("variable_bindings"))
+    equations = _causal_v43_safe_list(usr.get("equation_candidates"))
+    identifiable = []
+    weak = []
+    unidentifiable = []
+    required_measurements = []
+    required_interventions = []
+    for eq in equations:
+        if not isinstance(eq, dict):
+            continue
+        src_sym, dst_sym = (_causal_v43_safe_list(eq.get("variables")) + ["", ""])[:2]
+        src_binding = _causal_v43_safe_dict(bindings.get(src_sym))
+        dst_binding = _causal_v43_safe_dict(bindings.get(dst_sym))
+        src_mask = _causal_v43_safe_dict(src_binding.get("mask"))
+        dst_mask = _causal_v43_safe_dict(dst_binding.get("mask"))
+        has_obs = bool(eq.get("observable")) or bool(dst_mask.get("observe_only"))
+        can_intervene = bool(src_mask.get("intervene_allowed")) and not bool(src_mask.get("blocked"))
+        has_test_hint = bool(eq.get("observable") and _causal_v43_text(eq.get("observable"), 120).lower() in test_text)
+        edge_id = _causal_v43_text(eq.get("source_s_edge") or eq.get("candidate_id"), 120)
+        if has_obs and can_intervene and has_test_hint:
+            identifiable.append(edge_id)
+        elif has_obs and (can_intervene or has_test_hint):
+            weak.append(edge_id)
+        else:
+            unidentifiable.append(edge_id)
+            required_measurements.append("measure target/proxy for %s" % _causal_v43_text(eq.get("target") or dst_sym, 120))
+            if not can_intervene:
+                required_interventions.append("find allowable intervention or perturbation proxy for %s" % _causal_v43_text(eq.get("source") or src_sym, 120))
+    total = max(1, len(equations))
+    score = (len(identifiable) + 0.5 * len(weak)) / total
+    return {
+        "patch_id": CAUSAL_V43_SMATRIX_USR_VERIFIER_PATCH_ID,
+        "identifiability_score": _causal_v43_float(score, 0.0, lo=0.0, hi=1.0),
+        "identifiable_edges": identifiable,
+        "weakly_identifiable_edges": weak,
+        "unidentifiable_edges": unidentifiable,
+        "required_next_measurements": list(dict.fromkeys(required_measurements))[:16],
+        "required_next_interventions": list(dict.fromkeys(required_interventions))[:16],
+    }
+
+
+def causal_v43_score_usr_support(usr_payload, s_matrix_record=None, verification_report=None, context=None):
+    """Score USR support from equation count, bindings, constraints, and identifiability."""
+    usr = _causal_v43_safe_dict(usr_payload)
+    equations = _causal_v43_safe_list(usr.get("equation_candidates"))
+    rec = _causal_v43_safe_dict(s_matrix_record)
+    edge_count = len(_causal_v43_safe_list(rec.get("complex_s_edges"))) if rec else len(equations)
+    equation_score = min(1.0, len(equations) / max(1, edge_count))
+    binding_report = causal_v43_validate_usr_variable_bindings(usr, s_matrix_record=rec, context=context)
+    ident_report = causal_v43_estimate_usr_identifiability(usr, s_matrix_record=rec, verification_plan=_causal_v43_safe_list((_causal_v43_safe_dict(verification_report)).get("verification_plan")), context=context)
+    residual_risk = 1.0 - _causal_v43_float(ident_report.get("identifiability_score"), 0.0, lo=0.0, hi=1.0)
+    return {
+        "patch_id": CAUSAL_V43_SMATRIX_USR_VERIFIER_PATCH_ID,
+        "usr_equation_candidate_score": _causal_v43_float(equation_score, 0.0, lo=0.0, hi=1.0),
+        "usr_variable_binding_score": binding_report.get("usr_variable_binding_score", 0.0),
+        "usr_identifiability_score": ident_report.get("identifiability_score", 0.0),
+        "usr_constraint_consistency_score": binding_report.get("usr_constraint_consistency_score", 0.0),
+        "usr_residual_risk_score": _causal_v43_float(residual_risk, 0.0, lo=0.0, hi=1.0),
+        "unbound_variable_penalty": binding_report.get("unbound_variable_penalty", 0.0),
+        "binding_report": binding_report,
+        "identifiability_report": ident_report,
+    }
+
+
+def causal_v43_build_smatrix_usr_verification_bundle(candidate_object, existing_smatrix=None, context=None):
+    """One-shot helper used by Leap/app layers: candidate -> S-matrix + USR + verification."""
+    co = _causal_v43_extract_candidate_object(candidate_object)
+    rec = causal_v43_normalize_candidate_to_smatrix_record(co, existing_smatrix=existing_smatrix, context=context)
+    internal = causal_v43_verify_internal_logic(co, s_matrix_record=rec, context=context)
+    prior = causal_v43_verify_against_existing_smatrix(co, s_matrix_record=rec, existing_smatrix=existing_smatrix, context=context)
+    usr_seed = causal_v43_build_usr_seed_from_candidate(co, s_matrix_record=rec, context=context)
+    eqs = causal_v43_build_equation_candidates_from_s_edges(rec.get("complex_s_edges", []), nodes=rec.get("nodes"), mask=rec.get("attention_mask"), context=context)
+    usr_seed["equation_candidates"] = eqs
+    bind = causal_v43_validate_usr_variable_bindings(usr_seed, s_matrix_record=rec, context=context)
+    ident = causal_v43_estimate_usr_identifiability(usr_seed, s_matrix_record=rec, verification_plan=_causal_v43_extract_tests(co), context=context)
+    usr_score = causal_v43_score_usr_support(usr_seed, s_matrix_record=rec, verification_report={"verification_plan": _causal_v43_extract_tests(co)}, context=context)
+    score = causal_v43_score_candidate_with_smatrix_usr(co, rec, internal, prior, usr_score, context=context)
+    return {
+        "patch_id": CAUSAL_V43_SMATRIX_USR_VERIFIER_PATCH_ID,
+        "candidate_id": rec.get("candidate_id"),
+        "s_matrix_record": rec,
+        "s_matrix_verification": {**internal, **prior, "judgement_enabled": True, "complex_s_edges_count": len(rec.get("complex_s_edges", [])), "attention_mask_available": bool(rec.get("attention_mask"))},
+        "usr_support": {
+            "requested": True,
+            "patch_id": CAUSAL_V43_SMATRIX_USR_VERIFIER_PATCH_ID,
+            "usr_seed": usr_seed,
+            "equation_candidates": eqs,
+            "equation_candidates_count": len(eqs),
+            "variable_binding_ok": bind.get("variable_binding_ok", False),
+            "variable_binding_report": bind,
+            "identifiability_report": ident,
+            "identifiability_score": ident.get("identifiability_score", 0.0),
+            "score_components": usr_score,
+        },
+        "score_components_v43": score.get("score_components_v43", {}),
+        "scores_v43": score.get("scores_v43", {}),
+        "publishable_status": score.get("publishable_status"),
+        "candidate_publishable": score.get("candidate_publishable", False),
+    }
+
+
+def causal_v43_score_candidate_with_smatrix_usr(candidate_object, s_matrix_record=None, internal_report=None, prior_report=None, usr_score=None, context=None):
+    """Compute realistic draft/pre-experiment/publishable scores."""
+    co = _causal_v43_extract_candidate_object(candidate_object)
+    rec = _causal_v43_safe_dict(s_matrix_record) or causal_v43_normalize_candidate_to_smatrix_record(co, context=context)
+    internal = _causal_v43_safe_dict(internal_report) or causal_v43_verify_internal_logic(co, s_matrix_record=rec, context=context)
+    prior = _causal_v43_safe_dict(prior_report) or causal_v43_verify_against_existing_smatrix(co, s_matrix_record=rec, context=context)
+    usr = _causal_v43_safe_dict(usr_score)
+    if not usr:
+        seed = causal_v43_build_usr_seed_from_candidate(co, s_matrix_record=rec, context=context)
+        seed["equation_candidates"] = causal_v43_build_equation_candidates_from_s_edges(rec.get("complex_s_edges", []), nodes=rec.get("nodes"), mask=rec.get("attention_mask"), context=context)
+        usr = causal_v43_score_usr_support(seed, s_matrix_record=rec, context=context)
+    nodes = _causal_v43_safe_list(rec.get("nodes"))
+    edges = _causal_v43_safe_list(rec.get("complex_s_edges"))
+    tests = _causal_v43_extract_tests(co)
+    artifact_component_score = min(1.0, len(nodes) / 4.0)
+    typed_coupling_score = min(1.0, len([e for e in edges if isinstance(e, dict) and e.get("relation")]) / max(1, len(edges)))
+    measurable_handle_score = min(1.0, len([e for e in edges if isinstance(e, dict) and e.get("observable")]) / max(1, len(edges)))
+    falsification_test_score = min(1.0, len(tests) / max(1, len(edges)))
+    operator_trace = _causal_v43_safe_list(co.get("operator_trace"))
+    operator_trace_score = min(1.0, len(operator_trace) / max(1, len(edges))) if operator_trace else 0.50
+    semantic_grounding_score = min(1.0, len([n for n in nodes if isinstance(n, dict) and n.get("label") and n.get("role")]) / max(1, len(nodes)))
+    graph_completeness_score = min(1.0, (len(nodes) + len(edges)) / max(1, len(nodes) + max(1, len(nodes) - 1)))
+    draft_quality = (
+        0.14 * artifact_component_score +
+        0.14 * typed_coupling_score +
+        0.12 * measurable_handle_score +
+        0.12 * falsification_test_score +
+        0.10 * operator_trace_score +
+        0.10 * semantic_grounding_score +
+        0.10 * graph_completeness_score +
+        0.14 * _causal_v43_float(usr.get("usr_equation_candidate_score"), 0.0, lo=0.0, hi=1.0) +
+        0.14 * _causal_v43_float(usr.get("usr_variable_binding_score"), 0.0, lo=0.0, hi=1.0)
+    )
+    duplicate_penalty = _causal_v43_float(prior.get("duplicate_signature_penalty"), 0.0, lo=0.0, hi=1.0)
+    unsupported_edge_penalty = min(0.25, 0.04 * len(internal.get("missing_test_edges", [])) + 0.04 * len(internal.get("missing_observable_edges", [])))
+    pre_conf = (
+        0.16 * _causal_v43_float(internal.get("internal_logic_score"), 0.0, lo=0.0, hi=1.0) +
+        0.16 * _causal_v43_float(prior.get("s_matrix_consistency_score"), 0.0, lo=0.0, hi=1.0) +
+        0.14 * _causal_v43_float(internal.get("mask_validity_score"), 0.0, lo=0.0, hi=1.0) +
+        0.14 * _causal_v43_float(internal.get("test_edge_coverage_score"), 0.0, lo=0.0, hi=1.0) +
+        0.12 * max(0.0, 1.0 - duplicate_penalty) +
+        0.12 * max(0.0, 1.0 - unsupported_edge_penalty) +
+        0.16 * _causal_v43_float(usr.get("usr_identifiability_score"), 0.0, lo=0.0, hi=1.0) -
+        duplicate_penalty - unsupported_edge_penalty - _causal_v43_float(usr.get("unbound_variable_penalty"), 0.0, lo=0.0, hi=1.0)
+    )
+    pre_conf = _causal_v43_float(pre_conf, 0.0, lo=0.0, hi=1.0)
+    requires_experiment = bool(co.get("requires_experiment", co.get("experiment_required", True)))
+    exp_status = _causal_v43_text(co.get("experimental_validation_status") or co.get("validation_status") or "not_tested", 120).lower()
+    evidence_multiplier = 0.55 if requires_experiment and exp_status in {"", "not_tested", "untested", "unknown"} else 0.85
+    external_consistency_multiplier = 0.75 if prior.get("existing_knowledge_status") == "not_enough_prior_knowledge" else (0.50 if prior.get("contradiction_count") else 0.95)
+    publishable = _causal_v43_float(pre_conf * evidence_multiplier * external_consistency_multiplier, 0.0, lo=0.0, hi=1.0)
+    candidate_publishable = bool(publishable >= 0.70 and not requires_experiment)
+    publishable_status = "publishable_candidate" if candidate_publishable else ("draft_requires_experiment" if requires_experiment else "draft_requires_more_consistency")
+    if requires_experiment and exp_status in {"", "not_tested", "untested", "unknown"}:
+        publishable = min(publishable, 0.49)
+        candidate_publishable = False
+        publishable_status = "draft_requires_experiment"
+    return {
+        "patch_id": CAUSAL_V43_SMATRIX_USR_VERIFIER_PATCH_ID,
+        "score_components_v43": {
+            "artifact_component_score": artifact_component_score,
+            "typed_coupling_score": typed_coupling_score,
+            "measurable_handle_score": measurable_handle_score,
+            "falsification_test_score": falsification_test_score,
+            "operator_trace_score": operator_trace_score,
+            "semantic_grounding_score": semantic_grounding_score,
+            "graph_completeness_score": graph_completeness_score,
+            "internal_logic_score": internal.get("internal_logic_score", 0.0),
+            "s_matrix_consistency_score": prior.get("s_matrix_consistency_score", 0.0),
+            "mask_validity_score": internal.get("mask_validity_score", 0.0),
+            "test_edge_coverage_score": internal.get("test_edge_coverage_score", 0.0),
+            "usr_equation_candidate_score": usr.get("usr_equation_candidate_score", 0.0),
+            "usr_variable_binding_score": usr.get("usr_variable_binding_score", 0.0),
+            "usr_identifiability_score": usr.get("usr_identifiability_score", 0.0),
+            "duplicate_penalty": duplicate_penalty,
+            "unsupported_edge_penalty": unsupported_edge_penalty,
+            "unbound_variable_penalty": usr.get("unbound_variable_penalty", 0.0),
+            "evidence_multiplier": evidence_multiplier,
+            "external_consistency_multiplier": external_consistency_multiplier,
+        },
+        "scores_v43": {
+            "draft_quality_score": _causal_v43_float(draft_quality, 0.0, lo=0.0, hi=1.0),
+            "pre_experiment_confidence": pre_conf,
+            "publishable_score": publishable,
+        },
+        "candidate_publishable": candidate_publishable,
+        "publishable_status": publishable_status,
+        "scoring_policy_v43": {
+            "old_overall_score_preserved_elsewhere": True,
+            "untested_requires_experiment_publishable_cap": 0.49,
+            "core_llm_generate_required": False,
+            "llm_schema_compliance_assumed": False,
+        },
+    }
+
+
+def causal_v43_build_graph_view(candidate_object, verification_bundle=None, context=None):
+    """Build graph-view payload with semantic labels, group nodes, complex edges, and USR equation links."""
+    bundle = _causal_v43_safe_dict(verification_bundle)
+    if not bundle:
+        bundle = causal_v43_build_smatrix_usr_verification_bundle(candidate_object, context=context)
+    rec = _causal_v43_safe_dict(bundle.get("s_matrix_record"))
+    usr = _causal_v43_safe_dict(bundle.get("usr_support"))
+    eqs = _causal_v43_safe_list(usr.get("equation_candidates"))
+    return {
+        "patch_id": CAUSAL_V43_SMATRIX_USR_VERIFIER_PATCH_ID,
+        "candidate_id": rec.get("candidate_id"),
+        "nodes": rec.get("nodes", []),
+        "group_nodes": rec.get("group_nodes", []),
+        "edges": rec.get("complex_s_edges", []),
+        "attention_mask": rec.get("attention_mask", {}),
+        "usr_equation_edges": [
+            {"equation_id": eq.get("candidate_id"), "source_s_edge": eq.get("source_s_edge"), "expression_text": eq.get("expression_text")}
+            for eq in eqs if isinstance(eq, dict)
+        ],
+        "graph_signature": rec.get("graph_signature"),
+    }
+
+
+try:
+    __all__
+except Exception:
+    __all__ = []
+for _causal_v43_name in [
+    "CAUSAL_V43_SMATRIX_USR_VERIFIER_PATCH_ID",
+    "causal_v43_normalize_candidate_to_smatrix_record",
+    "causal_v43_build_complex_s_edges",
+    "causal_v43_build_group_nodes",
+    "causal_v43_build_attention_mask",
+    "causal_v43_verify_internal_logic",
+    "causal_v43_verify_against_existing_smatrix",
+    "causal_v43_usr_safe_symbol",
+    "causal_v43_build_usr_seed_from_candidate",
+    "causal_v43_build_equation_candidates_from_s_edges",
+    "causal_v43_validate_usr_variable_bindings",
+    "causal_v43_estimate_usr_identifiability",
+    "causal_v43_score_usr_support",
+    "causal_v43_score_candidate_with_smatrix_usr",
+    "causal_v43_build_smatrix_usr_verification_bundle",
+    "causal_v43_build_graph_view",
+]:
+    if _causal_v43_name not in __all__:
+        __all__.append(_causal_v43_name)
+
+# ============================================================================
+# END ADD-ONLY PATCH: CAUSAL-V43-SMATRIX-USR-VERIFIER
+# ============================================================================

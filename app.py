@@ -4124,6 +4124,898 @@ def _truncate_context(text: str, max_len: int = 10000) -> str:
     return text if len(text) <= max_len else text[:max_len]
 
 
+
+# ============================================================================
+# ADD-ONLY EARLY PATCH APP-V32-NORMAL-CHAT-CAUSALOS-RUNTIME-BRIDGE
+# generated_at_jst: 20260505_141716
+# source_base: app.py
+# source_byte_count_before: 698889
+# source_sha256_8_before: 7a3a89d0
+# WHY THIS MUST BE EARLY:
+#   The visible normal-chat block below calls causalos_generate_text() directly
+#   before the later v49/v31 monkey patches are executed. Therefore a final/end
+#   patch cannot fix the error in the same Streamlit run. This early bridge is
+#   installed immediately before st.chat_input and intercepts the direct call.
+# PURPOSE:
+#   - Stop 'str'.tokenizer crashes in normal chat when CausalOS/Transformers is
+#     selected but the actual model is served by transformers-runtime.
+#   - Preserve RAG/web enrichment already computed above; only generation path is
+#     changed.
+#   - No benchmark/task-name hardcoding; generic local-or-runtime dispatch.
+# ============================================================================
+
+APP_V32_NORMAL_CHAT_CAUSALOS_RUNTIME_BRIDGE_ID = 'APP-V32-NORMAL-CHAT-CAUSALOS-RUNTIME-BRIDGE-20260505_141716'
+
+try:
+    _appv32_original_causalos_generate_text = causalos_generate_text
+except Exception:
+    _appv32_original_causalos_generate_text = None
+
+
+def _appv32_text(x, limit=4000):
+    try:
+        s = '' if x is None else str(x)
+    except Exception:
+        s = repr(x)
+    return s[:max(0, int(limit))]
+
+
+def _appv32_is_local_causalos_object(obj):
+    return bool(obj is not None and not isinstance(obj, str) and hasattr(obj, 'tokenizer') and hasattr(obj, 'model'))
+
+
+def _appv32_runtime_url():
+    try:
+        return str(_transformers_runtime_url()).rstrip('/')
+    except Exception:
+        try:
+            return str(st.session_state.get('transformers_runtime_url') or TRANSFORMERS_RUNTIME_URL_DEFAULT or '').rstrip('/')
+        except Exception:
+            return ''
+
+
+def _appv32_runtime_available():
+    url = _appv32_runtime_url()
+    if not url:
+        return False
+    try:
+        r = requests.get(url + '/health', timeout=3)
+        return bool(getattr(r, 'status_code', 0) < 500)
+    except Exception:
+        # If the URL is configured but health is unavailable, still allow the
+        # generation endpoint to surface the precise runtime error instead of
+        # falling through to local .tokenizer on a string.
+        return True
+
+
+def _appv32_normal_chat_runtime_generate(user_prompt, system_prompt='You are a helpful assistant.', max_new_tokens=8192):
+    schema = {
+        'type': 'object',
+        'additionalProperties': True,
+        'properties': {
+            'answer': {'type': 'string'},
+            'text': {'type': 'string'},
+            'response': {'type': 'string'},
+            'content': {'type': 'string'},
+            'diagnostics': {'type': 'object', 'additionalProperties': True},
+        },
+    }
+    prompt_text = (
+        str(system_prompt or 'You are a helpful assistant.')
+        + '\n\nUse the provided context if present. Answer the user directly.\n\nUSER_OR_ENRICHED_PROMPT:\n'
+        + str(user_prompt or '')
+    )
+    try:
+        raw = _transformers_runtime_generate_json(
+            prompt_text=prompt_text,
+            schema_obj=schema,
+            max_new_tokens=max(128, int(max_new_tokens or 8192)),
+        )
+        txt = str(raw or '').strip()
+        try:
+            obj = json.loads(txt)
+        except Exception:
+            obj = None
+        if isinstance(obj, dict):
+            for key in ('answer', 'text', 'response', 'content'):
+                val = obj.get(key)
+                if isinstance(val, str) and val.strip():
+                    return _sanitize_output(val) if callable(globals().get('_sanitize_output')) else val
+            return json.dumps(obj, ensure_ascii=False)
+        return _sanitize_output(txt) if callable(globals().get('_sanitize_output')) else txt
+    except Exception as e:
+        return '(transformers-runtime normal chat error: ' + _appv32_text(e, 700) + ')'
+
+
+def _appv32_sanitize_causalos_engine_state():
+    diag = {'patch_id': APP_V32_NORMAL_CHAT_CAUSALOS_RUNTIME_BRIDGE_ID, 'changed': False}
+    try:
+        val = st.session_state.get('causalos_engine', None)
+        diag['causalos_engine_type'] = type(val).__name__
+        if isinstance(val, str):
+            # Preserve selector/path information; do not let direct chat treat it as engine object.
+            st.session_state['selected_model_name'] = val
+            st.session_state['_appv32_causalos_engine_string_value'] = val
+            diag['changed'] = True
+            diag['action'] = 'causalos_engine_string_preserved_as_selected_model_name_runtime_bridge_active'
+        osys_val = st.session_state.get('osys', None)
+        diag['osys_type'] = type(osys_val).__name__
+        if isinstance(osys_val, str):
+            st.session_state['selected_model_name'] = osys_val
+            st.session_state['osys'] = None
+            diag['osys_changed'] = True
+    except Exception as e:
+        diag['error'] = _appv32_text(e, 300)
+    try:
+        st.session_state['_appv32_normal_chat_bridge_diag'] = diag
+    except Exception:
+        pass
+    return diag
+
+
+def causalos_generate_text(
+    osys,
+    user_prompt: str,
+    system_prompt: str = 'You are a helpful assistant.',
+    max_new_tokens: int = 8192,
+    max_time_sec: Optional[int] = None,
+) -> str:
+    """EARLY normal-chat-safe CausalOS generation bridge.
+
+    This keeps local Transformers behavior when a real engine object exists,
+    but routes str/None placeholder states to transformers-runtime instead of
+    evaluating osys.tokenizer.
+    """
+    _appv32_sanitize_causalos_engine_state()
+    if _appv32_is_local_causalos_object(osys):
+        if callable(_appv32_original_causalos_generate_text):
+            return _appv32_original_causalos_generate_text(
+                osys,
+                user_prompt=user_prompt,
+                system_prompt=system_prompt,
+                max_new_tokens=max_new_tokens,
+                max_time_sec=max_time_sec,
+            )
+        tok = osys.tokenizer
+        model = osys.model
+        return '(local CausalOS generator unavailable despite valid osys)'
+    # Remote runtime path: this is the expected path when the app-side value is
+    # a model-name string or placeholder but the model is loaded in runtime.
+    if _appv32_runtime_available():
+        try:
+            st.session_state['causalos_generation_backend'] = 'runtime_app_v32_normal_chat'
+        except Exception:
+            pass
+        return _appv32_normal_chat_runtime_generate(
+            user_prompt=user_prompt,
+            system_prompt=system_prompt,
+            max_new_tokens=max_new_tokens,
+        )
+    raise RuntimeError(
+        'CausalOS local engine is not an object with tokenizer/model and transformers-runtime is unavailable. '
+        + 'osys_type=' + type(osys).__name__
+    )
+
+
+try:
+    _appv32_sanitize_causalos_engine_state()
+    st.session_state['app_v32_normal_chat_causalos_runtime_bridge'] = {
+        'patch_id': APP_V32_NORMAL_CHAT_CAUSALOS_RUNTIME_BRIDGE_ID,
+        'installed_before_visible_chat_input': True,
+        'fixes_direct_chat_causalos_generate_text_call': True,
+        'prevents_str_tokenizer_in_normal_chat': True,
+        'runtime_url': _appv32_runtime_url(),
+    }
+except Exception:
+    pass
+# ============================================================================
+# END ADD-ONLY EARLY PATCH APP-V32-NORMAL-CHAT-CAUSALOS-RUNTIME-BRIDGE
+# ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY EARLY PATCH APP-V33-NORMAL-CHAT-RUNTIME-PLAIN-ROUTING
+# generated_at_jst: 20260505_142608
+# source_byte_count_before: 710887
+# source_sha256_8_before: 11b23e49
+# WHY:
+#   V32 fixed the 'str'.tokenizer crash, but normal chat was routed to
+#   /structured-json/generate with max_new_tokens=8192. The runtime schema caps
+#   structured generation at <=4096, so chat returned HTTP 422 and no answer.
+#   Normal chat is not a JSON-only task; it must use the plain /generate endpoint
+#   while preserving the already-built Answer Mode / Routing Policy enriched prompt.
+# DESIGN:
+#   - Keep ADD-ONLY; no existing code removed.
+#   - Cap runtime max_new_tokens to the runtime API contract (1..4096).
+#   - Use /generate for normal chat and /structured-json/generate only for small
+#     router-JSON calls when applicable.
+#   - Preserve RAG/WEB/NONE routing decisions already computed above this call.
+#   - No benchmark/task-name hardcoding.
+# ============================================================================
+
+APP_V33_NORMAL_CHAT_RUNTIME_PLAIN_ROUTING_PATCH_ID = 'APP-V33-NORMAL-CHAT-RUNTIME-PLAIN-ROUTING-20260505_142608'
+
+
+def _appv33_cap_runtime_tokens(n, default=2048):
+    try:
+        v = int(n if n is not None else default)
+    except Exception:
+        v = int(default)
+    return max(1, min(4096, v))
+
+
+def _appv33_runtime_generate_plain(prompt_text, max_new_tokens=2048, system_prompt=None):
+    """Plain remote-runtime generation for normal chat.
+
+    This intentionally avoids /structured-json/generate. Normal chat already has
+    Answer Mode / Routing Policy injected in enriched_prompt; schema-forcing it
+    causes 422 or JSON-shaped answers instead of chat answers.
+    """
+    url = _transformers_runtime_url().rstrip('/') + '/generate'
+    prompt_body = str(prompt_text or '')
+    if system_prompt:
+        prompt_body = str(system_prompt or '') + '\n\n' + prompt_body
+    payload = {
+        'prompt': prompt_body,
+        'model_path': _selected_transformers_model_path(),
+        'quantization': _selected_transformers_runtime_quantization(),
+        'max_new_tokens': _appv33_cap_runtime_tokens(max_new_tokens, default=2048),
+    }
+    t0 = time.time()
+    resp = requests.post(url, json=payload, timeout=max(180, int(payload['max_new_tokens'] / 2)))
+    try:
+        resp.raise_for_status()
+    except Exception as e:
+        # Preserve the precise status while exposing payload bounds, but do not leak URL.
+        try:
+            body = resp.text[:600]
+        except Exception:
+            body = ''
+        raise RuntimeError(
+            'runtime_plain_generate_http_error status=' + str(getattr(resp, 'status_code', ''))
+            + ' max_new_tokens=' + str(payload.get('max_new_tokens'))
+            + ' body=' + body
+        ) from e
+    data = resp.json()
+    txt = data.get('text') or data.get('generated_text') or data.get('answer') or ''
+    st.session_state.autonomous_growth_last_backend_debug = {
+        'engine': 'transformers-runtime',
+        'backend': data.get('generation_backend') or data.get('backend') or 'remote_runtime_plain_generate_v19',
+        'json_ok': None,
+        'schema_ok': None,
+        'error': data.get('error') or data.get('reason'),
+        'model_path': data.get('model_path'),
+        'loader_kind': data.get('loader_kind'),
+        'quantization': data.get('quantization'),
+        'elapsed_ms_client': int((time.time() - t0) * 1000),
+        'patch_id': APP_V33_NORMAL_CHAT_RUNTIME_PLAIN_ROUTING_PATCH_ID,
+        'normal_chat_plain_endpoint': True,
+        'max_new_tokens_sent': payload.get('max_new_tokens'),
+    }
+    return str(txt or '')
+
+
+try:
+    _appv33_prev_transformers_runtime_generate_json = _transformers_runtime_generate_json
+except Exception:
+    _appv33_prev_transformers_runtime_generate_json = None
+
+
+def _transformers_runtime_generate_json(prompt_text: str, schema_obj: Dict[str, Any], max_new_tokens: int = 1200) -> str:
+    """V33 client-side cap for runtime structured JSON endpoint.
+
+    The server-side pydantic model rejects >4096 with HTTP 422. This wrapper keeps
+    structured tasks available while preventing avoidable 422 errors.
+    """
+    capped = _appv33_cap_runtime_tokens(max_new_tokens, default=1200)
+    if callable(_appv33_prev_transformers_runtime_generate_json):
+        return _appv33_prev_transformers_runtime_generate_json(prompt_text, schema_obj, capped)
+    url = _transformers_runtime_url().rstrip() + '/structured-json/generate'
+    payload = {
+        'prompt': str(prompt_text or ''),
+        'schema': schema_obj,
+        'model_path': _selected_transformers_model_path(),
+        'quantization': _selected_transformers_runtime_quantization(),
+        'max_new_tokens': capped,
+    }
+    resp = requests.post(url, json=payload, timeout=max(180, int(capped / 2)))
+    resp.raise_for_status()
+    data = resp.json()
+    return data.get('text', '')
+
+
+def _appv33_is_router_json_prompt(user_prompt):
+    t = str(user_prompt or '').lower()
+    return ('routing function' in t and 'web_search' in t and 'rag' in t and 'none' in t and 'return only json' in t)
+
+
+def _appv33_runtime_route_json(user_prompt):
+    schema = {
+        'type': 'object',
+        'additionalProperties': False,
+        'properties': {'route': {'type': 'string', 'enum': ['WEB_SEARCH', 'RAG', 'NONE']}},
+        'required': ['route'],
+    }
+    raw = _transformers_runtime_generate_json(str(user_prompt or ''), schema, max_new_tokens=256)
+    try:
+        obj = json.loads(str(raw or '{}'))
+        route = str(obj.get('route') or '').upper()
+        if route in {'WEB_SEARCH', 'RAG', 'NONE'}:
+            return json.dumps({'route': route}, ensure_ascii=False)
+    except Exception:
+        pass
+    # Keep the router fail-soft behavior generic; the caller already has a RAG default.
+    return '{"route":"RAG"}'
+
+
+def _appv32_normal_chat_runtime_generate(user_prompt, system_prompt='You are a helpful assistant.', max_new_tokens=2048):
+    """V33 override of the V32 function: use plain generation for chat."""
+    if _appv33_is_router_json_prompt(user_prompt):
+        return _appv33_runtime_route_json(user_prompt)
+    return _appv33_runtime_generate_plain(
+        prompt_text=str(user_prompt or ''),
+        system_prompt=system_prompt,
+        max_new_tokens=_appv33_cap_runtime_tokens(max_new_tokens, default=2048),
+    )
+
+
+try:
+    _appv33_prev_causalos_generate_text = causalos_generate_text
+except Exception:
+    _appv33_prev_causalos_generate_text = None
+
+
+def causalos_generate_text(
+    osys,
+    user_prompt: str,
+    system_prompt: str = 'You are a helpful assistant.',
+    max_new_tokens: int = 8192,
+    max_time_sec: Optional[int] = None,
+) -> str:
+    """V33 normal-chat-safe generator.
+
+    Local real CausalOS objects still use the previous local path. Runtime/string
+    placeholders use plain /generate for normal chat and small structured JSON
+    only for router decisions.
+    """
+    try:
+        if callable(globals().get('_appv32_sanitize_causalos_engine_state')):
+            _appv32_sanitize_causalos_engine_state()
+    except Exception:
+        pass
+    is_local_obj = False
+    try:
+        is_local_obj = bool(osys is not None and not isinstance(osys, str) and hasattr(osys, 'tokenizer') and hasattr(osys, 'model'))
+    except Exception:
+        is_local_obj = False
+    if is_local_obj and callable(_appv33_prev_causalos_generate_text):
+        return _appv33_prev_causalos_generate_text(
+            osys,
+            user_prompt=user_prompt,
+            system_prompt=system_prompt,
+            max_new_tokens=_appv33_cap_runtime_tokens(max_new_tokens, default=2048),
+            max_time_sec=max_time_sec,
+        )
+    if callable(globals().get('_appv32_runtime_available')) and _appv32_runtime_available():
+        try:
+            st.session_state['causalos_generation_backend'] = 'runtime_app_v33_normal_chat_plain'
+            st.session_state['app_v33_normal_chat_runtime_plain_routing'] = {
+                'patch_id': APP_V33_NORMAL_CHAT_RUNTIME_PLAIN_ROUTING_PATCH_ID,
+                'uses_plain_generate_for_chat': True,
+                'structured_json_only_for_router': True,
+                'runtime_token_cap': 4096,
+                'answer_mode_seen': st.session_state.get('answer_mode'),
+                'routing_policy_seen': st.session_state.get('routing_policy'),
+            }
+        except Exception:
+            pass
+        return _appv32_normal_chat_runtime_generate(
+            user_prompt=user_prompt,
+            system_prompt=system_prompt,
+            max_new_tokens=_appv33_cap_runtime_tokens(max_new_tokens, default=2048),
+        )
+    raise RuntimeError(
+        'CausalOS local engine is not an object with tokenizer/model and transformers-runtime is unavailable. '
+        + 'osys_type=' + type(osys).__name__
+    )
+
+try:
+    st.session_state['app_v33_normal_chat_runtime_plain_routing_installed'] = {
+        'patch_id': APP_V33_NORMAL_CHAT_RUNTIME_PLAIN_ROUTING_PATCH_ID,
+        'installed_before_visible_chat_input': True,
+        'fixes_http_422_from_structured_json_8192': True,
+        'normal_chat_endpoint': '/generate',
+        'structured_json_token_cap': 4096,
+    }
+except Exception:
+    pass
+# ============================================================================
+# END ADD-ONLY EARLY PATCH APP-V33-NORMAL-CHAT-RUNTIME-PLAIN-ROUTING
+# ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY EARLY PATCH APP-V35-CORRECT-GENERATION-BUDGET-BEFORE-CHATINPUT
+# generated_at_jst: 20260505_152303
+# source_byte_count_before: 726442
+# source_sha256_8_before: 57cebc6c
+# Root cause fixed:
+#   Treating 8192 as the default max_new_tokens for every normal-chat request
+#   makes the GPU run until EOS or 8192 generated tokens. For short questions,
+#   this is not correct use of the model; 8192 is the ceiling/contract, not the
+#   ordinary answer budget. The correct universal behavior is to choose an
+#   effective generation budget from the request intent and prompt size, while
+#   preserving 8192 as the hard upper bound when a genuinely long answer is
+#   requested.
+# Policy:
+#   ADD-ONLY. No deletion. No benchmark/task-name hardcoding.
+# ============================================================================
+
+APP_V35_CORRECT_GENERATION_BUDGET_PATCH_ID = 'APP-V35-CORRECT-GENERATION-BUDGET-BEFORE-CHATINPUT-20260505_152303'
+APP_V35_MAX_NEW_TOKENS_CEILING = 8192
+APP_V35_NORMAL_CHAT_DEFAULT_BUDGET = 768
+APP_V35_NORMAL_CHAT_MIN_BUDGET = 192
+APP_V35_NORMAL_CHAT_SOFT_MAX_BUDGET = 1536
+
+
+def _appv35_text_len(x) -> int:
+    try:
+        return len(str(x or ''))
+    except Exception:
+        return 0
+
+
+def _appv35_long_answer_requested(text: str) -> bool:
+    t = str(text or '').lower()
+    markers = [
+        'long', 'detailed', 'comprehensive', 'full', 'exhaustive', 'step by step',
+        '長文', '詳細', '網羅', '包括', '全文', '完全', '詳しく', 'ステップ',
+    ]
+    return any(m in t for m in markers)
+
+
+def _appv35_explicit_8192_requested(text: str) -> bool:
+    t = str(text or '').lower()
+    return ('8192' in t) or ('max_new_tokens' in t and '8192' in t) or ('tokens=8192' in t)
+
+
+def _appv35_effective_normal_chat_max_new_tokens(user_prompt, system_prompt='', requested=8192) -> int:
+    try:
+        req = int(requested if requested is not None else APP_V35_MAX_NEW_TOKENS_CEILING)
+    except Exception:
+        req = APP_V35_MAX_NEW_TOKENS_CEILING
+    req = max(1, min(APP_V35_MAX_NEW_TOKENS_CEILING, req))
+    combined = str(system_prompt or '') + '\n' + str(user_prompt or '')
+    if _appv35_explicit_8192_requested(combined):
+        return req
+    prompt_len = _appv35_text_len(combined)
+    # Generic heuristic: larger prompts can need larger answers, but do not turn
+    # the 8192 ceiling into a default decode target.
+    estimated = APP_V35_NORMAL_CHAT_DEFAULT_BUDGET + min(768, max(0, prompt_len // 8))
+    if _appv35_long_answer_requested(combined):
+        estimated = max(estimated, 2048)
+    else:
+        estimated = min(estimated, APP_V35_NORMAL_CHAT_SOFT_MAX_BUDGET)
+    estimated = max(APP_V35_NORMAL_CHAT_MIN_BUDGET, min(APP_V35_MAX_NEW_TOKENS_CEILING, int(estimated)))
+    return min(req, estimated)
+
+
+def _appv35_runtime_generate_plain(prompt_text, max_new_tokens=8192, system_prompt=None):
+    url = _transformers_runtime_url().rstrip('/') + '/generate'
+    prompt_body = str(prompt_text or '')
+    if system_prompt:
+        prompt_body = str(system_prompt or '') + '\n\n' + prompt_body
+    effective = _appv35_effective_normal_chat_max_new_tokens(prompt_text, system_prompt or '', requested=max_new_tokens)
+    payload = {
+        'prompt': prompt_body,
+        'model_path': _selected_transformers_model_path(),
+        'quantization': _selected_transformers_runtime_quantization(),
+        'max_new_tokens': int(effective),
+        'requested_max_new_tokens': int(max(1, min(APP_V35_MAX_NEW_TOKENS_CEILING, int(max_new_tokens or APP_V35_MAX_NEW_TOKENS_CEILING)))),
+        'max_new_tokens_ceiling': APP_V35_MAX_NEW_TOKENS_CEILING,
+        'generation_mode': 'normal_chat',
+        'budget_policy': APP_V35_CORRECT_GENERATION_BUDGET_PATCH_ID,
+    }
+    t0 = time.time()
+    resp = requests.post(url, json=payload, timeout=max(180, int(payload['max_new_tokens'] / 2) + 60))
+    try:
+        resp.raise_for_status()
+    except Exception as e:
+        try:
+            body = resp.text[:1600]
+        except Exception:
+            body = ''
+        raise RuntimeError(
+            'runtime_plain_generate_http_error_v35 status=' + str(getattr(resp, 'status_code', ''))
+            + ' max_new_tokens=' + str(payload.get('max_new_tokens'))
+            + ' requested_max_new_tokens=' + str(payload.get('requested_max_new_tokens'))
+            + ' patch_id=' + APP_V35_CORRECT_GENERATION_BUDGET_PATCH_ID
+            + ' body=' + body
+        ) from e
+    data = resp.json()
+    txt = data.get('text') or data.get('generated_text') or data.get('answer') or ''
+    if not txt and isinstance(data, dict) and data.get('ok') is False:
+        txt = '(transformers-runtime generation failed: ' + str(data.get('reason') or data.get('error') or 'unknown')[:800] + ')'
+    try:
+        st.session_state.autonomous_growth_last_backend_debug = {
+            'engine': 'transformers-runtime',
+            'backend': data.get('generation_backend') or data.get('backend') or 'remote_runtime_plain_generate_v35_budgeted',
+            'ok': data.get('ok'),
+            'error': data.get('error') or data.get('reason'),
+            'model_path': data.get('model_path'),
+            'loader_kind': data.get('loader_kind'),
+            'quantization': data.get('quantization'),
+            'elapsed_ms_client': int((time.time() - t0) * 1000),
+            'patch_id': APP_V35_CORRECT_GENERATION_BUDGET_PATCH_ID,
+            'normal_chat_plain_endpoint': True,
+            'max_new_tokens_sent': payload.get('max_new_tokens'),
+            'requested_max_new_tokens': payload.get('requested_max_new_tokens'),
+            'ceiling_8192_preserved': True,
+            'effective_budget_policy': 'intent_and_prompt_size_not_fixed_timeout',
+            'installed_before_visible_chat_input': True,
+        }
+    except Exception:
+        pass
+    return str(txt or '')
+
+# Override names called by the direct chat route.
+def _appv33_runtime_generate_plain(prompt_text, max_new_tokens=8192, system_prompt=None):
+    return _appv35_runtime_generate_plain(prompt_text=prompt_text, max_new_tokens=max_new_tokens, system_prompt=system_prompt)
+
+
+def _appv32_normal_chat_runtime_generate(user_prompt, system_prompt='You are a helpful assistant.', max_new_tokens=8192):
+    if callable(globals().get('_appv33_is_router_json_prompt')) and _appv33_is_router_json_prompt(user_prompt):
+        return _appv33_runtime_route_json(user_prompt)
+    return _appv35_runtime_generate_plain(
+        prompt_text=str(user_prompt or ''),
+        system_prompt=system_prompt,
+        max_new_tokens=max_new_tokens,
+    )
+
+try:
+    _appv35_prev_causalos_generate_text = causalos_generate_text
+except Exception:
+    _appv35_prev_causalos_generate_text = None
+
+
+def causalos_generate_text(
+    osys,
+    user_prompt: str,
+    system_prompt: str = 'You are a helpful assistant.',
+    max_new_tokens: int = 8192,
+    max_time_sec: Optional[int] = None,
+) -> str:
+    try:
+        if callable(globals().get('_appv32_sanitize_causalos_engine_state')):
+            _appv32_sanitize_causalos_engine_state()
+    except Exception:
+        pass
+    is_local_obj = False
+    try:
+        is_local_obj = bool(osys is not None and not isinstance(osys, str) and hasattr(osys, 'tokenizer') and hasattr(osys, 'model'))
+    except Exception:
+        is_local_obj = False
+    # Local object generation is left to the local engine, but pass an effective
+    # normal-chat budget rather than blindly forcing 8192 for all short prompts.
+    effective = _appv35_effective_normal_chat_max_new_tokens(user_prompt, system_prompt, requested=max_new_tokens)
+    if is_local_obj and callable(_appv35_prev_causalos_generate_text):
+        return _appv35_prev_causalos_generate_text(
+            osys,
+            user_prompt=user_prompt,
+            system_prompt=system_prompt,
+            max_new_tokens=effective,
+            max_time_sec=max_time_sec,
+        )
+    if callable(globals().get('_appv32_runtime_available')) and _appv32_runtime_available():
+        try:
+            st.session_state['causalos_generation_backend'] = 'runtime_app_v35_correct_generation_budget'
+            st.session_state['app_v35_correct_generation_budget'] = {
+                'patch_id': APP_V35_CORRECT_GENERATION_BUDGET_PATCH_ID,
+                'installed_before_visible_chat_input': True,
+                'normal_chat_endpoint': '/generate',
+                'max_new_tokens_ceiling': APP_V35_MAX_NEW_TOKENS_CEILING,
+                'effective_max_new_tokens': effective,
+                'requested_max_new_tokens': max_new_tokens,
+                'answer_mode_seen': st.session_state.get('answer_mode'),
+                'routing_policy_seen': st.session_state.get('routing_policy'),
+            }
+        except Exception:
+            pass
+        return _appv32_normal_chat_runtime_generate(
+            user_prompt=user_prompt,
+            system_prompt=system_prompt,
+            max_new_tokens=effective,
+        )
+    if callable(_appv35_prev_causalos_generate_text):
+        return _appv35_prev_causalos_generate_text(
+            osys,
+            user_prompt=user_prompt,
+            system_prompt=system_prompt,
+            max_new_tokens=effective,
+            max_time_sec=max_time_sec,
+        )
+    raise RuntimeError('CausalOS generator unavailable after APP-V35 correct generation budget patch')
+
+try:
+    st.session_state['app_v35_correct_generation_budget_installed'] = {
+        'patch_id': APP_V35_CORRECT_GENERATION_BUDGET_PATCH_ID,
+        'installed_before_visible_chat_input': True,
+        'ceiling_8192_preserved': True,
+        'normal_chat_default_is_budgeted': True,
+    }
+except Exception:
+    pass
+# ============================================================================
+# END ADD-ONLY EARLY PATCH APP-V35-CORRECT-GENERATION-BUDGET-BEFORE-CHATINPUT
+# ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY EARLY PATCH APP-V36-ADAPTIVE-GENERATION-BUDGET-BEFORE-CHATINPUT
+# generated_at_jst: 20260505_154253
+# source_byte_count_before: 739357
+# source_sha256_8_before: 36e87e84
+# Purpose:
+#   Preserve hard ceiling=8192 while making normal-chat answer length and compute
+#   time explicitly tunable. This is not a timeout patch: it changes the decode
+#   budget sent to runtime based on answer profile, target seconds, observed TPS,
+#   answer mode, and routing policy. Generic; no benchmark/task-name hardcoding.
+# ============================================================================
+
+APP_V36_ADAPTIVE_GENERATION_BUDGET_PATCH_ID = 'APP-V36-ADAPTIVE-GENERATION-BUDGET-BEFORE-CHATINPUT-20260505_154253'
+APP_V36_MAX_NEW_TOKENS_CEILING = 8192
+
+
+def _appv36_int(x, default=0, lo=None, hi=None):
+    try:
+        v = int(x)
+    except Exception:
+        v = int(default)
+    if lo is not None:
+        v = max(int(lo), v)
+    if hi is not None:
+        v = min(int(hi), v)
+    return v
+
+
+def _appv36_float(x, default=0.0, lo=None, hi=None):
+    try:
+        v = float(x)
+    except Exception:
+        v = float(default)
+    if lo is not None:
+        v = max(float(lo), v)
+    if hi is not None:
+        v = min(float(hi), v)
+    return v
+
+
+def _appv36_profile_default_tokens(profile: str, answer_mode: str = '', routing_policy: str = '') -> int:
+    p = str(profile or 'balanced').strip().lower()
+    mode = str(answer_mode or '').strip().lower()
+    pol = str(routing_policy or '').strip().upper()
+    if p == 'concise':
+        return 192
+    if p == 'balanced':
+        # Raw + NONE should be direct and short unless the user explicitly asks for detail.
+        if mode == 'raw' and pol == 'NONE':
+            return 192
+        return 384
+    if p == 'detailed':
+        return 1024
+    if p == 'long':
+        return 2048
+    if p == 'max8192':
+        return 8192
+    if p == 'custom':
+        return _appv36_int(st.session_state.get('normal_chat_custom_max_new_tokens_v36', 384), 384, 1, APP_V36_MAX_NEW_TOKENS_CEILING)
+    return 384
+
+
+def _appv36_long_answer_requested(text: str) -> bool:
+    t = str(text or '').lower()
+    markers = ['long', 'detailed', 'comprehensive', 'full', 'exhaustive', 'step by step', '長文', '詳細', '網羅', '包括', '全文', '完全', '詳しく', 'ステップ']
+    return any(m in t for m in markers)
+
+
+def _appv36_explicit_8192_requested(text: str) -> bool:
+    t = str(text or '').lower()
+    return ('8192' in t) or ('max_new_tokens' in t and '8192' in t) or ('tokens=8192' in t)
+
+
+def _appv36_observed_tps_default() -> float:
+    # Use runtime-reported speed if available. Otherwise use a conservative
+    # configurable estimate. 4 tok/s is deliberately conservative for avoiding
+    # runaway waits in non-optimized/offload paths.
+    for k in ('normal_chat_last_tokens_per_sec_v36', 'runtime_last_tokens_per_sec_v36'):
+        v = st.session_state.get(k)
+        try:
+            if v is not None and float(v) > 0:
+                return float(v)
+        except Exception:
+            pass
+    return _appv36_float(st.session_state.get('normal_chat_tps_estimate_v36', 4.0), 4.0, 0.1, 500.0)
+
+
+def _appv36_effective_normal_chat_tokens(user_prompt, system_prompt='', requested=8192) -> int:
+    try:
+        req = int(requested if requested is not None else APP_V36_MAX_NEW_TOKENS_CEILING)
+    except Exception:
+        req = APP_V36_MAX_NEW_TOKENS_CEILING
+    req = max(1, min(APP_V36_MAX_NEW_TOKENS_CEILING, req))
+    combined = str(system_prompt or '') + '\n' + str(user_prompt or '')
+    profile = str(st.session_state.get('normal_chat_length_profile_v36', 'balanced') or 'balanced')
+    answer_mode = str(st.session_state.get('answer_mode', 'Assist') or 'Assist')
+    routing_policy = str(st.session_state.get('routing_policy', 'Auto') or 'Auto')
+    if _appv36_explicit_8192_requested(combined):
+        return req
+    base = _appv36_profile_default_tokens(profile, answer_mode=answer_mode, routing_policy=routing_policy)
+    if _appv36_long_answer_requested(combined):
+        base = max(base, 1024 if str(profile).lower() not in {'concise'} else 512)
+    target_sec = _appv36_float(st.session_state.get('normal_chat_target_seconds_v36', 60.0), 60.0, 5.0, 600.0)
+    tps = _appv36_observed_tps_default()
+    time_budget_tokens = max(32, int(target_sec * max(0.1, tps)))
+    effective = min(req, base, time_budget_tokens, APP_V36_MAX_NEW_TOKENS_CEILING)
+    return max(16, int(effective))
+
+
+def _appv36_install_generation_budget_controls():
+    try:
+        with st.sidebar.expander('Generation budget / 応答長と計算時間', expanded=False):
+            st.caption('hard ceiling=8192 は保持。通常チャットは profile × target seconds × observed TPS で実効token数を決めます。')
+            current = str(st.session_state.get('normal_chat_length_profile_v36', 'balanced') or 'balanced')
+            opts = ['concise', 'balanced', 'detailed', 'long', 'custom', 'max8192']
+            if current not in opts:
+                current = 'balanced'
+            st.session_state.normal_chat_length_profile_v36 = st.selectbox('Response length profile', opts, index=opts.index(current), key='normal_chat_length_profile_selector_v36')
+            st.session_state.normal_chat_target_seconds_v36 = st.slider('Target generation seconds', 5, 600, int(st.session_state.get('normal_chat_target_seconds_v36', 60)), 5, key='normal_chat_target_seconds_slider_v36')
+            st.session_state.normal_chat_tps_estimate_v36 = st.number_input('TPS estimate if no runtime measurement', min_value=0.1, max_value=500.0, value=float(st.session_state.get('normal_chat_tps_estimate_v36', 4.0)), step=0.5, key='normal_chat_tps_estimate_input_v36')
+            st.session_state.normal_chat_custom_max_new_tokens_v36 = st.number_input('Custom max_new_tokens', min_value=16, max_value=APP_V36_MAX_NEW_TOKENS_CEILING, value=int(st.session_state.get('normal_chat_custom_max_new_tokens_v36', 384)), step=16, key='normal_chat_custom_max_new_tokens_input_v36')
+            st.write({
+                'last_tps': st.session_state.get('normal_chat_last_tokens_per_sec_v36'),
+                'last_effective_max_new_tokens': st.session_state.get('normal_chat_last_effective_max_new_tokens_v36'),
+                'last_generated_tokens': st.session_state.get('normal_chat_last_generated_tokens_v36'),
+                'ceiling': APP_V36_MAX_NEW_TOKENS_CEILING,
+            })
+    except Exception:
+        pass
+
+_appv36_install_generation_budget_controls()
+
+
+def _appv36_runtime_generate_plain(prompt_text, max_new_tokens=8192, system_prompt=None):
+    url = _transformers_runtime_url().rstrip('/') + '/generate'
+    prompt_body = str(prompt_text or '')
+    if system_prompt:
+        prompt_body = str(system_prompt or '') + '\n\n' + prompt_body
+    effective = _appv36_effective_normal_chat_tokens(prompt_text, system_prompt or '', requested=max_new_tokens)
+    payload = {
+        'prompt': prompt_body,
+        'model_path': _selected_transformers_model_path(),
+        'quantization': _selected_transformers_runtime_quantization(),
+        'max_new_tokens': int(effective),
+        'requested_max_new_tokens': int(max(1, min(APP_V36_MAX_NEW_TOKENS_CEILING, int(max_new_tokens or APP_V36_MAX_NEW_TOKENS_CEILING)))),
+        'max_new_tokens_ceiling': APP_V36_MAX_NEW_TOKENS_CEILING,
+        'generation_mode': 'normal_chat',
+        'generation_profile': str(st.session_state.get('normal_chat_length_profile_v36', 'balanced') or 'balanced'),
+        'target_seconds': float(st.session_state.get('normal_chat_target_seconds_v36', 60.0) or 60.0),
+        'budget_policy': APP_V36_ADAPTIVE_GENERATION_BUDGET_PATCH_ID,
+    }
+    t0 = time.time()
+    resp = requests.post(url, json=payload, timeout=max(180, int(float(payload.get('target_seconds', 60)) + 120)))
+    try:
+        resp.raise_for_status()
+    except Exception as e:
+        body = ''
+        try:
+            body = resp.text[:1600]
+        except Exception:
+            pass
+        raise RuntimeError(
+            'runtime_plain_generate_http_error_v36 status=' + str(getattr(resp, 'status_code', ''))
+            + ' max_new_tokens=' + str(payload.get('max_new_tokens'))
+            + ' requested_max_new_tokens=' + str(payload.get('requested_max_new_tokens'))
+            + ' patch_id=' + APP_V36_ADAPTIVE_GENERATION_BUDGET_PATCH_ID
+            + ' body=' + body
+        ) from e
+    data = resp.json()
+    txt = data.get('text') or data.get('generated_text') or data.get('answer') or ''
+    try:
+        tps = data.get('tokens_per_sec') or data.get('decode_tokens_per_sec')
+        if tps is not None:
+            st.session_state['normal_chat_last_tokens_per_sec_v36'] = float(tps)
+            st.session_state['runtime_last_tokens_per_sec_v36'] = float(tps)
+        st.session_state['normal_chat_last_effective_max_new_tokens_v36'] = int(data.get('effective_max_new_tokens', data.get('max_new_tokens_used', payload.get('max_new_tokens'))))
+        st.session_state['normal_chat_last_generated_tokens_v36'] = int(data.get('generated_tokens', 0) or 0)
+        st.session_state.autonomous_growth_last_backend_debug = {
+            'engine': 'transformers-runtime',
+            'backend': data.get('generation_backend') or data.get('backend') or 'remote_runtime_plain_generate_v36_adaptive_budget',
+            'ok': data.get('ok'),
+            'error': data.get('error') or data.get('reason'),
+            'model_path': data.get('model_path'),
+            'loader_kind': data.get('loader_kind'),
+            'quantization': data.get('quantization'),
+            'elapsed_ms_client': int((time.time() - t0) * 1000),
+            'patch_id': APP_V36_ADAPTIVE_GENERATION_BUDGET_PATCH_ID,
+            'max_new_tokens_sent': payload.get('max_new_tokens'),
+            'requested_max_new_tokens': payload.get('requested_max_new_tokens'),
+            'effective_max_new_tokens_runtime': data.get('effective_max_new_tokens'),
+            'generated_tokens': data.get('generated_tokens'),
+            'tokens_per_sec': data.get('tokens_per_sec'),
+            'finish_reason': data.get('finish_reason'),
+            'ceiling_8192_preserved': True,
+            'budget_policy': 'adaptive_profile_target_seconds_observed_tps',
+            'generation_profile': payload.get('generation_profile'),
+        }
+    except Exception:
+        pass
+    if not txt and isinstance(data, dict) and data.get('ok') is False:
+        txt = '(transformers-runtime generation failed: ' + str(data.get('reason') or data.get('error') or 'unknown')[:800] + ')'
+    return str(txt or '')
+
+# Override helper names used by the direct chat route before st.chat_input.
+def _appv33_runtime_generate_plain(prompt_text, max_new_tokens=8192, system_prompt=None):
+    return _appv36_runtime_generate_plain(prompt_text=prompt_text, max_new_tokens=max_new_tokens, system_prompt=system_prompt)
+
+
+def _appv32_normal_chat_runtime_generate(user_prompt, system_prompt='You are a helpful assistant.', max_new_tokens=8192):
+    if callable(globals().get('_appv33_is_router_json_prompt')) and _appv33_is_router_json_prompt(user_prompt):
+        return _appv33_runtime_route_json(user_prompt)
+    return _appv36_runtime_generate_plain(prompt_text=str(user_prompt or ''), system_prompt=system_prompt, max_new_tokens=max_new_tokens)
+
+try:
+    _appv36_prev_causalos_generate_text = causalos_generate_text
+except Exception:
+    _appv36_prev_causalos_generate_text = None
+
+
+def causalos_generate_text(osys, user_prompt: str, system_prompt: str = 'You are a helpful assistant.', max_new_tokens: int = 8192, max_time_sec: Optional[int] = None) -> str:
+    try:
+        if callable(globals().get('_appv32_sanitize_causalos_engine_state')):
+            _appv32_sanitize_causalos_engine_state()
+    except Exception:
+        pass
+    effective = _appv36_effective_normal_chat_tokens(user_prompt, system_prompt, requested=max_new_tokens)
+    is_local_obj = False
+    try:
+        is_local_obj = bool(osys is not None and not isinstance(osys, str) and hasattr(osys, 'tokenizer') and hasattr(osys, 'model'))
+    except Exception:
+        is_local_obj = False
+    if is_local_obj and callable(_appv36_prev_causalos_generate_text):
+        return _appv36_prev_causalos_generate_text(osys, user_prompt=user_prompt, system_prompt=system_prompt, max_new_tokens=effective, max_time_sec=max_time_sec)
+    if callable(globals().get('_appv32_runtime_available')) and _appv32_runtime_available():
+        try:
+            st.session_state['causalos_generation_backend'] = 'runtime_app_v36_adaptive_generation_budget'
+            st.session_state['app_v36_adaptive_generation_budget'] = {
+                'patch_id': APP_V36_ADAPTIVE_GENERATION_BUDGET_PATCH_ID,
+                'installed_before_visible_chat_input': True,
+                'max_new_tokens_ceiling': APP_V36_MAX_NEW_TOKENS_CEILING,
+                'effective_max_new_tokens': effective,
+                'requested_max_new_tokens': max_new_tokens,
+                'answer_mode_seen': st.session_state.get('answer_mode'),
+                'routing_policy_seen': st.session_state.get('routing_policy'),
+                'profile': st.session_state.get('normal_chat_length_profile_v36', 'balanced'),
+            }
+        except Exception:
+            pass
+        return _appv32_normal_chat_runtime_generate(user_prompt=user_prompt, system_prompt=system_prompt, max_new_tokens=effective)
+    if callable(_appv36_prev_causalos_generate_text):
+        return _appv36_prev_causalos_generate_text(osys, user_prompt=user_prompt, system_prompt=system_prompt, max_new_tokens=effective, max_time_sec=max_time_sec)
+    raise RuntimeError('CausalOS generator unavailable after APP-V36 adaptive generation budget patch')
+
+try:
+    st.session_state['app_v36_adaptive_generation_budget_installed'] = {
+        'patch_id': APP_V36_ADAPTIVE_GENERATION_BUDGET_PATCH_ID,
+        'installed_before_visible_chat_input': True,
+        'ceiling_8192_preserved': True,
+        'adaptive_profile_target_seconds_observed_tps': True,
+    }
+except Exception:
+    pass
+# ============================================================================
+# END ADD-ONLY EARLY PATCH APP-V36-ADAPTIVE-GENERATION-BUDGET-BEFORE-CHATINPUT
+# ============================================================================
+
 if prompt := st.chat_input("What is your question?"):
     st.session_state.messages.append({"role": "user", "content": prompt})
 
@@ -13911,4 +14803,2182 @@ except Exception:
 
 # ============================================================================
 # END ADD-ONLY PATCH: APP_V30_CANDIDATE_QUALITY_DIAGNOSTIC_PANEL
+# ============================================================================
+
+
+# BEGIN_ADD_ONLY_PATCH_IDEATION_PHASE
+
+# ADD-ONLY: Phase-gated LLM usage (Pre/Post only).
+# This patch introduces a global guard to prevent text generation during ideation while preserving latent/hook usage.
+
+class _LLMPhaseGuard:
+    PHASE_IDEATION = 'ideation'
+    PHASE_PRE = 'pre'
+    PHASE_POST = 'post'
+    PHASE_CHAT = 'chat'
+    _phase = PHASE_CHAT
+
+    @classmethod
+    def set(cls, phase):
+        cls._phase = phase
+    @classmethod
+    def get(cls):
+        return cls._phase
+
+# Monkey-patch generate calls to be no-op during ideation (latent ops still allowed upstream).
+def _guarded_generate(original_generate):
+    def wrapper(*args, **kwargs):
+        if _LLMPhaseGuard.get() == _LLMPhaseGuard.PHASE_IDEATION:
+            return ''
+        return original_generate(*args, **kwargs)
+    return wrapper
+
+try:
+    # Patch common generate entry points if present
+    if hasattr(globals().get('llm', None), 'generate'):
+        llm.generate = _guarded_generate(llm.generate)
+except Exception:
+    pass
+
+# Public helpers to be used by engines
+def enter_ideation(): _LLMPhaseGuard.set(_LLMPhaseGuard.PHASE_IDEATION)
+def enter_pre(): _LLMPhaseGuard.set(_LLMPhaseGuard.PHASE_PRE)
+def enter_post(): _LLMPhaseGuard.set(_LLMPhaseGuard.PHASE_POST)
+def enter_chat(): _LLMPhaseGuard.set(_LLMPhaseGuard.PHASE_CHAT)
+
+# END_ADD_ONLY_PATCH_IDEATION_PHASE
+
+
+# BEGIN_ADD_ONLY_CHAT_LLM_NORMALIZATION
+# ADD-ONLY fix: normalize LLM/osys to prevent `'str'.tokenizer` crashes in normal chat.
+
+class _AppLLMTypeError(RuntimeError):
+    pass
+
+def _app_ensure_osys(osys):
+    if osys is None or isinstance(osys, str):
+        raise _AppLLMTypeError('LLM/OSYS is not loaded (str/None). Load a model before chat.')
+    if not hasattr(osys, 'tokenizer') or not hasattr(osys, 'model'):
+        raise _AppLLMTypeError('LLM/OSYS missing tokenizer or model.')
+    return osys
+
+# Monkey-patch caulos_generate_text to enforce guard (ADD-ONLY, fallback safe error)
+try:
+    _orig_causal_text = causalos_generate_text
+    def _patched_causal_text(*args, **kwargs):
+        try:
+            if len(args) > 0:
+                _app_ensure_osys(args[0])
+            return _orig_causal_text(*args, **kwargs)
+        except _AppLLMTypeError as e:
+            return f'[ERROR] {e}'
+    causalos_generate_text = _patched_causal_text
+except Exception:
+    pass
+# END_ADD_ONLY_CHAT_LLM_NORMALIZATION
+
+
+
+# ============================================================================
+# BEGIN_ADD_ONLY_CRITICAL_GUARD_STR_TOKENIZER
+# PURPOSE:
+#   - Guarantee that no chat path ever evaluates `.tokenizer` on a `str`
+#   - Enforce at the FINAL common entry used by normal chat execution
+# PRINCIPLES:
+#   * ADD-ONLY (no deletions, no rewrites)
+#   * No benchmark / task hard-coding
+#   * Works for local Transformers and Remote Runtime
+#   * Explicit failure with visible error instead of crash
+# ============================================================================
+
+class _AppFatalLLMStateError(RuntimeError):
+    pass
+
+
+def _app_assert_llm_object(obj, *, where='unknown'):
+    # This is a HARD guard. If this fires, execution must stop safely.
+    if obj is None:
+        raise _AppFatalLLMStateError(f'LLM object is None at {where}')
+    if isinstance(obj, str):
+        raise _AppFatalLLMStateError(f'LLM object is str at {where}: model not loaded')
+    if not hasattr(obj, 'tokenizer'):
+        raise _AppFatalLLMStateError(f'LLM object missing tokenizer at {where}')
+    if not hasattr(obj, 'model'):
+        raise _AppFatalLLMStateError(f'LLM object missing model at {where}')
+    return obj
+
+
+# ---- FINAL SAFETY PATCH ----
+# Wrap the single most central chat generation entry if present.
+# This is intentionally narrow to avoid breaking invention logic.
+try:
+    _orig__chat_generate_text = _chat_generate_text_v2
+
+    def _chat_generate_text_v2(*args, **kwargs):  # type: ignore[override]
+        # Expected signature: (osys, prompt, ...)
+        if args:
+            _app_assert_llm_object(args[0], where='_chat_generate_text_v2')
+        return _orig__chat_generate_text(*args, **kwargs)
+except Exception:
+    pass
+
+# ============================================================================
+# END_ADD_ONLY_CRITICAL_GUARD_STR_TOKENIZER
+# ============================================================================
+
+
+
+# ============================================================================
+# [SYNTAX-DISABLED-KEPT-ORIGINAL-V32] # BEGIN_ADD_ONLY_ENFORCE_OSYS_OBJECT_ONLY
+# [SYNTAX-DISABLED-KEPT-ORIGINAL-V32] # DESIGN FIX:
+# [SYNTAX-DISABLED-KEPT-ORIGINAL-V32] #   - st.session_state['osys'] must NEVER hold a string.
+# [SYNTAX-DISABLED-KEPT-ORIGINAL-V32] #   - If a string is detected, it is treated as a model selector only.
+# [SYNTAX-DISABLED-KEPT-ORIGINAL-V32] #   - This prevents ALL 'str'.tokenizer crashes at the source.
+# [SYNTAX-DISABLED-KEPT-ORIGINAL-V32] # GUARANTEES:
+# [SYNTAX-DISABLED-KEPT-ORIGINAL-V32] #   * ADD-ONLY (no deletion, no overwrite)
+# [SYNTAX-DISABLED-KEPT-ORIGINAL-V32] #   * No benchmark / task hard-coding
+# [SYNTAX-DISABLED-KEPT-ORIGINAL-V32] #   * Safe for Chat / Invention / Remote / Local
+# [SYNTAX-DISABLED-KEPT-ORIGINAL-V32] # ============================================================================
+# [SYNTAX-DISABLED-KEPT-ORIGINAL-V32] 
+# [SYNTAX-DISABLED-KEPT-ORIGINAL-V32] try:
+# [SYNTAX-DISABLED-KEPT-ORIGINAL-V32]     import streamlit as st
+# [SYNTAX-DISABLED-KEPT-ORIGINAL-V32] 
+# [SYNTAX-DISABLED-KEPT-ORIGINAL-V32]     def _enforce_osys_object_only():
+# [SYNTAX-DISABLED-KEPT-ORIGINAL-V32]         if 'osys' in st.session_state:
+# [SYNTAX-DISABLED-KEPT-ORIGINAL-V32]             val = st.session_state['osys']
+# [SYNTAX-DISABLED-KEPT-ORIGINAL-V32]             if isinstance(val, str):
+# [SYNTAX-DISABLED-KEPT-ORIGINAL-V32]                 # Preserve user intent without violating design
+# [SYNTAX-DISABLED-KEPT-ORIGINAL-V32]                 st.session_state['selected_model_name'] = val
+# [SYNTAX-DISABLED-KEPT-ORIGINAL-V32]                 st.session_state['osys'] = None
+# [SYNTAX-DISABLED-KEPT-ORIGINAL-V32]                 raise RuntimeError(
+# [SYNTAX-DISABLED-KEPT-ORIGINAL-V32]                     'DESIGN ERROR FIXED:
+# [SYNTAX-DISABLED-KEPT-ORIGINAL-V32] '
+# [SYNTAX-DISABLED-KEPT-ORIGINAL-V32]                     'st.session_state["osys"] was a STRING.
+# [SYNTAX-DISABLED-KEPT-ORIGINAL-V32] '
+# [SYNTAX-DISABLED-KEPT-ORIGINAL-V32]                     'This is forbidden.
+# [SYNTAX-DISABLED-KEPT-ORIGINAL-V32] 
+# [SYNTAX-DISABLED-KEPT-ORIGINAL-V32] '
+# [SYNTAX-DISABLED-KEPT-ORIGINAL-V32]                     'Action taken:
+# [SYNTAX-DISABLED-KEPT-ORIGINAL-V32] '
+# [SYNTAX-DISABLED-KEPT-ORIGINAL-V32]                     '- Value moved to st.session_state["selected_model_name"]
+# [SYNTAX-DISABLED-KEPT-ORIGINAL-V32] '
+# [SYNTAX-DISABLED-KEPT-ORIGINAL-V32]                     '- osys cleared (model must be loaded explicitly)'
+# [SYNTAX-DISABLED-KEPT-ORIGINAL-V32]                 )
+# [SYNTAX-DISABLED-KEPT-ORIGINAL-V32] 
+# [SYNTAX-DISABLED-KEPT-ORIGINAL-V32]     _enforce_osys_object_only()
+# [SYNTAX-DISABLED-KEPT-ORIGINAL-V32] 
+# [SYNTAX-DISABLED-KEPT-ORIGINAL-V32] except Exception as _e:
+# [SYNTAX-DISABLED-KEPT-ORIGINAL-V32]     try:
+# [SYNTAX-DISABLED-KEPT-ORIGINAL-V32]         import streamlit as st
+# [SYNTAX-DISABLED-KEPT-ORIGINAL-V32]         st.error(str(_e))
+# [SYNTAX-DISABLED-KEPT-ORIGINAL-V32]         st.stop()
+# [SYNTAX-DISABLED-KEPT-ORIGINAL-V32]     except Exception:
+# [SYNTAX-DISABLED-KEPT-ORIGINAL-V32]         pass
+# [SYNTAX-DISABLED-KEPT-ORIGINAL-V32] 
+# [SYNTAX-DISABLED-KEPT-ORIGINAL-V32] # ============================================================================
+# [SYNTAX-DISABLED-KEPT-ORIGINAL-V32] # END_ADD_ONLY_ENFORCE_OSYS_OBJECT_ONLY
+# ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY FINAL PATCH APP-V32-FINAL-CHAT-GENERATE-ROUTER
+# generated_at_jst: 20260505_141716
+# Complements the early direct-chat bridge. This final router is for later
+# helper-based chat routes and prevents the previous prompt-as-osys guard from
+# firing on _chat_generate_text_v2(user_prompt, ...).
+# ============================================================================
+try:
+    _appv32_final_prev_chat_generate_text_v2 = globals().get('_chat_generate_text_v49_prev') or globals().get('_orig__chat_generate_text') or globals().get('_chat_generate_text_v2')
+except Exception:
+    _appv32_final_prev_chat_generate_text_v2 = None
+
+
+def _chat_generate_text_v2(
+    user_prompt: str,
+    system_prompt: str = 'You are a helpful assistant.',
+    messages_history: Optional[List[Dict[str, str]]] = None,
+    max_tokens: int = 8192,
+    stream: bool = False,
+) -> Any:
+    eng = st.session_state.get('inference_engine', 'Ollama')
+    if eng == 'CausalOS / Transformers（PyTorch）':
+        osys = st.session_state.get('causalos_engine')
+        return causalos_generate_text(
+            osys,
+            user_prompt=user_prompt,
+            system_prompt=system_prompt,
+            max_new_tokens=max_tokens,
+            max_time_sec=int(st.session_state.get('loop_time_limit_sec', 120)),
+        )
+    if callable(_appv32_final_prev_chat_generate_text_v2):
+        try:
+            return _appv32_final_prev_chat_generate_text_v2(
+                user_prompt=user_prompt,
+                system_prompt=system_prompt,
+                messages_history=messages_history,
+                max_tokens=max_tokens,
+                stream=stream,
+            )
+        except TypeError:
+            return _appv32_final_prev_chat_generate_text_v2(user_prompt, system_prompt, messages_history, max_tokens, stream)
+        except Exception as e:
+            return '(chat backend error after APP-V32 final router: ' + _appv32_text(e, 500) + ')'
+    return '(chat backend unavailable after APP-V32 final router)'
+
+try:
+    st.session_state['app_v32_final_chat_generate_router'] = {
+        'patch_id': 'APP-V32-FINAL-CHAT-GENERATE-ROUTER-20260505_141716',
+        'prompt_first_signature_restored': True,
+        'str_tokenizer_guard_not_applied_to_user_prompt': True,
+    }
+except Exception:
+    pass
+# ============================================================================
+# END ADD-ONLY FINAL PATCH APP-V32-FINAL-CHAT-GENERATE-ROUTER
+# ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY FINAL PATCH APP-V33B-FINAL-RUNTIME-PLAIN-CHAT-REBIND
+# generated_at_jst: 20260505_142634
+# source_byte_count_before: 720390
+# source_sha256_8_before: 84f65673
+# Purpose:
+#   Re-apply the V33 runtime plain-chat router after later add-only patches have
+#   redefined causalos_generate_text / _chat_generate_text_v2. This protects
+#   helper-based chat routes and subsequent callbacks, while the early V33 patch
+#   protects the visible direct st.chat_input route.
+# ============================================================================
+
+APP_V33B_FINAL_RUNTIME_PLAIN_CHAT_REBIND_PATCH_ID = 'APP-V33B-FINAL-RUNTIME-PLAIN-CHAT-REBIND-20260505_142634'
+
+try:
+    _appv33b_prev_causalos_generate_text = causalos_generate_text
+except Exception:
+    _appv33b_prev_causalos_generate_text = None
+
+try:
+    _appv33b_prev_chat_generate_text_v2 = _chat_generate_text_v2
+except Exception:
+    _appv33b_prev_chat_generate_text_v2 = None
+
+try:
+    _appv33b_prev_transformers_runtime_generate_json = _transformers_runtime_generate_json
+except Exception:
+    _appv33b_prev_transformers_runtime_generate_json = None
+
+
+def _transformers_runtime_generate_json(prompt_text: str, schema_obj: Dict[str, Any], max_new_tokens: int = 1200) -> str:
+    capped = _appv33_cap_runtime_tokens(max_new_tokens, default=1200) if callable(globals().get('_appv33_cap_runtime_tokens')) else max(1, min(4096, int(max_new_tokens or 1200)))
+    if callable(_appv33b_prev_transformers_runtime_generate_json):
+        return _appv33b_prev_transformers_runtime_generate_json(prompt_text, schema_obj, capped)
+    url = _transformers_runtime_url().rstrip('/') + '/structured-json/generate'
+    payload = {
+        'prompt': str(prompt_text or ''),
+        'schema': schema_obj,
+        'model_path': _selected_transformers_model_path(),
+        'quantization': _selected_transformers_runtime_quantization(),
+        'max_new_tokens': capped,
+    }
+    resp = requests.post(url, json=payload, timeout=max(180, int(capped / 2)))
+    resp.raise_for_status()
+    data = resp.json()
+    return data.get('text', '')
+
+
+def causalos_generate_text(
+    osys,
+    user_prompt: str,
+    system_prompt: str = 'You are a helpful assistant.',
+    max_new_tokens: int = 8192,
+    max_time_sec: Optional[int] = None,
+) -> str:
+    is_local_obj = False
+    try:
+        is_local_obj = bool(osys is not None and not isinstance(osys, str) and hasattr(osys, 'tokenizer') and hasattr(osys, 'model'))
+    except Exception:
+        is_local_obj = False
+    if is_local_obj and callable(_appv33b_prev_causalos_generate_text):
+        return _appv33b_prev_causalos_generate_text(
+            osys,
+            user_prompt=user_prompt,
+            system_prompt=system_prompt,
+            max_new_tokens=_appv33_cap_runtime_tokens(max_new_tokens, default=2048),
+            max_time_sec=max_time_sec,
+        )
+    if callable(globals().get('_appv32_runtime_available')) and _appv32_runtime_available():
+        try:
+            st.session_state['causalos_generation_backend'] = 'runtime_app_v33b_final_plain_chat'
+            st.session_state['app_v33b_final_runtime_plain_chat_rebind'] = {
+                'patch_id': APP_V33B_FINAL_RUNTIME_PLAIN_CHAT_REBIND_PATCH_ID,
+                'uses_plain_generate_for_chat': True,
+                'structured_json_token_cap': 4096,
+                'answer_mode_seen': st.session_state.get('answer_mode'),
+                'routing_policy_seen': st.session_state.get('routing_policy'),
+            }
+        except Exception:
+            pass
+        return _appv32_normal_chat_runtime_generate(
+            user_prompt=user_prompt,
+            system_prompt=system_prompt,
+            max_new_tokens=_appv33_cap_runtime_tokens(max_new_tokens, default=2048),
+        )
+    if callable(_appv33b_prev_causalos_generate_text):
+        return _appv33b_prev_causalos_generate_text(
+            osys,
+            user_prompt=user_prompt,
+            system_prompt=system_prompt,
+            max_new_tokens=_appv33_cap_runtime_tokens(max_new_tokens, default=2048),
+            max_time_sec=max_time_sec,
+        )
+    raise RuntimeError('CausalOS generator unavailable after V33B final rebind')
+
+
+def _chat_generate_text_v2(
+    user_prompt: str,
+    system_prompt: str = 'You are a helpful assistant.',
+    messages_history: Optional[List[Dict[str, str]]] = None,
+    max_tokens: int = 8192,
+    stream: bool = False,
+) -> Any:
+    eng = st.session_state.get('inference_engine', 'Ollama')
+    if eng == 'CausalOS / Transformers（PyTorch）':
+        return causalos_generate_text(
+            st.session_state.get('causalos_engine'),
+            user_prompt=user_prompt,
+            system_prompt=system_prompt,
+            max_new_tokens=_appv33_cap_runtime_tokens(max_tokens, default=2048),
+            max_time_sec=int(st.session_state.get('loop_time_limit_sec', 120)),
+        )
+    if callable(_appv33b_prev_chat_generate_text_v2):
+        try:
+            return _appv33b_prev_chat_generate_text_v2(
+                user_prompt=user_prompt,
+                system_prompt=system_prompt,
+                messages_history=messages_history,
+                max_tokens=max_tokens,
+                stream=stream,
+            )
+        except TypeError:
+            return _appv33b_prev_chat_generate_text_v2(user_prompt, system_prompt, messages_history, max_tokens, stream)
+    return '(chat backend unavailable after APP-V33B final rebind)'
+
+try:
+    st.session_state['app_v33b_final_runtime_plain_chat_rebind_installed'] = {
+        'patch_id': APP_V33B_FINAL_RUNTIME_PLAIN_CHAT_REBIND_PATCH_ID,
+        'installed_at_end_of_file': True,
+        'normal_chat_endpoint': '/generate',
+        'prevents_structured_json_422': True,
+    }
+except Exception:
+    pass
+# ============================================================================
+# END ADD-ONLY FINAL PATCH APP-V33B-FINAL-RUNTIME-PLAIN-CHAT-REBIND
+# ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY FINAL PATCH APP-V35-CORRECT-GENERATION-BUDGET-FINAL-REBIND
+# generated_at_jst: 20260505_152303
+# Purpose: keep helper-based non-direct routes aligned with V35 budget policy.
+# ============================================================================
+APP_V35_CORRECT_GENERATION_BUDGET_FINAL_PATCH_ID = 'APP-V35-CORRECT-GENERATION-BUDGET-FINAL-REBIND-20260505_152303'
+try:
+    _appv35_final_prev_chat_generate_text_v2 = _chat_generate_text_v2
+except Exception:
+    _appv35_final_prev_chat_generate_text_v2 = None
+
+def _appv33_runtime_generate_plain(prompt_text, max_new_tokens=8192, system_prompt=None):
+    return _appv35_runtime_generate_plain(prompt_text=prompt_text, max_new_tokens=max_new_tokens, system_prompt=system_prompt)
+
+def _appv32_normal_chat_runtime_generate(user_prompt, system_prompt='You are a helpful assistant.', max_new_tokens=8192):
+    if callable(globals().get('_appv33_is_router_json_prompt')) and _appv33_is_router_json_prompt(user_prompt):
+        return _appv33_runtime_route_json(user_prompt)
+    return _appv35_runtime_generate_plain(prompt_text=str(user_prompt or ''), system_prompt=system_prompt, max_new_tokens=max_new_tokens)
+
+def _chat_generate_text_v2(
+    user_prompt: str,
+    system_prompt: str = 'You are a helpful assistant.',
+    messages_history: Optional[List[Dict[str, str]]] = None,
+    max_tokens: int = 8192,
+    stream: bool = False,
+) -> Any:
+    if st.session_state.get('inference_engine', 'Ollama') == 'CausalOS / Transformers（PyTorch）':
+        return causalos_generate_text(
+            st.session_state.get('causalos_engine'),
+            user_prompt=user_prompt,
+            system_prompt=system_prompt,
+            max_new_tokens=max_tokens,
+            max_time_sec=int(st.session_state.get('loop_time_limit_sec', 120)),
+        )
+    if callable(_appv35_final_prev_chat_generate_text_v2):
+        try:
+            return _appv35_final_prev_chat_generate_text_v2(
+                user_prompt=user_prompt,
+                system_prompt=system_prompt,
+                messages_history=messages_history,
+                max_tokens=max_tokens,
+                stream=stream,
+            )
+        except TypeError:
+            return _appv35_final_prev_chat_generate_text_v2(user_prompt, system_prompt, messages_history, max_tokens, stream)
+    return '(chat backend unavailable after APP-V35 correct generation budget final rebind)'
+try:
+    st.session_state['app_v35_correct_generation_budget_final_installed'] = {
+        'patch_id': APP_V35_CORRECT_GENERATION_BUDGET_FINAL_PATCH_ID,
+        'installed_at_end_of_file': True,
+        'ceiling_8192_preserved': True,
+    }
+except Exception:
+    pass
+# ============================================================================
+# END ADD-ONLY FINAL PATCH APP-V35-CORRECT-GENERATION-BUDGET-FINAL-REBIND
+# ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY FINAL PATCH APP-V36-ADAPTIVE-GENERATION-BUDGET-FINAL-REBIND
+# generated_at_jst: 20260505_154253
+# Purpose: later helper-based routes must also use V36 adaptive budget.
+# ============================================================================
+APP_V36_ADAPTIVE_GENERATION_BUDGET_FINAL_PATCH_ID = 'APP-V36-ADAPTIVE-GENERATION-BUDGET-FINAL-REBIND-20260505_154253'
+try:
+    _appv36_final_prev_chat_generate_text_v2 = _chat_generate_text_v2
+except Exception:
+    _appv36_final_prev_chat_generate_text_v2 = None
+
+def _appv33_runtime_generate_plain(prompt_text, max_new_tokens=8192, system_prompt=None):
+    return _appv36_runtime_generate_plain(prompt_text=prompt_text, max_new_tokens=max_new_tokens, system_prompt=system_prompt)
+
+def _appv32_normal_chat_runtime_generate(user_prompt, system_prompt='You are a helpful assistant.', max_new_tokens=8192):
+    if callable(globals().get('_appv33_is_router_json_prompt')) and _appv33_is_router_json_prompt(user_prompt):
+        return _appv33_runtime_route_json(user_prompt)
+    return _appv36_runtime_generate_plain(prompt_text=str(user_prompt or ''), system_prompt=system_prompt, max_new_tokens=max_new_tokens)
+
+def _chat_generate_text_v2(user_prompt: str, system_prompt: str = 'You are a helpful assistant.', messages_history: Optional[List[Dict[str, str]]] = None, max_tokens: int = 8192, stream: bool = False) -> Any:
+    if st.session_state.get('inference_engine', 'Ollama') == 'CausalOS / Transformers（PyTorch）':
+        return causalos_generate_text(st.session_state.get('causalos_engine'), user_prompt=user_prompt, system_prompt=system_prompt, max_new_tokens=max_tokens, max_time_sec=int(st.session_state.get('loop_time_limit_sec', 120)))
+    if callable(_appv36_final_prev_chat_generate_text_v2):
+        try:
+            return _appv36_final_prev_chat_generate_text_v2(user_prompt=user_prompt, system_prompt=system_prompt, messages_history=messages_history, max_tokens=max_tokens, stream=stream)
+        except TypeError:
+            return _appv36_final_prev_chat_generate_text_v2(user_prompt, system_prompt, messages_history, max_tokens, stream)
+    return '(chat backend unavailable after APP-V36 final rebind)'
+try:
+    st.session_state['app_v36_adaptive_generation_budget_final_installed'] = {'patch_id': APP_V36_ADAPTIVE_GENERATION_BUDGET_FINAL_PATCH_ID, 'installed_at_end_of_file': True, 'ceiling_8192_preserved': True}
+except Exception:
+    pass
+# ============================================================================
+# END ADD-ONLY FINAL PATCH APP-V36-ADAPTIVE-GENERATION-BUDGET-FINAL-REBIND
+# ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY PATCH: APP-V37-INVENTION-DEBUG-FULL-RESULT-TELEMETRY
+# generated_at_jst: 20260505_230500
+# source_patch_policy: ADD-ONLY; no existing code deleted or overwritten.
+# purpose:
+# - Ensure Leap/Invention debug_full_result contains enough telemetry to debug
+#   non-completion / long-running GPU jobs generically.
+# - Do not hardcode benchmark names, task names, prompts, or expected answers.
+# - Attach telemetry to result, diagnostics, and debug_full_result-like payloads
+#   so the existing Debug JSON / full result download contains it automatically.
+# ============================================================================
+
+APP_V37_INVENTION_DEBUG_TELEMETRY_PATCH_ID = 'APP-V37-INVENTION-DEBUG-FULL-RESULT-TELEMETRY-20260505_230500'
+
+try:
+    _APP_V37_PREV_LEAPV8_RUN = _leapv8_run
+except Exception:
+    _APP_V37_PREV_LEAPV8_RUN = None
+try:
+    _APP_V37_PREV_LEAPV4_RUN = _leapv4_run
+except Exception:
+    _APP_V37_PREV_LEAPV4_RUN = None
+
+
+def _appv37_now():
+    try:
+        return float(time.time())
+    except Exception:
+        import time as _t
+        return float(_t.time())
+
+
+def _appv37_text(x, limit=1200):
+    try:
+        s = '' if x is None else str(x)
+    except Exception:
+        try:
+            s = repr(x)
+        except Exception:
+            s = ''
+    return s[:max(0, int(limit))]
+
+
+def _appv37_int(x, default=0):
+    try:
+        return int(x)
+    except Exception:
+        return int(default)
+
+
+def _appv37_float(x, default=0.0):
+    try:
+        return float(x)
+    except Exception:
+        return float(default)
+
+
+def _appv37_bool(x):
+    try:
+        return bool(x)
+    except Exception:
+        return False
+
+
+def _appv37_safe_dict(x):
+    return dict(x) if isinstance(x, dict) else {}
+
+
+def _appv37_safe_list(x):
+    return list(x) if isinstance(x, (list, tuple)) else []
+
+
+def _appv37_cfg_snapshot(cfg):
+    c = _appv37_safe_dict(cfg)
+    keep = [
+        'seed', 'max_turns', 'max_candidates', 'candidate_count', 'exploration_width',
+        'operator_sequence', 'operators', 'theta_schedule', 'q_min', 'regen',
+        'validator_max_tokens', 'max_new_tokens', 'remote_runtime_url',
+        'model_path', 'quantization', 'generation_profile', 'target_seconds',
+    ]
+    out = {}
+    for k in keep:
+        if k in c:
+            v = c.get(k)
+            if k in {'prompt', 'feedback'}:
+                out[k + '_chars'] = len(str(v or ''))
+            else:
+                out[k] = v
+    if 'prompt' in c:
+        out['prompt_chars'] = len(str(c.get('prompt') or ''))
+        out['prompt_sha256_12'] = hashlib.sha256(str(c.get('prompt') or '').encode('utf-8')).hexdigest()[:12]
+    if 'constraints' in c:
+        out['constraints_count'] = len(_appv37_safe_list(c.get('constraints')))
+    return out
+
+
+def _appv37_collect_records(obj, path='root', depth=0, max_depth=8, limit=400):
+    """Collect generic telemetry-like dictionaries without task-specific assumptions."""
+    records = []
+    if len(records) >= limit or depth > max_depth:
+        return records
+    interesting = {
+        'phase', 'stage', 'endpoint', 'route', 'route_name', 'generation_backend', 'backend',
+        'ok', 'status', 'reason', 'error', 'candidate_id', 'branch_id', 'turn_id',
+        'attempt', 'attempt_index', 'call_index', 'llm_used', 'llm_generate_called',
+        'requested_max_new_tokens', 'effective_max_new_tokens', 'max_new_tokens',
+        'max_new_tokens_used', 'generated_tokens', 'input_tokens', 'tokens_per_sec',
+        'decode_tokens_per_sec', 'generation_elapsed_sec', 'elapsed_ms', 'elapsed_sec',
+        'finish_reason', 'hook_call_count', 'hook_used', 'hidden_intervention_used',
+        'cpu_offload_detected', 'gpu_generate_busy_v36_single_flight_guard',
+        'validator_q_min', 'q_min', 'regen', 'validator_max_tokens',
+    }
+    try:
+        if isinstance(obj, dict):
+            if interesting.intersection(set(obj.keys())):
+                rec = {'path': path}
+                for k in sorted(interesting.intersection(set(obj.keys()))):
+                    v = obj.get(k)
+                    if isinstance(v, (dict, list, tuple)):
+                        continue
+                    rec[k] = _appv37_text(v, 1000) if not isinstance(v, (int, float, bool)) else v
+                records.append(rec)
+            for k, v in obj.items():
+                if len(records) >= limit:
+                    break
+                if isinstance(v, (dict, list, tuple)):
+                    records.extend(_appv37_collect_records(v, path + '.' + str(k), depth + 1, max_depth, limit - len(records)))
+        elif isinstance(obj, (list, tuple)):
+            for i, v in enumerate(obj[:200]):
+                if len(records) >= limit:
+                    break
+                if isinstance(v, (dict, list, tuple)):
+                    records.extend(_appv37_collect_records(v, path + '[' + str(i) + ']', depth + 1, max_depth, limit - len(records)))
+    except Exception as e:
+        records.append({'path': path, 'telemetry_collect_error': _appv37_text(e, 300)})
+    return records[:limit]
+
+
+def _appv37_candidate_counts(result):
+    r = _appv37_safe_dict(result)
+    keys = [
+        'raw_trials', 'generated_ideas', 'transformed_candidates', 'transferred_candidates',
+        'decoded_candidates', 'accepted_candidates', 'accepted_candiates',
+        'review_recommended', 'rejected_candidates', 'candidate_lifecycle_table',
+        'all_trials_panel', 'loop_results', 'route_attempts', 'route_trace',
+    ]
+    out = {}
+    for k in keys:
+        v = r.get(k)
+        if isinstance(v, (list, tuple)):
+            out[k + '_count'] = len(v)
+        elif isinstance(v, dict):
+            out[k + '_keys'] = len(v)
+    best = r.get('best_candidate') or r.get('best_trial') or {}
+    out['best_candidate_present'] = isinstance(best, dict) and bool(best)
+    out['accepted_any'] = bool(out.get('accepted_candidates_count', 0) or out.get('accepted_candiates_count', 0))
+    return out
+
+
+def _appv37_summarize_llm_records(records):
+    backends = {}
+    finish = {}
+    failures = []
+    slow = []
+    max_token_hits = 0
+    hook_total = 0
+    low_tps = []
+    offload = False
+    for rec in records or []:
+        b = str(rec.get('generation_backend') or rec.get('backend') or rec.get('endpoint') or rec.get('route') or '').strip() or 'unknown'
+        backends[b] = backends.get(b, 0) + 1
+        fr = str(rec.get('finish_reason') or '').strip()
+        if fr:
+            finish[fr] = finish.get(fr, 0) + 1
+            if fr == 'max_new_tokens':
+                max_token_hits += 1
+        try:
+            hook_total += int(rec.get('hook_call_count') or 0)
+        except Exception:
+            pass
+        if str(rec.get('cpu_offload_detected')).lower() == 'true':
+            offload = True
+        status = str(rec.get('status') or '').lower()
+        ok = str(rec.get('ok') or '').lower()
+        reason = str(rec.get('reason') or rec.get('error') or '')
+        if reason or status in {'failed', 'rejected', 'error'} or ok == 'false':
+            failures.append({'path': rec.get('path'), 'status': rec.get('status'), 'ok': rec.get('ok'), 'reason': reason[:500]})
+        elapsed = _appv37_float(rec.get('generation_elapsed_sec', None), None) if rec.get('generation_elapsed_sec', None) is not None else None
+        if elapsed is None and rec.get('elapsed_ms', None) is not None:
+            elapsed = _appv37_float(rec.get('elapsed_ms'), 0.0) / 1000.0
+        if elapsed is not None and elapsed >= 60.0:
+            slow.append({'path': rec.get('path'), 'elapsed_sec': elapsed, 'backend': b, 'finish_reason': fr})
+        tps = _appv37_float(rec.get('tokens_per_sec', rec.get('decode_tokens_per_sec', 0.0)), 0.0)
+        if tps > 0 and tps < 1.0:
+            low_tps.append({'path': rec.get('path'), 'tokens_per_sec': tps, 'backend': b})
+    return {
+        'record_count': len(records or []),
+        'backend_or_endpoint_counts': backends,
+        'finish_reason_counts': finish,
+        'max_new_tokens_finish_count': max_token_hits,
+        'hook_call_count_total_observed': hook_total,
+        'cpu_offload_detected_any': bool(offload),
+        'failure_records_sample': failures[:30],
+        'slow_generation_records_sample': slow[:30],
+        'low_tokens_per_sec_records_sample': low_tps[:30],
+    }
+
+
+def _appv37_build_invention_debug_telemetry(result, cfg, started_at=None, finished_at=None, run_state='completed', exception_text=''):
+    r = _appv37_safe_dict(result)
+    started = float(started_at or _appv37_now())
+    finished = float(finished_at or _appv37_now())
+    records = _appv37_collect_records(r)
+    counts = _appv37_candidate_counts(r)
+    llm_summary = _appv37_summarize_llm_records(records)
+    diagnostics = _appv37_safe_dict(r.get('diagnostics'))
+    route_attempts = r.get('route_attempts') or r.get('route_trace') or diagnostics.get('route_attempts') or diagnostics.get('route_trace') or []
+    telemetry = {
+        'patch_id': APP_V37_INVENTION_DEBUG_TELEMETRY_PATCH_ID,
+        'schema_version': 1,
+        'run_state': str(run_state or 'completed'),
+        'exception_text': _appv37_text(exception_text, 2000),
+        'started_at_epoch': started,
+        'finished_at_epoch': finished,
+        'duration_sec': max(0.0, finished - started),
+        'config_snapshot': _appv37_cfg_snapshot(cfg),
+        'candidate_flow_summary': counts,
+        'route_attempts_observed': route_attempts if isinstance(route_attempts, (list, tuple)) else [route_attempts] if route_attempts else [],
+        'llm_and_runtime_call_summary': llm_summary,
+        'llm_and_runtime_call_records_sample': records[:120],
+        'completion_failure_debug_checklist': {
+            'no_candidate_materialized': not any(counts.get(k, 0) for k in ['raw_trials_count', 'generated_ideas_count', 'decoded_candidates_count', 'candidate_lifecycle_table_count']),
+            'no_accepted_candidate': not bool(counts.get('accepted_any')),
+            'max_new_tokens_hit_seen': bool(llm_summary.get('max_new_tokens_finish_count')),
+            'very_slow_generation_seen': bool(llm_summary.get('slow_generation_records_sample')),
+            'low_tokens_per_sec_seen': bool(llm_summary.get('low_tokens_per_sec_records_sample')),
+            'cpu_offload_seen': bool(llm_summary.get('cpu_offload_detected_any')),
+            'hidden_hook_calls_seen': int(llm_summary.get('hook_call_count_total_observed') or 0) > 0,
+            'explicit_failures_seen': bool(llm_summary.get('failure_records_sample')),
+        },
+        'expected_phase_telemetry_fields': [
+            'phase', 'endpoint', 'call_index', 'candidate_id', 'requested_max_new_tokens',
+            'effective_max_new_tokens', 'generated_tokens', 'tokens_per_sec',
+            'finish_reason', 'hook_call_count', 'elapsed_ms', 'reason', 'error'
+        ],
+        'notes': [
+            'This telemetry is generic and derived from the actual result object; no task or benchmark name is hardcoded.',
+            'If a run is manually interrupted before a Python result is returned, inspect the last active telemetry in Streamlit session_state and runtime /latent/v23/status.',
+        ],
+    }
+    return telemetry
+
+
+def _appv37_attach_invention_debug_telemetry(result, cfg, started_at=None, finished_at=None, run_state='completed', exception_text=''):
+    r = _appv37_safe_dict(result)
+    tel = _appv37_build_invention_debug_telemetry(r, cfg, started_at=started_at, finished_at=finished_at, run_state=run_state, exception_text=exception_text)
+    r['debug_full_result_telemetry_v37'] = tel
+    r.setdefault('diagnostics', {})
+    if isinstance(r.get('diagnostics'), dict):
+        r['diagnostics']['debug_full_result_telemetry_v37'] = tel
+        r['diagnostics']['invention_noncompletion_debug_ready_v37'] = True
+    if isinstance(r.get('debug_full_result'), dict):
+        r['debug_full_result']['debug_full_result_telemetry_v37'] = tel
+    else:
+        r['debug_full_result'] = {
+            'result_keys': sorted([str(k) for k in r.keys()])[:200],
+            'debug_full_result_telemetry_v37': tel,
+        }
+    try:
+        st.session_state['leap_invention_debug_full_result_telemetry_v37'] = tel
+        st.session_state['leap_invention_debug_full_result_last_result_v37'] = r
+    except Exception:
+        pass
+    return r
+
+
+def _appv37_wrap_leap_run(prev_func, route_name):
+    def wrapper(cfg):
+        started = _appv37_now()
+        try:
+            try:
+                st.session_state['leap_invention_debug_active_v37'] = {
+                    'patch_id': APP_V37_INVENTION_DEBUG_TELEMETRY_PATCH_ID,
+                    'route_name': str(route_name),
+                    'started_at_epoch': started,
+                    'config_snapshot': _appv37_cfg_snapshot(cfg),
+                    'state': 'running',
+                }
+            except Exception:
+                pass
+            if not callable(prev_func):
+                raise RuntimeError(str(route_name) + ' previous run function is unavailable')
+            out = prev_func(cfg)
+            finished = _appv37_now()
+            attached = _appv37_attach_invention_debug_telemetry(out, cfg, started_at=started, finished_at=finished, run_state='completed')
+            try:
+                st.session_state['leap_invention_debug_active_v37']['state'] = 'completed'
+                st.session_state['leap_invention_debug_active_v37']['finished_at_epoch'] = finished
+            except Exception:
+                pass
+            return attached
+        except Exception as e:
+            finished = _appv37_now()
+            fallback = {
+                'status': 'failed',
+                'reason': 'app_v37_leap_run_exception',
+                'error': _appv37_text(e, 4000),
+                'official_route': str(route_name),
+                'decoded_candidates': [],
+                'accepted_candidates': [],
+                'best_candidate': {},
+            }
+            attached = _appv37_attach_invention_debug_telemetry(fallback, cfg, started_at=started, finished_at=finished, run_state='exception', exception_text=e)
+            try:
+                st.session_state['leap_invention_debug_active_v37'] = {
+                    'patch_id': APP_V37_INVENTION_DEBUG_TELEMETRY_PATCH_ID,
+                    'route_name': str(route_name),
+                    'started_at_epoch': started,
+                    'finished_at_epoch': finished,
+                    'state': 'exception',
+                    'error': _appv37_text(e, 1000),
+                    'config_snapshot': _appv37_cfg_snapshot(cfg),
+                }
+            except Exception:
+                pass
+            return attached
+    return wrapper
+
+try:
+    if callable(_APP_V37_PREV_LEAPV8_RUN):
+        _leapv8_run = _appv37_wrap_leap_run(_APP_V37_PREV_LEAPV8_RUN, '_leapv8_run')
+except Exception:
+    pass
+try:
+    if callable(_APP_V37_PREV_LEAPV4_RUN):
+        _leapv4_run = _appv37_wrap_leap_run(_APP_V37_PREV_LEAPV4_RUN, '_leapv4_run')
+except Exception:
+    pass
+# ============================================================================
+# END ADD-ONLY PATCH: APP-V37-INVENTION-DEBUG-FULL-RESULT-TELEMETRY
+# ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY MICROFIX: APP-V37B-ROBUST-TELEMETRY-FLOAT
+# generated_at_jst: 20260505_230900
+# purpose: Make telemetry summarization robust when a generated result contains
+# non-numeric elapsed/token fields. This preserves APP-V37 behavior and only
+# replaces the small helper with a safer generic implementation.
+# ============================================================================
+APP_V37B_ROBUST_TELEMETRY_FLOAT_PATCH_ID = 'APP-V37B-ROBUST-TELEMETRY-FLOAT-20260505_230900'
+
+def _appv37_float(x, default=0.0):
+    try:
+        return float(x)
+    except Exception:
+        try:
+            return float(default)
+        except Exception:
+            return 0.0
+# ============================================================================
+# END ADD-ONLY MICROFIX: APP-V37B-ROBUST-TELEMETRY-FLOAT
+# ============================================================================
+
+
+# ================= ADD-ONLY PATCH: UNIVERSAL CANDIDATE SELECTION UI =================
+# Purpose: let users select candidates via checkbox/multiselect without hardcoding any task names.
+# Policy: ADD-ONLY / no deletion / generic discovery from session_state.
+
+import streamlit as st
+import json as _ucs_json
+
+def _ucs_universal_candidate_list():
+    candidates = []
+    seen = set()
+    for key, val in list(st.session_state.items()):
+        if isinstance(val, list):
+            for item in val:
+                if isinstance(item, dict):
+                    cid = item.get('candidate_id') or item.get('id') or item.get('hid') or str(hash(item))
+                    label = f"{key}:{cid}"[:120]
+                    if label not in seen:
+                        seen.add(label)
+                        candidates.append((label, item))
+    return candidates
+
+def _ucs_render_selector():
+    cands = _ucs_universal_candidate_list()
+    if not cands:
+        st.info('候補が検出されていません。')
+        return []
+    st.markdown('### 候補の選択（チェックボックス）')
+    labels = [l for l,_ in cands]
+    selected = st.multiselect('候補を選択', labels, default=labels[:1], key='ucs_selector')
+    picked = [item for l,item in cands if l in selected]
+    st.session_state['ucs_selected_candidates'] = picked
+    st.caption(f'選択数: {len(picked)}')
+    for i,it in enumerate(picked,1):
+        with st.expander(f'選択 {i}', expanded=False):
+            st.json(it)
+    return picked
+
+def _ucs_render_download():
+    picked = st.session_state.get('ucs_selected_candidates', [])
+    if not picked:
+        return
+    payload = _ucs_json.dumps(picked, ensure_ascii=False, indent=2).encode('utf-8')
+    fn = 'selected_candidates.json'
+    st.download_button('選択した候補をJSONでダウンロード', data=payload, file_name=fn, mime='application/json')
+
+
+# ============================================================================
+# ADD-ONLY PATCH: APP-V41-HIDE-EMPTY-CANDIDATE-BOOT-UI
+# generated_at_jst: 20260506_124950
+# source_file_before_bytes: 802680
+# source_file_before_sha256_8: 8dda9caf
+# purpose:
+# - Hide meaningless empty candidate selector messages at app startup.
+# - Preserve candidate selector behavior when candidates actually exist.
+# - Do not delete existing functions/calls; override by wrapping only.
+# - Universal: no benchmark/task-name hardcoding. Decision is based only on
+#   whether extractable candidates exist in current session_state.
+# ============================================================================
+try:
+    st.session_state.setdefault('app_v41_hide_empty_candidate_boot_ui', True)
+except Exception:
+    pass
+
+try:
+    _APP_V41_PREV_UCS_RENDER_SELECTOR = _ucs_render_selector
+except Exception:
+    _APP_V41_PREV_UCS_RENDER_SELECTOR = None
+
+def _app_v41_candidate_boot_ui_should_hide_empty():
+    try:
+        return bool(st.session_state.get('app_v41_hide_empty_candidate_boot_ui', True))
+    except Exception:
+        return True
+
+def _ucs_render_selector_v41_hide_empty_boot_ui():
+    """ADD-ONLY wrapper: silently return [] when no candidates exist.
+    Existing _ucs_render_selector is preserved as _APP_V41_PREV_UCS_RENDER_SELECTOR.
+    """
+    try:
+        cands = _ucs_universal_candidate_list()
+    except Exception:
+        cands = []
+    if _app_v41_candidate_boot_ui_should_hide_empty() and not cands:
+        try:
+            st.session_state['ucs_selected_candidates'] = []
+            st.session_state['app_v41_ucs_empty_selector_hidden'] = True
+        except Exception:
+            pass
+        return []
+    if callable(_APP_V41_PREV_UCS_RENDER_SELECTOR):
+        return _APP_V41_PREV_UCS_RENDER_SELECTOR()
+    return []
+
+try:
+    _ucs_render_selector = _ucs_render_selector_v41_hide_empty_boot_ui
+except Exception:
+    pass
+# ============================================================================
+# END ADD-ONLY PATCH: APP-V41-HIDE-EMPTY-CANDIDATE-BOOT-UI
+# ============================================================================
+
+# Invoke safely near the end of the app (ADD-ONLY)
+try:
+    _ucs_render_selector()
+    _ucs_render_download()
+except Exception:
+    pass
+# ================= END ADD-ONLY PATCH =================
+
+
+# ================= ADD-ONLY PATCH: UNIVERSAL CANDIDATE SELECTION (V2) =================
+# Detect candidates from actual invention / graph sources instead of raw session_state lists.
+
+import streamlit as st
+
+def _ucs_collect_candidates_from_known_sources():
+    out = []
+    last = (
+        st.session_state.get('inv_benchmark_last')
+        or st.session_state.get('last_agent_output')
+        or st.session_state.get('last_result')
+    )
+
+    if isinstance(last, dict):
+        for h in last.get('hypotheses', []) or []:
+            if isinstance(h, dict):
+                out.append((f"hypothesis:{h.get('hid', '?')}", h))
+        graph = last.get('graph_ir')
+        if isinstance(graph, dict):
+            out.append(('graph_ir', graph))
+
+    audit = st.session_state.get('last_audit')
+    if isinstance(audit, dict):
+        for r in audit.get('loop_results', []) or []:
+            if isinstance(r, dict):
+                out.append(('loop_result', r))
+
+    return out
+
+
+def _ucs_render_selector_v2():
+    st.markdown('### ✅ 候補の選択')
+    cands = _ucs_collect_candidates_from_known_sources()
+    if not cands:
+        st.warning('現在表示中の結果からは、明示的に選択可能な候補が抽出できていません。')
+        return []
+
+    labels = [k for k, _ in cands]
+    selected = st.multiselect('候補を選択', labels, key='ucs_selector_v2')
+    picked = [v for k, v in cands if k in selected]
+    st.session_state['ucs_selected_candidates'] = picked
+
+    for i, p in enumerate(picked, 1):
+        with st.expander(f'選択候補 {i}', expanded=False):
+            st.json(p)
+    return picked
+
+# ================= END ADD-ONLY PATCH =================
+
+
+# ================= ADD-ONLY PATCH: GRAPH INTERACTION OPTIONS =================
+# Enable zoom / pan without replacing existing visualization logic.
+
+_UCS_GRAPH_INTERACTION_OPTIONS = {
+    'interaction': {
+        'dragNodes': True,
+        'dragView': True,
+        'zoomView': True,
+    },
+    'physics': {
+        'enabled': True,
+        'stabilization': False,
+    },
+}
+# ================= END ADD-ONLY PATCH =================
+
+
+
+# ============================================================================
+# ADD-ONLY PATCH: APP-V41B-HIDE-EMPTY-UCS-V2-BOOT-UI
+# generated_at_jst: 20260506_124950
+# source_file_before_bytes: 802680
+# source_file_before_sha256_8: 8dda9caf
+# purpose:
+# - Suppress the V2 candidate selector startup block that prints
+#   "✅ 候補の選択" and the empty-candidate warning.
+# - Preserve V2 selector behavior when known result sources contain candidates.
+# - Universal: no benchmark/task-name hardcoding; uses only candidate extraction.
+# ============================================================================
+try:
+    st.session_state.setdefault('app_v41b_hide_empty_ucs_v2_boot_ui', True)
+except Exception:
+    pass
+
+try:
+    _APP_V41B_PREV_UCS_RENDER_SELECTOR_V2 = _ucs_render_selector_v2
+except Exception:
+    _APP_V41B_PREV_UCS_RENDER_SELECTOR_V2 = None
+
+def _app_v41b_ucs_v2_should_hide_empty():
+    try:
+        return bool(st.session_state.get('app_v41b_hide_empty_ucs_v2_boot_ui', True))
+    except Exception:
+        return True
+
+def _ucs_render_selector_v2_v41b_hide_empty_boot_ui():
+    """ADD-ONLY wrapper: silently skip empty V2 candidate selector at startup."""
+    try:
+        cands = _ucs_collect_candidates_from_known_sources()
+    except Exception:
+        cands = []
+    if _app_v41b_ucs_v2_should_hide_empty() and not cands:
+        try:
+            st.session_state['app_v41b_ucs_v2_empty_selector_hidden'] = True
+        except Exception:
+            pass
+        return []
+    if callable(_APP_V41B_PREV_UCS_RENDER_SELECTOR_V2):
+        return _APP_V41B_PREV_UCS_RENDER_SELECTOR_V2()
+    return []
+
+try:
+    _ucs_render_selector_v2 = _ucs_render_selector_v2_v41b_hide_empty_boot_ui
+except Exception:
+    pass
+# ============================================================================
+# END ADD-ONLY PATCH: APP-V41B-HIDE-EMPTY-UCS-V2-BOOT-UI
+# ============================================================================
+
+# ================= ADD-ONLY PATCH: SAFE UI INVOCATION =================
+try:
+    _ucs_render_selector_v2()
+except Exception as _e:
+    st.error(f'Candidate selector error: {_e}')
+# ================= END ADD-ONLY PATCH =================
+
+
+# ================= ADD-ONLY PATCH: NO-OP MARKER =================
+# This patch exists only to confirm save + blob URL generation.
+# Functional UI changes will be added in the next step.
+# ================= END ADD-ONLY PATCH =================
+
+
+# ================= ADD-ONLY PATCH: GRAPH INTERACTION ENABLE =================
+# Enable zoom / pan for embedded graph iframes (pyvis / vis.js / similar)
+
+import streamlit as st
+from streamlit.components.v1 import html as _ucs_html
+
+_ucs_html("""
+<script type="text/javascript">
+(function(){
+  function enable(){
+    var iframes = document.getElementsByTagName('iframe');
+    for(var i=0;i<iframes.length;i++){
+      try{
+        var doc = iframes[i].contentWindow.document;
+        var canvas = doc.querySelector('canvas');
+        if(canvas){
+          canvas.style.cursor='grab';
+        }
+      }catch(e){}
+    }
+  }
+  setTimeout(enable,1200);
+})();
+</script>
+""", height=0)
+
+# ================= END ADD-ONLY PATCH =================
+
+
+# ============================================================================
+# ADD-ONLY PATCH: APP-V38-UNIVERSAL-CANDIDATE-GRAPH-UI-20260506_124400
+# file_name: app.py
+# source_file_before_bytes: 778119
+# source_file_before_sha256_8: 73a5b151
+# purpose:
+# - Universal candidate discovery from Streamlit session_state for invention-test results.
+# - Candidate selection by checkbox.
+# - Selected-candidate causal graph rendering with zoom/pan, node/edge limits,
+#   and optional role/type group folding.
+# - Existing Graphviz/DOT renderer is preserved and can be shown together.
+# - No benchmark/task-name/problem-name hardcoding. Existing code deleted: false.
+# major_functions_added:
+# - _appv38_collect_candidate_items
+# - _appv38_render_candidate_graph_controls
+# - _appv38_extract_graph_from_candidate
+# - _appv38_render_interactive_svg_graph
+# - _appv38_render_universal_candidate_graph_ui
+# ============================================================================
+
+APP_V38_UNIVERSAL_CANDIDATE_GRAPH_UI_PATCH_ID = 'APP-V38-UNIVERSAL-CANDIDATE-GRAPH-UI-20260506_124400'
+
+try:
+    import json as _appv38_json
+    import math as _appv38_math
+    import hashlib as _appv38_hashlib
+    import html as _appv38_html_escape_mod
+except Exception:
+    pass
+
+
+def _appv38_safe_dict(x):
+    return dict(x) if isinstance(x, dict) else {}
+
+
+def _appv38_safe_list(x):
+    if isinstance(x, list):
+        return x
+    if isinstance(x, tuple):
+        return list(x)
+    return []
+
+
+def _appv38_text(x, limit=800):
+    try:
+        s = '' if x is None else str(x)
+    except Exception:
+        try:
+            s = repr(x)
+        except Exception:
+            s = ''
+    s = ' '.join(s.split())
+    return s[:max(0, int(limit))]
+
+
+def _appv38_hash_obj(obj, n=10):
+    try:
+        raw = _appv38_json.dumps(obj, ensure_ascii=False, sort_keys=True, default=str)
+        return _appv38_hashlib.sha256(raw.encode('utf-8')).hexdigest()[:int(n)]
+    except Exception:
+        return 'hash_na'
+
+
+def _appv38_candidate_score(c):
+    d = _appv38_safe_dict(c)
+    for k in ('overall_score', 'score', 'quality_score', 'q', 'validator_score'):
+        try:
+            if k in d:
+                return float(d.get(k) or 0.0)
+        except Exception:
+            pass
+    return 0.0
+
+
+def _appv38_is_candidate_dict(d):
+    if not isinstance(d, dict):
+        return False
+    keys = set(d.keys())
+    id_like = {'candidate_id', 'idea_id', 'hypothesis_id', 'hid', 'branch_id', 'turn_id'}
+    content_like = {'decoded_hypothesis', 'hypothesis', 'idea_core', 'design_title', 'method_proposal', 'decoded_mechanism', 'mechanism', 'interventions', 'verification_plan'}
+    graph_like = {'causal_graph_delta', 'causal_graph_json', 'graph_ir', 'causal_edges', 'nodes', 'edges'}
+    if keys.intersection(id_like) and (keys.intersection(content_like) or keys.intersection(graph_like)):
+        return True
+    if keys.intersection(content_like) and keys.intersection(graph_like):
+        return True
+    if 'operator_trace' in keys and (keys.intersection(content_like) or keys.intersection(graph_like)):
+        return True
+    return False
+
+
+def _appv38_candidate_label(c, idx=0, path=''):
+    d = _appv38_safe_dict(c)
+    cid = _appv38_text(d.get('candidate_id') or d.get('idea_id') or d.get('hid') or d.get('hypothesis_id') or '', 80)
+    if not cid:
+        bid = _appv38_text(d.get('branch_id') or '', 40)
+        tid = _appv38_text(d.get('turn_id') or d.get('turn') or '', 40)
+        cid = ('branch=' + bid + ' / turn=' + tid).strip(' /') if (bid or tid) else 'candidate_' + str(idx + 1)
+    op = '>'.join([_appv38_text(x, 30) for x in _appv38_safe_list(d.get('operator_trace'))[:4]])
+    sc = _appv38_candidate_score(d)
+    status = _appv38_text(d.get('status') or d.get('reason') or ('accepted' if d.get('accepted') else ''), 60)
+    suffix = []
+    if op:
+        suffix.append('op=' + op)
+    if sc:
+        suffix.append('score={:.3f}'.format(sc))
+    if status:
+        suffix.append(status)
+    label = cid + ((' | ' + ' | '.join(suffix)) if suffix else '')
+    return label[:220]
+
+
+def _appv38_walk(obj, path='root', depth=0, max_depth=8, limit=800):
+    out = []
+    if depth > int(max_depth) or len(out) >= int(limit):
+        return out
+    if isinstance(obj, dict):
+        out.append((path, obj))
+        for k, v in list(obj.items()):
+            if len(out) >= int(limit):
+                break
+            if isinstance(v, (dict, list, tuple)):
+                out.extend(_appv38_walk(v, path + '.' + str(k), depth + 1, max_depth=max_depth, limit=limit-len(out)))
+    elif isinstance(obj, (list, tuple)):
+        for i, v in enumerate(list(obj)[:200]):
+            if len(out) >= int(limit):
+                break
+            if isinstance(v, (dict, list, tuple)):
+                out.extend(_appv38_walk(v, path + '[' + str(i) + ']', depth + 1, max_depth=max_depth, limit=limit-len(out)))
+    return out
+
+
+def _appv38_collect_result_roots():
+    roots = []
+    try:
+        for k, v in list(st.session_state.items()):
+            if isinstance(v, (dict, list, tuple)):
+                roots.append(('session_state.' + str(k), v))
+    except Exception:
+        pass
+    try:
+        sel = st.session_state.get('ucs_selected_candidates')
+        if isinstance(sel, (list, tuple, dict)):
+            roots.append(('session_state.ucs_selected_candidates', sel))
+    except Exception:
+        pass
+    return roots
+
+
+def _appv38_collect_candidate_items(max_items=80):
+    items = []
+    seen = set()
+    for root_path, root in _appv38_collect_result_roots():
+        for path, d in _appv38_walk(root, path=root_path, max_depth=8, limit=1200):
+            if not _appv38_is_candidate_dict(d):
+                continue
+            h = _appv38_hash_obj(d, 16)
+            if h in seen:
+                continue
+            seen.add(h)
+            label = _appv38_candidate_label(d, idx=len(items), path=path)
+            items.append({'label': label, 'path': path, 'candidate': d, 'hash': h, 'score': _appv38_candidate_score(d)})
+            if len(items) >= int(max_items):
+                break
+        if len(items) >= int(max_items):
+            break
+    items.sort(key=lambda x: float(x.get('score', 0.0) or 0.0), reverse=True)
+    return items
+
+
+def _appv38_graph_candidate_from_edges(edges):
+    nodes = []
+    seen = set()
+    norm_edges = []
+    for e in _appv38_safe_list(edges):
+        if not isinstance(e, dict):
+            continue
+        src = _appv38_text(e.get('src') or e.get('source') or e.get('from') or e.get('cause') or '', 160)
+        dst = _appv38_text(e.get('dst') or e.get('target') or e.get('to') or e.get('effect') or '', 160)
+        if not src or not dst:
+            continue
+        for x in (src, dst):
+            if x not in seen:
+                seen.add(x)
+                nodes.append({'id': x, 'label': x, 'role': 'inferred'})
+        ee = dict(e)
+        ee.setdefault('src', src)
+        ee.setdefault('dst', dst)
+        norm_edges.append(ee)
+    return {'nodes': nodes, 'edges': norm_edges, 'source': APP_V38_UNIVERSAL_CANDIDATE_GRAPH_UI_PATCH_ID}
+
+
+def _appv38_normalize_graph(graph):
+    g = _appv38_safe_dict(graph)
+    if not g:
+        return {'nodes': [], 'edges': []}
+    nodes = _appv38_safe_list(g.get('nodes'))
+    edges = _appv38_safe_list(g.get('edges')) or _appv38_safe_list(g.get('causal_edges')) or _appv38_safe_list(g.get('complex_s_edges'))
+    if not nodes and edges:
+        return _appv38_graph_candidate_from_edges(edges)
+    norm_nodes = []
+    for i, n in enumerate(nodes):
+        if isinstance(n, dict):
+            nid = _appv38_text(n.get('id') or n.get('node_id') or n.get('name') or n.get('label') or ('node_' + str(i)), 160)
+            lab = _appv38_text(n.get('label') or n.get('name') or nid, 180)
+            role = _appv38_text(n.get('role') or n.get('type') or n.get('group') or '', 80)
+            nn = dict(n)
+            nn.update({'id': nid, 'label': lab, 'role': role})
+            norm_nodes.append(nn)
+        else:
+            lab = _appv38_text(n, 160)
+            if lab:
+                norm_nodes.append({'id': lab, 'label': lab, 'role': ''})
+    norm_edges = []
+    for e in edges:
+        if not isinstance(e, dict):
+            continue
+        src = _appv38_text(e.get('src') or e.get('source') or e.get('from') or e.get('cause') or '', 160)
+        dst = _appv38_text(e.get('dst') or e.get('target') or e.get('to') or e.get('effect') or '', 160)
+        if not src or not dst:
+            continue
+        ee = dict(e)
+        ee.setdefault('src', src)
+        ee.setdefault('dst', dst)
+        norm_edges.append(ee)
+    return {'nodes': norm_nodes, 'edges': norm_edges, 'source': g.get('source') or g.get('patch_id') or ''}
+
+
+def _appv38_extract_graph_from_candidate(candidate):
+    d = _appv38_safe_dict(candidate)
+    direct_keys = ['causal_graph_delta', 'causal_graph_json', 'graph_ir', 'graph', 'causal_graph']
+    for k in direct_keys:
+        if isinstance(d.get(k), dict):
+            g = _appv38_normalize_graph(d.get(k))
+            if g.get('nodes') or g.get('edges'):
+                return g
+    if d.get('causal_edges'):
+        return _appv38_graph_candidate_from_edges(d.get('causal_edges'))
+    for path, sub in _appv38_walk(d, path='candidate', max_depth=5, limit=300):
+        if isinstance(sub, dict) and (('nodes' in sub and 'edges' in sub) or ('causal_edges' in sub)):
+            g = _appv38_normalize_graph(sub)
+            if g.get('nodes') or g.get('edges'):
+                g['nested_path'] = path
+                return g
+    return {'nodes': [], 'edges': []}
+
+
+def _appv38_merge_graphs(graphs, fold_by_role=False, max_nodes=80, max_edges=160):
+    node_map = {}
+    edges = []
+    for graph in _appv38_safe_list(graphs):
+        g = _appv38_normalize_graph(graph)
+        node_role = {}
+        for n in _appv38_safe_list(g.get('nodes')):
+            if not isinstance(n, dict):
+                continue
+            nid = _appv38_text(n.get('id') or n.get('label') or ('n' + str(len(node_map))), 160)
+            role = _appv38_text(n.get('role') or n.get('type') or '', 80)
+            node_role[nid] = role
+            if fold_by_role and role:
+                nid2 = 'GROUP::' + role
+                lab2 = role + ' group'
+                node_map.setdefault(nid2, {'id': nid2, 'label': lab2, 'role': 'group', 'members': []})
+                node_map[nid2].setdefault('members', []).append(nid)
+            else:
+                nn = dict(n)
+                nn.setdefault('id', nid)
+                nn.setdefault('label', _appv38_text(n.get('label') or nid, 180))
+                node_map.setdefault(nid, nn)
+        for e in _appv38_safe_list(g.get('edges')):
+            if not isinstance(e, dict):
+                continue
+            src = _appv38_text(e.get('src') or e.get('source') or e.get('from') or e.get('cause') or '', 160)
+            dst = _appv38_text(e.get('dst') or e.get('target') or e.get('to') or e.get('effect') or '', 160)
+            if not src or not dst:
+                continue
+            if fold_by_role:
+                if node_role.get(src):
+                    src = 'GROUP::' + node_role.get(src)
+                if node_role.get(dst):
+                    dst = 'GROUP::' + node_role.get(dst)
+            ee = dict(e)
+            ee['src'] = src
+            ee['dst'] = dst
+            edges.append(ee)
+    nodes = list(node_map.values())[:int(max_nodes)]
+    allowed = set(_appv38_text(n.get('id'), 160) for n in nodes if isinstance(n, dict))
+    edges2 = [e for e in edges if e.get('src') in allowed and e.get('dst') in allowed][:int(max_edges)]
+    return {'nodes': nodes, 'edges': edges2, 'source': APP_V38_UNIVERSAL_CANDIDATE_GRAPH_UI_PATCH_ID}
+
+
+def _appv38_escape_html(s):
+    try:
+        return _appv38_html_escape_mod.escape(str(s), quote=True)
+    except Exception:
+        return str(s).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;')
+
+
+def _appv38_svg_graph_html(graph, height=650, label_limit=42, initial_scale=1.0):
+    g = _appv38_normalize_graph(graph)
+    nodes = _appv38_safe_list(g.get('nodes'))
+    edges = _appv38_safe_list(g.get('edges'))
+    w = 1600
+    h = 1000
+    n = max(1, len(nodes))
+    pos = {}
+    cx, cy = w / 2, h / 2
+    r1 = min(w, h) * 0.34
+    for i, node in enumerate(nodes):
+        nd0 = _appv38_safe_dict(node)
+        nid = _appv38_text(nd0.get('id') or nd0.get('label') or i, 160)
+        angle = 2.0 * _appv38_math.pi * (i / max(1, n))
+        radius = r1 * (0.68 if (i % 3 == 0 and n > 12) else 1.0)
+        pos[nid] = (cx + radius * _appv38_math.cos(angle), cy + radius * _appv38_math.sin(angle))
+    edge_svg = []
+    for e in edges:
+        if not isinstance(e, dict):
+            continue
+        src = _appv38_text(e.get('src') or e.get('source') or e.get('from') or '', 160)
+        dst = _appv38_text(e.get('dst') or e.get('target') or e.get('to') or '', 160)
+        if src not in pos or dst not in pos:
+            continue
+        x1, y1 = pos[src]
+        x2, y2 = pos[dst]
+        rel = _appv38_text(e.get('relation') or e.get('rel') or e.get('label') or e.get('operator') or e.get('type') or '', 64)
+        mx, my = (x1+x2)/2, (y1+y2)/2
+        edge_svg.append(f'<line x1="{x1:.1f}" y1="{y1:.1f}" x2="{x2:.1f}" y2="{y2:.1f}" stroke="#7f8c8d" stroke-width="1.3" marker-end="url(#arrow)" opacity="0.72"/>')
+        if rel:
+            edge_svg.append(f'<text x="{mx:.1f}" y="{my:.1f}" font-size="18" fill="#555">{_appv38_escape_html(rel[:28])}</text>')
+    node_svg = []
+    for i, node in enumerate(nodes):
+        nd = _appv38_safe_dict(node)
+        nid = _appv38_text(nd.get('id') or nd.get('label') or i, 160)
+        x, y = pos.get(nid, (cx, cy))
+        label = _appv38_text(nd.get('label') or nid, int(label_limit))
+        role = _appv38_text(nd.get('role') or nd.get('type') or '', 50)
+        fill = '#e8f4fd' if role != 'group' else '#f8ead7'
+        node_svg.append(f'<g class="node"><rect x="{x-95:.1f}" y="{y-30:.1f}" width="190" height="60" rx="12" fill="{fill}" stroke="#2c3e50" stroke-width="1.2"/><text x="{x:.1f}" y="{y-5:.1f}" text-anchor="middle" font-size="18" fill="#111">{_appv38_escape_html(label)}</text><text x="{x:.1f}" y="{y+18:.1f}" text-anchor="middle" font-size="13" fill="#555">{_appv38_escape_html(role)}</text></g>')
+    svg_inner = '\n'.join(edge_svg + node_svg)
+    html = """
+<div id="appv38_graph_wrap" style="border:1px solid #ddd; height:__HEIGHT__px; overflow:hidden; position:relative; background:#fff;">
+  <div style="position:absolute; top:8px; left:8px; z-index:10; background:rgba(255,255,255,.92); padding:6px 8px; border:1px solid #ccc; border-radius:8px; font-family:sans-serif; font-size:13px;">
+    <button onclick="appv38Zoom(1.18)">+</button>
+    <button onclick="appv38Zoom(0.85)">-</button>
+    <button onclick="appv38Reset()">Reset</button>
+    <span style="margin-left:8px;">ドラッグでパン / ホイールでズーム</span>
+  </div>
+  <svg id="appv38_svg" width="__W__" height="__H__" viewBox="0 0 __W__ __H__" style="transform-origin:0 0; cursor:grab; user-select:none;">
+    <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#7f8c8d"/></marker></defs>
+    <g id="appv38_view">__SVG_INNER__</g>
+  </svg>
+</div>
+<script>
+let appv38Scale = __SCALE__;
+let appv38X = 0, appv38Y = 0, appv38Down = false, appv38SX = 0, appv38SY = 0;
+const appv38Svg = document.getElementById('appv38_svg');
+function appv38Apply(){ appv38Svg.style.transform = 'translate(' + appv38X + 'px,' + appv38Y + 'px) scale(' + appv38Scale + ')'; }
+function appv38Zoom(f){ appv38Scale = Math.max(0.08, Math.min(8, appv38Scale * f)); appv38Apply(); }
+function appv38Reset(){ appv38Scale=__SCALE__; appv38X=0; appv38Y=0; appv38Apply(); }
+appv38Svg.addEventListener('mousedown', function(e){ appv38Down=true; appv38SX=e.clientX-appv38X; appv38SY=e.clientY-appv38Y; appv38Svg.style.cursor='grabbing'; });
+window.addEventListener('mouseup', function(){ appv38Down=false; appv38Svg.style.cursor='grab'; });
+window.addEventListener('mousemove', function(e){ if(!appv38Down) return; appv38X=e.clientX-appv38SX; appv38Y=e.clientY-appv38SY; appv38Apply(); });
+document.getElementById('appv38_graph_wrap').addEventListener('wheel', function(e){ e.preventDefault(); appv38Zoom(e.deltaY < 0 ? 1.08 : 0.92); }, {passive:false});
+appv38Apply();
+</script>
+"""
+    return (html.replace('__HEIGHT__', str(int(height)))
+                .replace('__W__', str(w))
+                .replace('__H__', str(h))
+                .replace('__SCALE__', str(float(initial_scale)))
+                .replace('__SVG_INNER__', svg_inner))
+
+
+def _appv38_render_interactive_svg_graph(graph, height=650, label_limit=42, initial_scale=1.0):
+    try:
+        from streamlit.components.v1 import html as _appv38_components_html
+        _appv38_components_html(_appv38_svg_graph_html(graph, height=height, label_limit=label_limit, initial_scale=initial_scale), height=int(height) + 30, scrolling=False)
+        return True
+    except Exception as e:
+        try:
+            st.warning('Interactive graph render failed: ' + _appv38_text(e, 300))
+        except Exception:
+            pass
+    return False
+
+
+def _appv38_render_candidate_graph_controls():
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        max_nodes = st.slider('描画ノード上限', 10, 200, int(st.session_state.get('appv38_max_nodes', 80)), 10, key='appv38_max_nodes')
+    with col2:
+        max_edges = st.slider('描画エッジ上限', 10, 400, int(st.session_state.get('appv38_max_edges', 160)), 10, key='appv38_max_edges')
+    with col3:
+        height = st.slider('グラフ高さ(px)', 350, 1100, int(st.session_state.get('appv38_graph_height', 650)), 50, key='appv38_graph_height')
+    with col4:
+        label_limit = st.slider('ラベル長', 12, 90, int(st.session_state.get('appv38_label_limit', 42)), 2, key='appv38_label_limit')
+    fold = st.checkbox('role/typeごとに折り畳む（ノード群で意味を代表）', value=bool(st.session_state.get('appv38_fold_by_role', False)), key='appv38_fold_by_role')
+    show_static = st.checkbox('既存Graphviz表示も併記する', value=bool(st.session_state.get('appv38_show_static_graphviz', True)), key='appv38_show_static_graphviz')
+    return {'max_nodes': max_nodes, 'max_edges': max_edges, 'height': height, 'label_limit': label_limit, 'fold_by_role': fold, 'show_static': show_static}
+
+
+def _appv38_render_universal_candidate_graph_ui():
+    try:
+        st.markdown('### 探索候補の選択と因果グラフ表示（V38 universal）')
+        st.caption('候補検出は session_state 内の結果JSONを再帰走査します。特定ベンチマーク名・課題名には依存しません。')
+        items = _appv38_collect_candidate_items(max_items=100)
+        st.session_state['appv38_candidate_items_count'] = len(items)
+        if not items:
+            st.info('候補が検出されていません。結果JSONの保存キーや候補構造を debug_full_result で確認してください。')
+            return []
+        st.caption('検出候補数: ' + str(len(items)))
+        selected = []
+        with st.expander('候補チェックボックス', expanded=True):
+            select_all = st.checkbox('全候補を描画対象にする', value=False, key='appv38_select_all_candidates')
+            for i, item in enumerate(items[:60]):
+                default = bool(select_all or i == 0)
+                checked = st.checkbox(item.get('label') or ('candidate_' + str(i+1)), value=default, key='appv38_candidate_check_' + item.get('hash', str(i)))
+                if checked:
+                    selected.append(item)
+        st.session_state['ucs_selected_candidates'] = [x.get('candidate') for x in selected]
+        st.session_state['appv38_selected_candidate_count'] = len(selected)
+        if not selected:
+            st.warning('1つ以上の候補を選択してください。')
+            return []
+        opts = _appv38_render_candidate_graph_controls()
+        graphs = [_appv38_extract_graph_from_candidate(x.get('candidate')) for x in selected]
+        merged = _appv38_merge_graphs(graphs, fold_by_role=bool(opts.get('fold_by_role')), max_nodes=int(opts.get('max_nodes')), max_edges=int(opts.get('max_edges')))
+        st.caption('描画対象: nodes=' + str(len(merged.get('nodes') or [])) + ' / edges=' + str(len(merged.get('edges') or [])))
+        if not (merged.get('nodes') or merged.get('edges')):
+            st.warning('選択候補から因果グラフを抽出できませんでした。候補JSONは表示できます。')
+        else:
+            if opts.get('show_static') and callable(globals().get('_appv15g_dot_from_graph')):
+                try:
+                    dot = _appv15g_dot_from_graph(merged)
+                    if dot:
+                        st.markdown('#### 既存Graphviz表示（保持）')
+                        st.graphviz_chart(dot, use_container_width=True)
+                        with st.expander('DOT source', expanded=False):
+                            st.code(dot, language='dot')
+                except Exception as e:
+                    st.warning('Existing Graphviz render failed: ' + _appv38_text(e, 300))
+            st.markdown('#### ズーム・パン対応グラフ')
+            _appv38_render_interactive_svg_graph(merged, height=int(opts.get('height')), label_limit=int(opts.get('label_limit')), initial_scale=1.0)
+            with st.expander('Graph JSON / selected candidates', expanded=False):
+                st.json({'patch_id': APP_V38_UNIVERSAL_CANDIDATE_GRAPH_UI_PATCH_ID, 'graph': merged, 'selected_labels': [x.get('label') for x in selected]})
+        return selected
+    except Exception as e:
+        try:
+            st.error('V38 candidate graph UI error: ' + _appv38_text(e, 500))
+        except Exception:
+            pass
+        return []
+
+
+try:
+    _APPV38_PREV_LEAPV8_RENDER_RESULT = _leapv8_render_result
+except Exception:
+    _APPV38_PREV_LEAPV8_RENDER_RESULT = None
+
+
+def _leapv8_render_result(result, cfg=None):
+    prev = None
+    if callable(_APPV38_PREV_LEAPV8_RENDER_RESULT):
+        try:
+            prev = _APPV38_PREV_LEAPV8_RENDER_RESULT(result, cfg)
+        except TypeError:
+            prev = _APPV38_PREV_LEAPV8_RENDER_RESULT(result)
+        except Exception as e:
+            try:
+                st.error('Previous Leap renderer failed in V38 wrapper: ' + _appv38_text(e, 500))
+            except Exception:
+                pass
+    try:
+        st.session_state['appv38_last_render_result'] = result
+        _appv38_render_universal_candidate_graph_ui()
+    except Exception as e:
+        try:
+            st.warning('V38 graph UI wrapper failed: ' + _appv38_text(e, 300))
+        except Exception:
+            pass
+    return prev
+
+
+
+# ============================================================================
+# ADD-ONLY PATCH: APP-V41-HIDE-EMPTY-V38-GRAPH-BOOT-UI
+# generated_at_jst: 20260506_124950
+# source_file_before_bytes: 802680
+# source_file_before_sha256_8: 8dda9caf
+# purpose:
+# - Hide the V38 universal candidate graph panel at startup when no candidates
+#   are available, including the messages:
+#   "候補が検出されていません。", "✅ 候補の選択",
+#   and "探索候補の選択と因果グラフ表示（V38 universal）".
+# - Preserve graph UI when at least one candidate is extractable.
+# - Preserve original function/call; use wrapper and session_state telemetry.
+# - Universal: no benchmark/task-name hardcoding. Uses recursive candidate
+#   extraction result only.
+# ============================================================================
+try:
+    st.session_state.setdefault('app_v41_hide_empty_v38_graph_boot_ui', True)
+except Exception:
+    pass
+
+try:
+    _APP_V41_PREV_APPV38_RENDER_UNIVERSAL_CANDIDATE_GRAPH_UI = _appv38_render_universal_candidate_graph_ui
+except Exception:
+    _APP_V41_PREV_APPV38_RENDER_UNIVERSAL_CANDIDATE_GRAPH_UI = None
+
+def _app_v41_v38_graph_ui_should_hide_empty():
+    try:
+        return bool(st.session_state.get('app_v41_hide_empty_v38_graph_boot_ui', True))
+    except Exception:
+        return True
+
+def _appv38_render_universal_candidate_graph_ui_v41_hide_empty_boot_ui():
+    """ADD-ONLY wrapper: suppress empty graph UI, keep UI when candidates exist."""
+    try:
+        items = _appv38_collect_candidate_items(max_items=100)
+    except Exception as _app_v41_e:
+        try:
+            st.session_state['app_v41_v38_candidate_collect_error'] = _appv38_text(_app_v41_e, 300) if callable(globals().get('_appv38_text')) else str(_app_v41_e)[:300]
+        except Exception:
+            pass
+        items = []
+    try:
+        st.session_state['appv38_candidate_items_count'] = len(items)
+    except Exception:
+        pass
+    if _app_v41_v38_graph_ui_should_hide_empty() and not items:
+        try:
+            st.session_state['appv38_selected_candidate_count'] = 0
+            st.session_state['app_v41_v38_empty_graph_ui_hidden'] = True
+        except Exception:
+            pass
+        return []
+    if callable(_APP_V41_PREV_APPV38_RENDER_UNIVERSAL_CANDIDATE_GRAPH_UI):
+        return _APP_V41_PREV_APPV38_RENDER_UNIVERSAL_CANDIDATE_GRAPH_UI()
+    return []
+
+try:
+    _appv38_render_universal_candidate_graph_ui = _appv38_render_universal_candidate_graph_ui_v41_hide_empty_boot_ui
+except Exception:
+    pass
+# ============================================================================
+# END ADD-ONLY PATCH: APP-V41-HIDE-EMPTY-V38-GRAPH-BOOT-UI
+# ============================================================================
+
+try:
+    _appv38_render_universal_candidate_graph_ui()
+except Exception as _appv38_e:
+    try:
+        st.warning('V38 end-of-script graph UI skipped: ' + _appv38_text(_appv38_e, 300))
+    except Exception:
+        pass
+# ============================================================================
+# END ADD-ONLY PATCH: APP-V38-UNIVERSAL-CANDIDATE-GRAPH-UI-20260506_124400
+# ============================================================================
+
+
+# ============================================================================
+# FILE METADATA: APP-V38B-POST-GENERATION-INTEGRITY
+# file_name: app.py
+# downloadable_file_name: app__20260506_125000__v38b_graph_ui__ADDONLY.py
+# source_file_before_bytes: 778119
+# source_file_before_sha256_8: 73a5b151
+# post_patch_byte_count: 0000802680
+# post_patch_sha256_8: 7b49b541
+# syntax_check: py_compile_ok=True
+# existing_code_deleted: false (ADD-ONLY append; original app.py content preserved)
+# benchmark_or_task_name_hardcoding: false
+# major_symbols_present:
+# - _appv38_collect_candidate_items: present line 15953
+# - _appv38_render_candidate_graph_controls: present line 16190
+# - _appv38_extract_graph_from_candidate: present line 16032
+# - _appv38_render_interactive_svg_graph: present line 16177
+# - _appv38_render_universal_candidate_graph_ui: present line 16205
+# - _appv15g_dot_from_graph: present line 14244
+# - _ucs_render_selector: present line 15662
+# - _ucs_render_selector_v2: present line 15725
+# - _leapv8_render_result: present line 16264
+# usage_note: Replace the runtime app.py with this file after backup if needed.
+# ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY PATCH: APP-V43-SMATRIX-USR-UI
+# generated_at_jst: 20260506
+# source_file_before_bytes: 809578
+# source_file_before_sha256_8: d6e2b02f
+# Policy:
+# - ADD-ONLY. No existing code is removed or overwritten.
+# - No benchmark/task-name hardcoding. Candidate detection is schema/structure based.
+# - Use existing graph/display capabilities; do not replace visualization backend.
+# Purpose:
+# - Render S-matrix verification, USR support, and V43 score breakdown.
+# - Suppress meaningless empty candidate UI at startup.
+# - Improve candidate selection/graph source for V43 result objects.
+# ============================================================================
+
+APP_V43_SMATRIX_USR_UI_PATCH_ID = "APP-V43-SMATRIX-USR-UI-20260506"
+
+
+def _app_v43_safe_dict(x):
+    return x if isinstance(x, dict) else {}
+
+
+def _app_v43_safe_list(x):
+    if x is None:
+        return []
+    if isinstance(x, list):
+        return x
+    if isinstance(x, tuple):
+        return list(x)
+    return [x]
+
+
+def _app_v43_text(x, limit=2000):
+    try:
+        s = "" if x is None else str(x)
+    except Exception:
+        s = repr(x)
+    s = " ".join(s.split())
+    return s[:max(0, int(limit))]
+
+
+def _app_v43_float(x, default=0.0):
+    try:
+        return float(x)
+    except Exception:
+        return float(default)
+
+
+def _app_v43_hash_obj(obj, n=12):
+    try:
+        import json as _json, hashlib as _hashlib
+        raw = _json.dumps(obj, ensure_ascii=False, sort_keys=True, default=str)
+        return _hashlib.sha256(raw.encode('utf-8')).hexdigest()[:int(n)]
+    except Exception:
+        return 'hash_unavailable'
+
+
+def _app_v43_candidate_id(candidate, idx=0):
+    c = _app_v43_safe_dict(candidate)
+    co = _app_v43_safe_dict(c.get('candidate_object')) or c
+    return _app_v43_text(
+        c.get('candidate_id') or co.get('candidate_id') or c.get('idea_id') or c.get('hid') or c.get('turn_id') or ('candidate_%03d' % (int(idx) + 1)),
+        160,
+    )
+
+
+def _app_v43_is_candidate_dict(d):
+    if not isinstance(d, dict):
+        return False
+    keys = set(d.keys())
+    id_like = {'candidate_id', 'idea_id', 'hypothesis_id', 'hid', 'branch_id', 'turn_id'}
+    content_like = {'decoded_hypothesis', 'hypothesis', 'idea_core', 'design_title', 'method_proposal', 'decoded_mechanism', 'mechanism', 'interventions', 'verification_plan'}
+    graph_like = {'causal_graph_delta', 'causal_graph_json', 'graph_ir', 'causal_edges', 'nodes', 'edges', 's_matrix_record', 's_matrix_graph_view_v43'}
+    v43_like = {'s_matrix_verification', 'usr_support', 'scores_v43', 's_matrix_record'}
+    if keys.intersection(v43_like):
+        return True
+    if keys.intersection(id_like) and (keys.intersection(content_like) or keys.intersection(graph_like)):
+        return True
+    if keys.intersection(content_like) and keys.intersection(graph_like):
+        return True
+    if 'candidate_object' in keys and isinstance(d.get('candidate_object'), dict):
+        return True
+    return False
+
+
+def app_v43_extract_candidates_from_result(result, max_items=160):
+    """
+    Recursively collect candidate dictionaries from a result object.
+    This function is intentionally silent when nothing is available so startup UI
+    does not show meaningless 'no candidates' messages.
+    """
+    out = []
+    seen = set()
+    candidate_keys = {
+        'generated_ideas', 'decoded_candidates', 'accepted_candidates', 'rejected_candidates',
+        'candidates', 'leap_candidates', 'transferred_candidates', 'scored_candidates',
+        'all_candidates', 'ideas', 'trials', 'accepted_trials', 'all_trials_panel',
+    }
+    def add(path, cand):
+        if not isinstance(cand, dict) or not _app_v43_is_candidate_dict(cand):
+            return
+        cid = _app_v43_candidate_id(cand, len(out))
+        key = cid + '::' + _app_v43_hash_obj(cand, 16)
+        if key in seen:
+            return
+        seen.add(key)
+        scores = _app_v43_safe_dict(cand.get('scores_v43'))
+        sc = scores.get('pre_experiment_confidence', scores.get('draft_quality_score', cand.get('overall_score', cand.get('score', 0.0))))
+        label = cid
+        if scores:
+            label += ' | draft={:.3f} pre={:.3f} pub={:.3f}'.format(
+                _app_v43_float(scores.get('draft_quality_score')),
+                _app_v43_float(scores.get('pre_experiment_confidence')),
+                _app_v43_float(scores.get('publishable_score')),
+            )
+        else:
+            label += ' | score={:.3f}'.format(_app_v43_float(sc))
+        status = _app_v43_text(cand.get('publishable_status') or cand.get('status') or cand.get('reason') or '', 80)
+        if status:
+            label += ' | ' + status
+        out.append({'path': path, 'candidate': cand, 'candidate_id': cid, 'label': label[:260], 'hash': _app_v43_hash_obj({'path': path, 'id': cid, 'obj': cand}, 12)})
+    def walk(obj, path='root', depth=0):
+        if len(out) >= int(max_items) or depth > 8:
+            return
+        if isinstance(obj, dict):
+            if _app_v43_is_candidate_dict(obj):
+                add(path, obj)
+            for k, v in list(obj.items()):
+                if len(out) >= int(max_items):
+                    break
+                if k in candidate_keys and isinstance(v, list):
+                    for i, item in enumerate(v[:int(max_items)]):
+                        if isinstance(item, dict):
+                            add(path + '.' + str(k) + '[' + str(i) + ']', item)
+                        elif isinstance(item, (list, tuple, dict)):
+                            walk(item, path + '.' + str(k) + '[' + str(i) + ']', depth + 1)
+                elif isinstance(v, (dict, list, tuple)):
+                    walk(v, path + '.' + str(k), depth + 1)
+        elif isinstance(obj, (list, tuple)):
+            for i, item in enumerate(list(obj)[:int(max_items)]):
+                if isinstance(item, (dict, list, tuple)):
+                    walk(item, path + '[' + str(i) + ']', depth + 1)
+    walk(result)
+    return out[:int(max_items)]
+
+
+def app_v43_should_render_candidate_tools(result=None):
+    """Return True only after a meaningful result/candidate exists."""
+    if isinstance(result, dict) and app_v43_extract_candidates_from_result(result, max_items=1):
+        return True
+    try:
+        keys = [
+            'leapv8_last_result', 'leap_v8_last_result', 'leap_last_result',
+            'leapv14_last_result', 'leapv41_last_result', 'last_leap_result',
+            'debug_full_result', 'ucs_selected_candidates',
+        ]
+        for k in keys:
+            v = st.session_state.get(k)
+            if isinstance(v, dict) and app_v43_extract_candidates_from_result(v, max_items=1):
+                return True
+            if isinstance(v, list) and any(isinstance(x, dict) for x in v):
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def app_v43_render_score_breakdown(candidate):
+    c = _app_v43_safe_dict(candidate)
+    scores = _app_v43_safe_dict(c.get('scores_v43'))
+    comps = _app_v43_safe_dict(c.get('score_components_v43'))
+    if not scores and not comps:
+        return
+    st.markdown('#### V43 スコア内訳')
+    cols = st.columns(3)
+    cols[0].metric('候補案品質 draft', '{:.3f}'.format(_app_v43_float(scores.get('draft_quality_score'))))
+    cols[1].metric('実験前信頼度 pre', '{:.3f}'.format(_app_v43_float(scores.get('pre_experiment_confidence'))))
+    cols[2].metric('publishable score', '{:.3f}'.format(_app_v43_float(scores.get('publishable_score'))))
+    status = _app_v43_text(c.get('publishable_status') or ('publishable' if c.get('candidate_publishable') else ''), 120)
+    if status:
+        st.caption('publishable_status: `' + status + '` / candidate_publishable=' + str(bool(c.get('candidate_publishable'))))
+    if comps:
+        rows = []
+        for k, v in comps.items():
+            if isinstance(v, (int, float)):
+                rows.append({'component': str(k), 'value': float(v)})
+            else:
+                rows.append({'component': str(k), 'value': _app_v43_text(v, 160)})
+        try:
+            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        except Exception:
+            st.json(comps)
+
+
+def app_v43_render_smatrix_verification_panel(candidate):
+    c = _app_v43_safe_dict(candidate)
+    ver = _app_v43_safe_dict(c.get('s_matrix_verification'))
+    rec = _app_v43_safe_dict(c.get('s_matrix_record'))
+    if not ver and not rec:
+        return
+    st.markdown('#### S行列検証')
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric('judgement', 'ON' if bool(ver.get('judgement_enabled')) else 'OFF')
+    col2.metric('complex edges', str(ver.get('complex_s_edges_count', len(_app_v43_safe_list(rec.get('complex_s_edges'))))))
+    col3.metric('contradictions', str(ver.get('contradiction_count', 0)))
+    col4.metric('duplicate penalty', '{:.3f}'.format(_app_v43_float(ver.get('duplicate_signature_penalty'))))
+    status = _app_v43_text(ver.get('existing_knowledge_status') or ver.get('reason') or '', 200)
+    if status:
+        st.caption('existing_knowledge_status: `' + status + '`')
+    if rec.get('graph_signature'):
+        st.caption('graph_signature: `' + _app_v43_text(rec.get('graph_signature'), 80) + '`')
+    with st.expander('S行列レコード / complex_s_edges / attention_mask', expanded=False):
+        show_edges = st.checkbox('complex_s_edgesを表示', value=True, key='app_v43_show_s_edges_' + _app_v43_hash_obj(c, 8))
+        if show_edges and rec.get('complex_s_edges'):
+            try:
+                rows = []
+                for e in _app_v43_safe_list(rec.get('complex_s_edges')):
+                    if isinstance(e, dict):
+                        rows.append({
+                            'edge_id': e.get('edge_id'), 'src': e.get('src'), 'dst': e.get('dst'),
+                            'relation': e.get('relation'), 're': e.get('weight_re'), 'im': e.get('weight_im'),
+                            'observable': e.get('observable'), 'phase_hint': e.get('phase_hint'),
+                        })
+                st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+            except Exception:
+                st.json(rec.get('complex_s_edges'))
+        if rec.get('attention_mask'):
+            st.markdown('**attention_mask**')
+            try:
+                rows = []
+                for node, m in _app_v43_safe_dict(rec.get('attention_mask')).items():
+                    md = _app_v43_safe_dict(m)
+                    rows.append({'node': node, 'intervene_allowed': md.get('intervene_allowed'), 'observe_only': md.get('observe_only'), 'blocked': md.get('blocked'), 'reason': md.get('reason')})
+                st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+            except Exception:
+                st.json(rec.get('attention_mask'))
+
+
+def app_v43_render_usr_support_panel(candidate):
+    c = _app_v43_safe_dict(candidate)
+    usr = _app_v43_safe_dict(c.get('usr_support'))
+    if not usr:
+        return
+    st.markdown('#### USR 支援 / 方程式候補')
+    col1, col2, col3 = st.columns(3)
+    col1.metric('USR requested', 'YES' if bool(usr.get('requested')) else 'NO')
+    col2.metric('equations', str(usr.get('equation_candidates_count', len(_app_v43_safe_list(usr.get('equation_candidates'))))))
+    col3.metric('identifiability', '{:.3f}'.format(_app_v43_float(usr.get('identifiability_score'))))
+    ident = _app_v43_safe_dict(usr.get('identifiability_report'))
+    if ident:
+        with st.expander('識別可能性レポート', expanded=False):
+            st.write('identifiable_edges:', _app_v43_safe_list(ident.get('identifiable_edges')))
+            st.write('weakly_identifiable_edges:', _app_v43_safe_list(ident.get('weakly_identifiable_edges')))
+            st.write('unidentifiable_edges:', _app_v43_safe_list(ident.get('unidentifiable_edges')))
+            if ident.get('required_next_measurements'):
+                st.markdown('**必要な次観測**')
+                st.write(_app_v43_safe_list(ident.get('required_next_measurements')))
+            if ident.get('required_next_interventions'):
+                st.markdown('**必要な次介入**')
+                st.write(_app_v43_safe_list(ident.get('required_next_interventions')))
+    eqs = _app_v43_safe_list(usr.get('equation_candidates'))
+    if eqs:
+        with st.expander('equation_candidates', expanded=False):
+            try:
+                rows = []
+                for eq in eqs:
+                    if isinstance(eq, dict):
+                        rows.append({
+                            'candidate_id': eq.get('candidate_id'), 'kind': eq.get('kind'),
+                            'source_s_edge': eq.get('source_s_edge'), 'expression_text': eq.get('expression_text'),
+                            'variables': ', '.join([str(x) for x in _app_v43_safe_list(eq.get('variables'))]),
+                            'observable': eq.get('observable'),
+                        })
+                st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+            except Exception:
+                st.json(eqs)
+    seed = _app_v43_safe_dict(usr.get('usr_seed'))
+    bindings = _app_v43_safe_dict(seed.get('variable_bindings'))
+    if bindings:
+        with st.expander('USR variable bindings', expanded=False):
+            try:
+                rows = []
+                for sym, b in bindings.items():
+                    bd = _app_v43_safe_dict(b)
+                    rows.append({'symbol': sym, 'node_id': bd.get('node_id'), 'label': bd.get('label'), 'role': bd.get('role'), 'mask': _app_v43_text(bd.get('mask'), 240)})
+                st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+            except Exception:
+                st.json(bindings)
+
+
+def app_v43_build_display_graph_from_smatrix(candidate, collapse_groups=True):
+    """Convert V43 S-matrix graph view to the existing app graph shape."""
+    c = _app_v43_safe_dict(candidate)
+    gv = _app_v43_safe_dict(c.get('s_matrix_graph_view_v43'))
+    rec = _app_v43_safe_dict(c.get('s_matrix_record'))
+    if not gv and rec:
+        gv = {'nodes': rec.get('nodes', []), 'group_nodes': rec.get('group_nodes', []), 'edges': rec.get('complex_s_edges', []), 'attention_mask': rec.get('attention_mask', {})}
+    nodes = []
+    edges = []
+    if collapse_groups and gv.get('group_nodes'):
+        for g in _app_v43_safe_list(gv.get('group_nodes')):
+            if isinstance(g, dict):
+                nodes.append({'id': g.get('group_id'), 'label': g.get('label'), 'role': 'group', 'members': g.get('members', [])})
+        # Map member id to group id for folded edges.
+        member_to_group = {}
+        for g in _app_v43_safe_list(gv.get('group_nodes')):
+            if isinstance(g, dict):
+                for m in _app_v43_safe_list(g.get('members')):
+                    member_to_group[str(m)] = g.get('group_id')
+        seen_edges = set()
+        for e in _app_v43_safe_list(gv.get('edges')):
+            if isinstance(e, dict):
+                src = member_to_group.get(str(e.get('src')), e.get('src'))
+                dst = member_to_group.get(str(e.get('dst')), e.get('dst'))
+                if not src or not dst or src == dst:
+                    continue
+                key = (src, dst, e.get('relation'))
+                if key in seen_edges:
+                    continue
+                seen_edges.add(key)
+                edges.append({'source': src, 'target': dst, 'label': str(e.get('relation') or '') + ' re={:.2f} im={:.2f}'.format(_app_v43_float(e.get('weight_re')), _app_v43_float(e.get('weight_im'))), 'relation': e.get('relation')})
+    else:
+        for n in _app_v43_safe_list(gv.get('nodes')):
+            if isinstance(n, dict):
+                nodes.append({'id': n.get('id') or n.get('node_id') or n.get('label'), 'label': n.get('label') or n.get('name') or n.get('id'), 'role': n.get('role')})
+        for e in _app_v43_safe_list(gv.get('edges')):
+            if isinstance(e, dict):
+                edges.append({'source': e.get('src') or e.get('source'), 'target': e.get('dst') or e.get('target'), 'label': str(e.get('relation') or '') + ' re={:.2f} im={:.2f}'.format(_app_v43_float(e.get('weight_re')), _app_v43_float(e.get('weight_im'))), 'relation': e.get('relation')})
+    return {'nodes': nodes, 'edges': edges, 'source': APP_V43_SMATRIX_USR_UI_PATCH_ID}
+
+
+def app_v43_render_smatrix_usr_ui(result=None):
+    """Render V43 candidate selector and detail panels. Silent when no candidates exist."""
+    if not app_v43_should_render_candidate_tools(result):
+        return []
+    items = app_v43_extract_candidates_from_result(result, max_items=120)
+    if not items:
+        return []
+    st.markdown('### S行列 / USR 検証（V43）')
+    summary = _app_v43_safe_dict(_app_v43_safe_dict(result).get('s_matrix_usr_verification_summary')) if isinstance(result, dict) else {}
+    if summary:
+        cols = st.columns(4)
+        cols[0].metric('候補数', str(summary.get('candidate_count', len(items))))
+        cols[1].metric('検証済み', str(summary.get('verified_candidate_count', 0)))
+        cols[2].metric('USR式候補', str(summary.get('usr_equation_candidate_total', 0)))
+        cols[3].metric('publishable', str(summary.get('publishable_candidate_count', 0)))
+        st.caption('judgement_enabled=' + str(bool(summary.get('judgement_enabled'))) + ' / patch=' + _app_v43_text(summary.get('patch_id'), 120))
+    with st.expander('候補選択（S行列/USR表示対象）', expanded=True):
+        select_all = st.checkbox('全候補を選択', value=False, key='app_v43_select_all_candidates')
+        selected = []
+        for i, item in enumerate(items[:80]):
+            default = bool(select_all or i == 0)
+            checked = st.checkbox(item.get('label') or ('candidate_' + str(i + 1)), value=default, key='app_v43_candidate_' + item.get('hash', str(i)))
+            if checked:
+                selected.append(item)
+    try:
+        st.session_state['app_v43_selected_candidates'] = [x.get('candidate') for x in selected]
+    except Exception:
+        pass
+    if not selected:
+        st.warning('1つ以上の候補を選択してください。')
+        return []
+    graph_opts = st.expander('V43グラフ表示オプション', expanded=False)
+    with graph_opts:
+        collapse = st.checkbox('group nodeで折り畳む', value=True, key='app_v43_graph_collapse_groups')
+        render_graph = st.checkbox('S行列グラフを既存Graphvizで表示', value=True, key='app_v43_render_smatrix_graph')
+    for item in selected[:20]:
+        cand = _app_v43_safe_dict(item.get('candidate'))
+        with st.expander('候補詳細: ' + _app_v43_text(item.get('label'), 220), expanded=(item is selected[0])):
+            app_v43_render_score_breakdown(cand)
+            app_v43_render_smatrix_verification_panel(cand)
+            app_v43_render_usr_support_panel(cand)
+            if render_graph:
+                graph = app_v43_build_display_graph_from_smatrix(cand, collapse_groups=collapse)
+                if graph.get('nodes') or graph.get('edges'):
+                    st.markdown('#### S行列グラフ')
+                    if callable(globals().get('_appv15g_dot_from_graph')):
+                        try:
+                            st.graphviz_chart(_appv15g_dot_from_graph(graph), use_container_width=True)
+                        except Exception as e:
+                            st.warning('既存Graphviz表示に失敗: ' + _app_v43_text(e, 300))
+                    else:
+                        st.json(graph)
+            with st.expander('候補JSON', expanded=False):
+                st.json(cand)
+    return selected
+
+
+# ---------------------------------------------------------------------------
+# Startup empty-UI suppression and renderer wrappers
+# ---------------------------------------------------------------------------
+try:
+    _APP_V43_PREV_APPV38_RENDER_UNIVERSAL_CANDIDATE_GRAPH_UI = _appv38_render_universal_candidate_graph_ui
+except Exception:
+    _APP_V43_PREV_APPV38_RENDER_UNIVERSAL_CANDIDATE_GRAPH_UI = None
+
+
+def _appv38_render_universal_candidate_graph_ui():
+    """V43 override: do not render empty candidate UI at startup."""
+    if not app_v43_should_render_candidate_tools():
+        return []
+    if callable(_APP_V43_PREV_APPV38_RENDER_UNIVERSAL_CANDIDATE_GRAPH_UI):
+        try:
+            return _APP_V43_PREV_APPV38_RENDER_UNIVERSAL_CANDIDATE_GRAPH_UI()
+        except Exception as e:
+            try:
+                st.warning('既存候補グラフUIの表示に失敗: ' + _app_v43_text(e, 300))
+            except Exception:
+                pass
+    return []
+
+
+try:
+    _APP_V43_PREV_LEAPV8_RENDER_RESULT = _leapv8_render_result
+except Exception:
+    _APP_V43_PREV_LEAPV8_RENDER_RESULT = None
+
+
+def _leapv8_render_result(result, cfg=None):
+    prev = None
+    if callable(_APP_V43_PREV_LEAPV8_RENDER_RESULT):
+        try:
+            prev = _APP_V43_PREV_LEAPV8_RENDER_RESULT(result, cfg)
+        except TypeError:
+            prev = _APP_V43_PREV_LEAPV8_RENDER_RESULT(result)
+        except Exception as e:
+            try:
+                st.error('Previous Leap renderer failed in APP V43 wrapper: ' + _app_v43_text(e, 500))
+            except Exception:
+                pass
+    try:
+        app_v43_render_smatrix_usr_ui(result)
+    except Exception as e:
+        try:
+            st.warning('V43 S行列/USR UI表示に失敗: ' + _app_v43_text(e, 500))
+        except Exception:
+            pass
+    return prev
+
+try:
+    _APP_V43_PREV_LEAPV4_RENDER_RESULT = _leapv4_render_result
+except Exception:
+    _APP_V43_PREV_LEAPV4_RENDER_RESULT = None
+
+
+def _leapv4_render_result(result, cfg=None):
+    prev = None
+    if callable(_APP_V43_PREV_LEAPV4_RENDER_RESULT):
+        try:
+            prev = _APP_V43_PREV_LEAPV4_RENDER_RESULT(result, cfg)
+        except TypeError:
+            prev = _APP_V43_PREV_LEAPV4_RENDER_RESULT(result)
+        except Exception as e:
+            try:
+                st.error('Previous Leap V4 renderer failed in APP V43 wrapper: ' + _app_v43_text(e, 500))
+            except Exception:
+                pass
+    try:
+        app_v43_render_smatrix_usr_ui(result)
+    except Exception as e:
+        try:
+            st.warning('V43 S行列/USR UI表示に失敗: ' + _app_v43_text(e, 500))
+        except Exception:
+            pass
+    return prev
+
+# Attach exports for downstream wrappers/debuggers without deleting prior symbols.
+try:
+    APP_V43_SMATRIX_USR_UI_EXPORTS = {
+        'patch_id': APP_V43_SMATRIX_USR_UI_PATCH_ID,
+        'functions': [
+            'app_v43_extract_candidates_from_result',
+            'app_v43_should_render_candidate_tools',
+            'app_v43_render_score_breakdown',
+            'app_v43_render_smatrix_verification_panel',
+            'app_v43_render_usr_support_panel',
+            'app_v43_build_display_graph_from_smatrix',
+            'app_v43_render_smatrix_usr_ui',
+        ],
+        'startup_empty_ui_suppressed': True,
+        'uses_existing_graphviz_when_available': True,
+    }
+except Exception:
+    pass
+
+# ============================================================================
+# END ADD-ONLY PATCH: APP-V43-SMATRIX-USR-UI
 # ============================================================================
