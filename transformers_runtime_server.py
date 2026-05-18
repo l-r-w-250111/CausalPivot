@@ -3523,3 +3523,47 @@ for _runtime_v43_name in [
 # ============================================================================
 # END ADD-ONLY PATCH: RUNTIME-V43-PHASE-TELEMETRY-GUARD
 # ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY PATCH: RUNTIME-V70-FLEXIBLE-DEEP-AUX-ENDPOINT
+# generated_at_jst: 2026-05-18
+# Adds flexible V70 endpoint for deeper auxiliary generation without relying on
+# Pydantic schema compliance. Existing endpoints are preserved.
+# ============================================================================
+RUNTIME_V70_FLEXIBLE_DEEP_AUX_PATCH_ID = 'RUNTIME-V70-FLEXIBLE-DEEP-AUX-ENDPOINT-20260518'
+
+def _rtv70_int(x, default=0, lo=0, hi=8192):
+    try: v=int(x)
+    except Exception: v=int(default)
+    return max(int(lo), min(int(hi), v))
+
+def _rtv70_dict(x): return dict(x) if isinstance(x, dict) else {}
+
+@app.post('/autonomous-growth/v70/run')
+def autonomous_growth_v70_run(payload: dict):
+    import time as _time
+    t0=_time.time(); req=_rtv70_dict(payload)
+    max_turns=_rtv70_int(req.get('max_turns', req.get('turns', 16)), 16, 2, 256)
+    max_new=_rtv70_int(req.get('max_new_tokens', 2048), 2048, 32, 8192)
+    aux_rounds=_rtv70_int(req.get('llm_aux_rounds', 2), 2, 0, 32)
+    prompt=str(req.get('prompt') or req.get('query') or req.get('goal') or 'Generate grounded causal invention hypotheses.')
+    result={'patch_id':RUNTIME_V70_FLEXIBLE_DEEP_AUX_PATCH_ID,'ok':False,'aux_generations':[],'request':{'max_turns':max_turns,'max_new_tokens':max_new,'llm_aux_rounds':aux_rounds},'llm_schema_compliance_assumed':False}
+    try:
+        kind, processor, tokenizer, model, loaded_path, loaded_quant = _ensure_loaded(req.get('model_path'), req.get('quantization'))
+        for i in range(aux_rounds):
+            p = prompt + '\n\nV70 auxiliary pass %d/%d: produce plain text grounding terms, mechanisms, controllables, observables, risks, and verification ideas. Do not rely on JSON.' % (i+1, aux_rounds)
+            txt = _plain_generate(kind, processor, tokenizer, model, p, max_new)
+            result['aux_generations'].append({'round':i+1,'text':txt})
+        result.update({'ok':True,'model_path':loaded_path,'loader_kind':kind,'quantization':loaded_quant,'elapsed_ms':int((_time.time()-t0)*1000)})
+        return result
+    except Exception as e:
+        result.update({'ok':False,'reason':'runtime_v70_exception','error':repr(e),'elapsed_ms':int((_time.time()-t0)*1000)})
+        return result
+
+@app.get('/runtime/v70/capabilities')
+def runtime_v70_capabilities():
+    return {'ok':True,'patch_id':RUNTIME_V70_FLEXIBLE_DEEP_AUX_PATCH_ID,'endpoints':['/autonomous-growth/v70/run'],'max_new_tokens_ceiling':8192,'max_turns_ceiling':256,'llm_schema_compliance_assumed':False}
+# ============================================================================
+# END ADD-ONLY PATCH: RUNTIME-V70-FLEXIBLE-DEEP-AUX-ENDPOINT
+# ============================================================================

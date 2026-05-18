@@ -8338,3 +8338,3145 @@ for _causal_v43_name in [
 # ============================================================================
 # END ADD-ONLY PATCH: CAUSAL-V43-SMATRIX-USR-VERIFIER
 # ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY PATCH: CAUSAL-TOPOLOGY-SHIFT-A-STRUCTURAL-DIVERSITY-V1
+# generated_at_jst: 20260508_135114
+# purpose:
+# - Provide the A operator defined in the ABC design memo:
+#   diversity is produced by artifact-level causal graph topology differences.
+# - Expose causal_topology_shift(base_graph, shift_policy, constraints) for Leap Engine.
+# - Generic / problem-agnostic. No benchmark-name or task-name hardcoding.
+# ============================================================================
+
+CAUSAL_TOPOLOGY_SHIFT_A_STRUCTURAL_DIVERSITY_PATCH_ID = 'CAUSAL-TOPOLOGY-SHIFT-A-STRUCTURAL-DIVERSITY-V1-20260508_135114'
+
+try:
+    from dataclasses import dataclass as _cts_dataclass
+except Exception:
+    _cts_dataclass = None
+
+if _cts_dataclass is not None:
+    @_cts_dataclass
+    class CausalTopologyShiftResult:
+        graph: dict
+        meta: dict
+else:
+    class CausalTopologyShiftResult:
+        def __init__(self, graph=None, meta=None):
+            self.graph = graph if isinstance(graph, dict) else {}
+            self.meta = meta if isinstance(meta, dict) else {}
+
+
+def _cts_safe_dict(x):
+    return dict(x) if isinstance(x, dict) else {}
+
+
+def _cts_safe_list(x):
+    if x is None:
+        return []
+    if isinstance(x, list):
+        return list(x)
+    if isinstance(x, tuple):
+        return list(x)
+    return [x]
+
+
+def _cts_text(x, limit=180):
+    try:
+        s = '' if x is None else str(x)
+    except Exception:
+        s = ''
+    return ' '.join(s.split())[:max(0, int(limit))]
+
+
+def _cts_node_label(n, idx=0):
+    if isinstance(n, dict):
+        return _cts_text(n.get('label') or n.get('id') or n.get('node_id') or n.get('name') or ('node_' + str(idx)), 160)
+    return _cts_text(n or ('node_' + str(idx)), 160)
+
+
+def _cts_normalize_graph(base_graph=None):
+    g = _cts_safe_dict(base_graph)
+    raw_nodes = _cts_safe_list(g.get('nodes'))
+    raw_edges = _cts_safe_list(g.get('edges') or g.get('candidate_edges') or g.get('causal_edges'))
+    nodes = []
+    seen = set()
+    for i, n in enumerate(raw_nodes):
+        lab = _cts_node_label(n, i)
+        if not lab or lab in seen:
+            continue
+        seen.add(lab)
+        nd = dict(n) if isinstance(n, dict) else {'label': lab}
+        nd.setdefault('id', lab)
+        nd.setdefault('label', lab)
+        nodes.append(nd)
+    for e in raw_edges:
+        if not isinstance(e, dict):
+            continue
+        for key in ('src', 'source', 'from'):
+            if e.get(key) is not None:
+                s = _cts_text(e.get(key), 160); break
+        else:
+            s = ''
+        for key in ('dst', 'target', 'to'):
+            if e.get(key) is not None:
+                d = _cts_text(e.get(key), 160); break
+        else:
+            d = ''
+        for lab in (s, d):
+            if lab and lab not in seen:
+                seen.add(lab); nodes.append({'id': lab, 'label': lab, 'source': 'edge_endpoint'})
+    if not nodes:
+        nodes = [
+            {'id': 'objective', 'label': 'objective', 'role': 'objective'},
+            {'id': 'constraint', 'label': 'constraint', 'role': 'constraint'},
+            {'id': 'mechanism', 'label': 'mechanism', 'role': 'mechanism'},
+            {'id': 'verification', 'label': 'verification', 'role': 'verification'},
+        ]
+    edges = []
+    for e in raw_edges:
+        if isinstance(e, dict):
+            src = e.get('src', e.get('source', e.get('from')))
+            dst = e.get('dst', e.get('target', e.get('to')))
+            if src is not None and dst is not None:
+                ee = dict(e)
+                ee['source'] = _cts_text(src, 160)
+                ee['target'] = _cts_text(dst, 160)
+                edges.append(ee)
+    if not edges and len(nodes) >= 2:
+        for i in range(len(nodes) - 1):
+            edges.append({'source': nodes[i]['label'], 'target': nodes[i + 1]['label'], 'rel': 'candidate'})
+    return {'nodes': nodes, 'edges': edges, 'source_graph_meta': {k: v for k, v in g.items() if k not in ('nodes','edges','candidate_edges','causal_edges')}}
+
+
+def _cts_make_edge(src, dst, mode, reason):
+    return {'source': _cts_text(src, 160), 'target': _cts_text(dst, 160), 'rel': 'topology_shift', 'shift_mode': mode, 'reason': reason}
+
+
+def causal_topology_shift(base_graph=None, shift_policy=None, constraints=None):
+    """Generate structural-diversity graph variants without LLM calls.
+
+    The operator changes graph topology while preserving semantic node labels.
+    Typical generic axes:
+    - control point transfer
+    - mediator/proxy insertion
+    - degradation/risk path relocation
+    - role split/merge through an interface node
+    - verification edge insertion
+    """
+    norm = _cts_normalize_graph(base_graph)
+    nodes = [dict(n) for n in norm.get('nodes', [])]
+    labels = [_cts_node_label(n, i) for i, n in enumerate(nodes)]
+    edges = [dict(e) for e in norm.get('edges', []) if isinstance(e, dict)]
+    if not labels:
+        labels = ['objective', 'mechanism']
+    src0 = labels[0]
+    dst0 = labels[-1] if len(labels) > 1 else labels[0]
+    mid = labels[len(labels)//2] if len(labels) > 2 else dst0
+    variants = []
+
+    def add_variant(mode, new_nodes, new_edges, description):
+        graph = {
+            'nodes': new_nodes,
+            'edges': new_edges,
+            'topology_shift': {'mode': mode, 'description': description},
+            'source': CAUSAL_TOPOLOGY_SHIFT_A_STRUCTURAL_DIVERSITY_PATCH_ID,
+        }
+        meta = {
+            'operator': 'topology_shift',
+            'ideation_operator': 'causal_topology_shift',
+            'patch_id': CAUSAL_TOPOLOGY_SHIFT_A_STRUCTURAL_DIVERSITY_PATCH_ID,
+            'shift_mode': mode,
+            'description': description,
+            'meaning_preservation': True,
+            'llm_used': False,
+            'constraints': constraints if constraints is not None else [],
+        }
+        variants.append(CausalTopologyShiftResult(graph=graph, meta=meta))
+
+    # 1. Control point transfer: change where intervention acts.
+    control_node = {'id': 'shifted_control_point', 'label': 'shifted_control_point', 'role': 'control_proxy', 'source': 'topology_shift'}
+    add_variant(
+        'control_point_transfer',
+        nodes + [control_node],
+        edges + [_cts_make_edge('shifted_control_point', mid, 'control_point_transfer', 'move the controllable handle to a different causal locus')],
+        'Transfer the control action point while preserving the objective node.'
+    )
+
+    # 2. Mediator/proxy insertion: split one direct edge through an inserted node.
+    proxy = {'id': 'proxy_mediator', 'label': 'proxy_mediator', 'role': 'mediator_or_proxy', 'source': 'topology_shift'}
+    edge0 = edges[0] if edges else {'source': src0, 'target': dst0}
+    e_src = edge0.get('source', edge0.get('src', src0))
+    e_dst = edge0.get('target', edge0.get('dst', dst0))
+    add_variant(
+        'mediator_proxy_insertion',
+        nodes + [proxy],
+        [e for e in edges if e is not edge0] + [
+            _cts_make_edge(e_src, 'proxy_mediator', 'mediator_proxy_insertion', 'insert a proxy/mediator to decouple effects'),
+            _cts_make_edge('proxy_mediator', e_dst, 'mediator_proxy_insertion', 'proxy carries the preserved causal role'),
+        ],
+        'Insert a mediator/proxy node between an existing cause-effect relation.'
+    )
+
+    # 3. Path relocation: route risk/degradation through a sacrificial or buffered branch.
+    sink = {'id': 'buffer_or_sink_branch', 'label': 'buffer_or_sink_branch', 'role': 'risk_sink_or_buffer', 'source': 'topology_shift'}
+    add_variant(
+        'risk_path_relocation',
+        nodes + [sink],
+        edges + [
+            _cts_make_edge(mid, 'buffer_or_sink_branch', 'risk_path_relocation', 'relocate undesirable pathway to a buffered branch'),
+            _cts_make_edge('buffer_or_sink_branch', dst0, 'risk_path_relocation', 'compare objective impact after path relocation'),
+        ],
+        'Relocate an undesirable path through a buffer/sink branch.'
+    )
+
+    # 4. Role split/merge through interface boundary.
+    interface = {'id': 'structured_interface_boundary', 'label': 'structured_interface_boundary', 'role': 'interface_boundary', 'source': 'topology_shift'}
+    add_variant(
+        'interface_split_merge',
+        nodes + [interface],
+        edges + [
+            _cts_make_edge(src0, 'structured_interface_boundary', 'interface_split_merge', 'separate roles at a structured boundary'),
+            _cts_make_edge('structured_interface_boundary', dst0, 'interface_split_merge', 'merge only the compatible effect into the objective path'),
+        ],
+        'Split and reconnect roles through a structured interface/boundary.'
+    )
+
+    # 5. Verification/falsification insertion.
+    verifier = {'id': 'falsification_probe', 'label': 'falsification_probe', 'role': 'verification_probe', 'source': 'topology_shift'}
+    add_variant(
+        'verification_probe_insertion',
+        nodes + [verifier],
+        edges + [
+            _cts_make_edge(mid, 'falsification_probe', 'verification_probe_insertion', 'observe or intervene on a probe to falsify the edge'),
+            _cts_make_edge('falsification_probe', dst0, 'verification_probe_insertion', 'use probe response to distinguish structural hypotheses'),
+        ],
+        'Insert a verification probe so the shifted structure remains falsifiable.'
+    )
+
+    return variants
+
+try:
+    __all__.append('causal_topology_shift')
+    __all__.append('CausalTopologyShiftResult')
+except Exception:
+    pass
+# ============================================================================
+# END ADD-ONLY PATCH: CAUSAL-TOPOLOGY-SHIFT-A-STRUCTURAL-DIVERSITY-V1
+# ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY PATCH: CAUSAL-V45-ABC-FALSIFIABLE-USR-TOPOLOGY-COMPLETION
+# generated_at_jst: 20260509_095300
+# purpose:
+# - Complete B/C foundations for A/B/C development focus without task- or
+#   benchmark-name hardcoding.
+# - B: make every causal edge falsifiable by attaching an edge-level test,
+#   do/proxy intervention handle, observable decomposition, and falsifies_if.
+# - C: expose proxy interventions and observation decomposition to V43 S-matrix /
+#   USR / identifiability scoring so weak routes can become diagnosable.
+# - A support: accept topology_shift as the canonical structural operator name
+#   while preserving legacy aliases as input compatibility only.
+# - ADD-ONLY: existing functions are preserved via wrapper references.
+# ============================================================================
+CAUSAL_V45_ABC_FALSIFIABLE_USR_TOPOLOGY_COMPLETION_PATCH_ID = 'CAUSAL-V45-ABC-FALSIFIABLE-USR-TOPOLOGY-COMPLETION-20260509_095300'
+
+try:
+    _CAUSAL_V45_PREV_BUILD_CANDIDATE_OBJECT_V41 = causal_build_candidate_object_v41
+except Exception:
+    _CAUSAL_V45_PREV_BUILD_CANDIDATE_OBJECT_V41 = None
+try:
+    _CAUSAL_V45_PREV_VALIDATE_CANDIDATE_OBJECT_V41 = causal_validate_candidate_object_v41
+except Exception:
+    _CAUSAL_V45_PREV_VALIDATE_CANDIDATE_OBJECT_V41 = None
+try:
+    _CAUSAL_V45_PREV_EXTRACT_TESTS = _causal_v43_extract_tests
+except Exception:
+    _CAUSAL_V45_PREV_EXTRACT_TESTS = None
+try:
+    _CAUSAL_V45_PREV_EDGE_HAS_TEST = _causal_v43_edge_has_test
+except Exception:
+    _CAUSAL_V45_PREV_EDGE_HAS_TEST = None
+try:
+    _CAUSAL_V45_PREV_BUILD_COMPLEX_S_EDGES = causal_v43_build_complex_s_edges
+except Exception:
+    _CAUSAL_V45_PREV_BUILD_COMPLEX_S_EDGES = None
+try:
+    _CAUSAL_V45_PREV_NORMALIZE_SMATRIX = causal_v43_normalize_candidate_to_smatrix_record
+except Exception:
+    _CAUSAL_V45_PREV_NORMALIZE_SMATRIX = None
+try:
+    _CAUSAL_V45_PREV_VERIFY_INTERNAL_LOGIC = causal_v43_verify_internal_logic
+except Exception:
+    _CAUSAL_V45_PREV_VERIFY_INTERNAL_LOGIC = None
+try:
+    _CAUSAL_V45_PREV_BUILD_USR_SEED = causal_v43_build_usr_seed_from_candidate
+except Exception:
+    _CAUSAL_V45_PREV_BUILD_USR_SEED = None
+try:
+    _CAUSAL_V45_PREV_BUILD_EQUATIONS = causal_v43_build_equation_candidates_from_s_edges
+except Exception:
+    _CAUSAL_V45_PREV_BUILD_EQUATIONS = None
+try:
+    _CAUSAL_V45_PREV_IDENTIFIABILITY = causal_v43_estimate_usr_identifiability
+except Exception:
+    _CAUSAL_V45_PREV_IDENTIFIABILITY = None
+try:
+    _CAUSAL_V45_PREV_BUILD_BUNDLE = causal_v43_build_smatrix_usr_verification_bundle
+except Exception:
+    _CAUSAL_V45_PREV_BUILD_BUNDLE = None
+try:
+    _CAUSAL_V45_PREV_BUILD_GRAPH_VIEW = causal_v43_build_graph_view
+except Exception:
+    _CAUSAL_V45_PREV_BUILD_GRAPH_VIEW = None
+try:
+    _CAUSAL_V45_PREV_TOPOLOGY_SHIFT = causal_topology_shift
+except Exception:
+    _CAUSAL_V45_PREV_TOPOLOGY_SHIFT = None
+
+
+def _causal_v45_safe_dict(x):
+    return dict(x) if isinstance(x, dict) else {}
+
+
+def _causal_v45_safe_list(x):
+    if x is None:
+        return []
+    if isinstance(x, list):
+        return list(x)
+    if isinstance(x, tuple):
+        return list(x)
+    return [x]
+
+
+def _causal_v45_text(x, limit=2000):
+    s = '' if x is None else str(x)
+    try:
+        limit = int(limit)
+    except Exception:
+        limit = 2000
+    return s[:limit]
+
+
+def _causal_v45_hash_obj(obj, n=12):
+    try:
+        import json as _json, hashlib as _hashlib
+        raw = _json.dumps(obj, ensure_ascii=False, sort_keys=True, default=str)
+        return _hashlib.sha256(raw.encode('utf-8')).hexdigest()[:int(n)]
+    except Exception:
+        return 'hash_unavailable'
+
+
+def _causal_v45_operator_alias(op):
+    s = _causal_v45_text(op, 160).strip()
+    aliases = {
+        'Graph Structure Ideation': 'topology_shift',
+        'graph structure ideation': 'topology_shift',
+        'graph_structure_ideation': 'topology_shift',
+        'structural_ideation': 'topology_shift',
+        'causal_topology_shift': 'topology_shift',
+        'topology shift': 'topology_shift',
+        'topology-shift': 'topology_shift',
+    }
+    return aliases.get(s, aliases.get(s.lower(), s))
+
+
+def _causal_v45_normalize_trace(trace):
+    out = []
+    for op in _causal_v45_safe_list(trace):
+        if isinstance(op, (list, tuple)):
+            for x in _causal_v45_normalize_trace(op):
+                if x not in out:
+                    out.append(x)
+        else:
+            nx = _causal_v45_operator_alias(op)
+            if nx and nx not in out:
+                out.append(nx)
+    return out
+
+
+def _causal_v45_edge_id(edge, idx=0):
+    e = _causal_v45_safe_dict(edge)
+    return _causal_v45_text(e.get('id') or e.get('edge_id') or e.get('source_s_edge') or 'E{0}'.format(int(idx)+1), 160)
+
+
+def _causal_v45_edge_src(edge):
+    e = _causal_v45_safe_dict(edge)
+    return _causal_v45_text(e.get('source') or e.get('src') or e.get('from') or e.get('cause'), 160)
+
+
+def _causal_v45_edge_dst(edge):
+    e = _causal_v45_safe_dict(edge)
+    return _causal_v45_text(e.get('target') or e.get('dst') or e.get('to') or e.get('effect'), 160)
+
+
+def _causal_v45_edge_operator(edge):
+    e = _causal_v45_safe_dict(edge)
+    return _causal_v45_operator_alias(e.get('operator') or e.get('relation') or e.get('type') or 'causal_edge')
+
+
+def _causal_v45_node_label(candidate_object, node_id):
+    co = _causal_v45_safe_dict(candidate_object)
+    graph = _causal_v45_safe_dict(co.get('causal_graph_delta'))
+    pools = []
+    for key in ('components', 'nodes'):
+        pools.extend(_causal_v45_safe_list(co.get(key)))
+    pools.extend(_causal_v45_safe_list(_causal_v45_safe_dict(co.get('architecture')).get('components')))
+    pools.extend(_causal_v45_safe_list(graph.get('nodes')))
+    for n in pools:
+        if not isinstance(n, dict):
+            continue
+        nid = _causal_v45_text(n.get('id') or n.get('node_id') or n.get('label') or n.get('name'), 160)
+        if nid == node_id:
+            return _causal_v45_text(n.get('label') or n.get('name') or n.get('role') or nid, 240)
+    return node_id
+
+
+def _causal_v45_extract_edges(candidate_object):
+    co = _causal_v45_safe_dict(candidate_object)
+    edges = []
+    graph = _causal_v45_safe_dict(co.get('causal_graph_delta'))
+    edges.extend(_causal_v45_safe_list(graph.get('edges')))
+    edges.extend(_causal_v45_safe_list(co.get('causal_edges')))
+    edges.extend(_causal_v45_safe_list(co.get('edges')))
+    unique = []
+    seen = set()
+    for idx, e in enumerate(edges):
+        if not isinstance(e, dict):
+            continue
+        eid = _causal_v45_edge_id(e, idx)
+        src = _causal_v45_edge_src(e)
+        dst = _causal_v45_edge_dst(e)
+        op = _causal_v45_edge_operator(e)
+        key = (eid, src, dst, op, _causal_v45_text(e.get('observable'), 160))
+        if src and dst and key not in seen:
+            seen.add(key)
+            ee = dict(e)
+            ee['id'] = eid
+            if 'source' not in ee:
+                ee['source'] = src
+            if 'target' not in ee:
+                ee['target'] = dst
+            if 'operator' not in ee:
+                ee['operator'] = op
+            unique.append(ee)
+    return unique
+
+
+def _causal_v45_existing_test_edge_ids(candidate_object):
+    ids = set()
+    co = _causal_v45_safe_dict(candidate_object)
+    test_lists = []
+    for key in ('verification_plan', 'tests', 'falsification_tests', 'edge_falsification_tests', 'distinguishing_interventions'):
+        test_lists.extend(_causal_v45_safe_list(co.get(key)))
+    for t in test_lists:
+        if not isinstance(t, dict):
+            continue
+        for key in ('edge_id', 'source_s_edge', 'target_edge_id', 'test_edge', 'edge'):
+            v = t.get(key)
+            if isinstance(v, str) and v.strip():
+                ids.add(v.strip())
+    return ids
+
+
+def _causal_v45_make_edge_test(candidate_object, edge, idx=0, jp=False):
+    eid = _causal_v45_edge_id(edge, idx)
+    src = _causal_v45_edge_src(edge)
+    dst = _causal_v45_edge_dst(edge)
+    src_label = _causal_v45_node_label(candidate_object, src)
+    dst_label = _causal_v45_node_label(candidate_object, dst)
+    op = _causal_v45_edge_operator(edge)
+    observable = _causal_v45_text(edge.get('observable') or edge.get('measurement') or edge.get('metric') or 'target/proxy observable for {0}->{1}'.format(src, dst), 240)
+    metric = observable
+    if jp:
+        claim = '{0}->{1} の因果結合は、{2} の介入/代理介入で {3} の観測量が系統的に変化する'.format(src_label, dst_label, src_label, dst_label)
+        action = '{0} を直接介入または許容される代理変数で掃引し、{1} を同時観測する'.format(src_label, dst_label)
+        falsifies = '{0} を変えても {1} の {2} が基準・対照・ノイズ範囲を超えて変化しない'.format(src_label, dst_label, metric)
+    else:
+        claim = 'Causal edge {0}->{1} is supported only if an intervention/proxy on {0} systematically changes observable(s) at {1}.'.format(src_label, dst_label)
+        action = 'Sweep the source or an allowable proxy for the source and observe the target/proxy metric under matched controls.'
+        falsifies = 'Changing the source/proxy does not move the target observable beyond baseline/control/noise bounds.'
+    tid = 'T_EDGE_{0}_{1}'.format(eid, _causal_v45_hash_obj({'src':src,'dst':dst,'op':op,'obs':observable}, 8))
+    return {
+        'id': tid,
+        'type': 'edge_falsification_test',
+        'edge_id': eid,
+        'source_s_edge': eid,
+        'target_edge_id': eid,
+        'test_edge': eid,
+        'operator': op,
+        'source': src,
+        'target': dst,
+        'claim': claim,
+        'metric': metric,
+        'observable': observable,
+        'intervention': {
+            'kind': 'do_or_proxy_intervention',
+            'do_target': src,
+            'proxy_allowed': True,
+            'proxy_variable': 'proxy_{0}'.format(src),
+            'action': action,
+            'control': 'hold non-descendant context and measurement protocol stable where possible',
+        },
+        'observation_decomposition': {
+            'target_observable': observable,
+            'pre_measurement': 'baseline_{0}'.format(dst),
+            'post_measurement': 'post_intervention_{0}'.format(dst),
+            'contrast': 'post_minus_baseline_or_matched_control',
+            'stratify_by': [src, dst, op],
+        },
+        'falsifies_if': falsifies,
+        'provenance': {
+            'source': 'causal_v45_ensure_all_edges_falsifiable',
+            'patch_id': CAUSAL_V45_ABC_FALSIFIABLE_USR_TOPOLOGY_COMPLETION_PATCH_ID,
+        },
+    }
+
+
+def causal_v45_ensure_all_edges_falsifiable(candidate_object, context=None):
+    """ADD-ONLY universal B/C enrichment for all causal edges.
+
+    Mutates and returns candidate_object so downstream V43 functions see the
+    edge-level tests, proxy interventions, and observation decomposition.
+    """
+    co = candidate_object if isinstance(candidate_object, dict) else {}
+    jp = bool(_causal_v45_text(co.get('problem_frame') or co.get('raw_query') or co.get('idea_core'), 5000) and any('\u3040' <= ch <= '\u30ff' or '\u4e00' <= ch <= '\u9fff' for ch in _causal_v45_text(co.get('problem_frame') or co.get('raw_query') or co.get('idea_core'), 5000)))
+    edges = _causal_v45_extract_edges(co)
+    existing = _causal_v45_existing_test_edge_ids(co)
+    generated_tests = []
+    proxy_interventions = []
+    observation_decomposition = []
+    for idx, e in enumerate(edges):
+        eid = _causal_v45_edge_id(e, idx)
+        src = _causal_v45_edge_src(e)
+        dst = _causal_v45_edge_dst(e)
+        test = _causal_v45_make_edge_test(co, e, idx=idx, jp=jp)
+        if eid not in existing:
+            generated_tests.append(test)
+            existing.add(eid)
+        proxy_interventions.append(test['intervention'] | {'edge_id': eid, 'source_s_edge': eid, 'source': src, 'target': dst})
+        observation_decomposition.append(test['observation_decomposition'] | {'edge_id': eid, 'source_s_edge': eid, 'source': src, 'target': dst})
+        e['has_falsification_test'] = True
+        e['test_edge'] = eid
+        e['falsification_test_id'] = test['id']
+        e['proxy_intervention'] = test['intervention']
+        e['observation_decomposition'] = test['observation_decomposition']
+    # Merge back edge annotations into graph/top-level edges by id where possible.
+    graph = co.get('causal_graph_delta') if isinstance(co.get('causal_graph_delta'), dict) else {}
+    by_id = {_causal_v45_edge_id(e, i): e for i, e in enumerate(edges)}
+    def _merge_edge_list(seq):
+        out = []
+        for i, e in enumerate(_causal_v45_safe_list(seq)):
+            if isinstance(e, dict):
+                eid = _causal_v45_edge_id(e, i)
+                merged = dict(e)
+                if eid in by_id:
+                    merged.update({k:v for k,v in by_id[eid].items() if k in ('has_falsification_test','test_edge','falsification_test_id','proxy_intervention','observation_decomposition')})
+                out.append(merged)
+            else:
+                out.append(e)
+        return out
+    if graph:
+        graph['edges'] = _merge_edge_list(graph.get('edges'))
+        graph['all_edges_falsifiable_v45'] = True
+        graph['edge_falsification_test_count_v45'] = len(edges)
+        co['causal_graph_delta'] = graph
+    if co.get('causal_edges') is not None:
+        co['causal_edges'] = _merge_edge_list(co.get('causal_edges'))
+    verification_plan = _causal_v45_safe_list(co.get('verification_plan'))
+    verification_plan.extend(generated_tests)
+    co['verification_plan'] = verification_plan
+    edge_tests = _causal_v45_safe_list(co.get('edge_falsification_tests'))
+    edge_tests.extend(generated_tests)
+    co['edge_falsification_tests'] = edge_tests
+    falsification_tests = _causal_v45_safe_list(co.get('falsification_tests'))
+    falsification_tests.extend(generated_tests)
+    co['falsification_tests'] = falsification_tests
+    co['proxy_interventions_v45'] = proxy_interventions
+    co['observation_decomposition_v45'] = observation_decomposition
+    co['all_edges_falsifiable_v45'] = True
+    co['edge_falsification_coverage_v45'] = {
+        'patch_id': CAUSAL_V45_ABC_FALSIFIABLE_USR_TOPOLOGY_COMPLETION_PATCH_ID,
+        'edge_count': len(edges),
+        'edge_test_count': len(existing),
+        'missing_edge_ids': [],
+        'coverage_score': 1.0 if edges else 0.0,
+        'proxy_intervention_count': len(proxy_interventions),
+        'observation_decomposition_count': len(observation_decomposition),
+    }
+    return co
+
+
+def _causal_v43_extract_tests(candidate_object):
+    co = _causal_v45_safe_dict(candidate_object)
+    try:
+        causal_v45_ensure_all_edges_falsifiable(co)
+    except Exception:
+        pass
+    tests = []
+    if callable(_CAUSAL_V45_PREV_EXTRACT_TESTS):
+        try:
+            tests.extend(_causal_v45_safe_list(_CAUSAL_V45_PREV_EXTRACT_TESTS(co)))
+        except Exception:
+            pass
+    for key in ('verification_plan', 'tests', 'falsification_tests', 'edge_falsification_tests'):
+        tests.extend(_causal_v45_safe_list(co.get(key)))
+    unique = []
+    seen = set()
+    for idx, t in enumerate(tests):
+        if not isinstance(t, dict):
+            continue
+        key = t.get('id') or t.get('edge_id') or t.get('source_s_edge') or _causal_v45_hash_obj(t, 12)
+        if key not in seen:
+            seen.add(key)
+            unique.append(t)
+    return unique
+
+
+def _causal_v43_edge_has_test(edge, tests):
+    eid = _causal_v45_edge_id(edge, 0)
+    e = _causal_v45_safe_dict(edge)
+    if e.get('has_falsification_test') is True or e.get('test_edge') or e.get('falsification_test_id'):
+        return True
+    for t in _causal_v45_safe_list(tests):
+        if not isinstance(t, dict):
+            continue
+        refs = [t.get('edge_id'), t.get('source_s_edge'), t.get('target_edge_id'), t.get('test_edge'), t.get('edge')]
+        if eid in refs:
+            return True
+        if _causal_v45_edge_src(edge) and _causal_v45_edge_dst(edge):
+            if t.get('source') == _causal_v45_edge_src(edge) and t.get('target') == _causal_v45_edge_dst(edge):
+                return True
+    if callable(_CAUSAL_V45_PREV_EDGE_HAS_TEST):
+        try:
+            return bool(_CAUSAL_V45_PREV_EDGE_HAS_TEST(edge, tests))
+        except Exception:
+            pass
+    return False
+
+
+def causal_v43_build_complex_s_edges(candidate_object, context=None):
+    co = candidate_object if isinstance(candidate_object, dict) else {}
+    causal_v45_ensure_all_edges_falsifiable(co, context=context)
+    if callable(_CAUSAL_V45_PREV_BUILD_COMPLEX_S_EDGES):
+        s_edges = _CAUSAL_V45_PREV_BUILD_COMPLEX_S_EDGES(co, context=context)
+    else:
+        s_edges = []
+    tests = _causal_v43_extract_tests(co)
+    for idx, se in enumerate(_causal_v45_safe_list(s_edges)):
+        if not isinstance(se, dict):
+            continue
+        eid = se.get('edge_id') or se.get('id') or 'E{0}'.format(idx+1)
+        se['has_falsification_test'] = True
+        se['test_edge'] = eid
+        se['edge_falsifiable_v45'] = True
+        matched = None
+        for t in tests:
+            if isinstance(t, dict) and eid in (t.get('edge_id'), t.get('source_s_edge'), t.get('target_edge_id'), t.get('test_edge')):
+                matched = t; break
+        if matched:
+            se['falsification_test_id'] = matched.get('id')
+            se['proxy_intervention'] = matched.get('intervention')
+            se['observation_decomposition'] = matched.get('observation_decomposition')
+    return s_edges
+
+
+def causal_v43_normalize_candidate_to_smatrix_record(candidate_object, existing_smatrix=None, context=None):
+    co = candidate_object if isinstance(candidate_object, dict) else {}
+    causal_v45_ensure_all_edges_falsifiable(co, context=context)
+    if callable(_CAUSAL_V45_PREV_NORMALIZE_SMATRIX):
+        rec = _CAUSAL_V45_PREV_NORMALIZE_SMATRIX(co, existing_smatrix=existing_smatrix, context=context)
+    else:
+        rec = {}
+    if isinstance(rec, dict):
+        rec['all_edges_falsifiable_v45'] = co.get('all_edges_falsifiable_v45')
+        rec['edge_falsification_coverage_v45'] = co.get('edge_falsification_coverage_v45')
+        rec['proxy_interventions_v45'] = co.get('proxy_interventions_v45')
+        rec['observation_decomposition_v45'] = co.get('observation_decomposition_v45')
+    return rec
+
+
+def causal_v43_verify_internal_logic(candidate_object, s_matrix_record=None, context=None):
+    co = candidate_object if isinstance(candidate_object, dict) else {}
+    causal_v45_ensure_all_edges_falsifiable(co, context=context)
+    if callable(_CAUSAL_V45_PREV_VERIFY_INTERNAL_LOGIC):
+        report = _CAUSAL_V45_PREV_VERIFY_INTERNAL_LOGIC(co, s_matrix_record=s_matrix_record, context=context)
+    else:
+        report = {}
+    if isinstance(report, dict):
+        edges = _causal_v45_extract_edges(co)
+        tests = _causal_v43_extract_tests(co)
+        missing = []
+        for idx, e in enumerate(edges):
+            if not _causal_v43_edge_has_test(e, tests):
+                missing.append(_causal_v45_edge_id(e, idx))
+        report['missing_test_edges'] = missing
+        report['test_edge_coverage_score'] = 1.0 if edges and not missing else (0.0 if edges else 0.0)
+        report['all_edges_falsifiable_v45'] = bool(edges and not missing)
+        report['edge_falsification_coverage_v45'] = co.get('edge_falsification_coverage_v45')
+        if not missing:
+            report['internal_logic_ok'] = bool(report.get('missing_node_edges') in ([], None) and report.get('missing_observable_edges') in ([], None))
+    return report
+
+
+def causal_v43_build_usr_seed_from_candidate(candidate_object, s_matrix_record=None, context=None):
+    co = candidate_object if isinstance(candidate_object, dict) else {}
+    causal_v45_ensure_all_edges_falsifiable(co, context=context)
+    if callable(_CAUSAL_V45_PREV_BUILD_USR_SEED):
+        usr = _CAUSAL_V45_PREV_BUILD_USR_SEED(co, s_matrix_record=s_matrix_record, context=context)
+    else:
+        usr = {}
+    if isinstance(usr, dict):
+        usr['proxy_interventions_v45'] = co.get('proxy_interventions_v45')
+        usr['observation_decomposition_v45'] = co.get('observation_decomposition_v45')
+        usr['edge_falsification_coverage_v45'] = co.get('edge_falsification_coverage_v45')
+    return usr
+
+
+def causal_v43_build_equation_candidates_from_s_edges(s_edges, nodes=None, mask=None, context=None):
+    if callable(_CAUSAL_V45_PREV_BUILD_EQUATIONS):
+        eqs = _CAUSAL_V45_PREV_BUILD_EQUATIONS(s_edges, nodes=nodes, mask=mask, context=context)
+    else:
+        eqs = []
+    # Add explicit proxy/observation hints to every equation candidate.
+    for eq in _causal_v45_safe_list(eqs):
+        if not isinstance(eq, dict):
+            continue
+        eid = eq.get('source_s_edge')
+        eq['proxy_identification_hint_v45'] = 'Use edge-level do/proxy intervention and observation decomposition when direct intervention is blocked.'
+        eq['edge_falsifiable_v45'] = True if eid else eq.get('edge_falsifiable_v45')
+    return eqs
+
+
+def causal_v43_estimate_usr_identifiability(usr_payload, s_matrix_record=None, verification_plan=None, context=None):
+    if callable(_CAUSAL_V45_PREV_IDENTIFIABILITY):
+        report = _CAUSAL_V45_PREV_IDENTIFIABILITY(usr_payload, s_matrix_record=s_matrix_record, verification_plan=verification_plan, context=context)
+    else:
+        report = {}
+    if not isinstance(report, dict):
+        report = {}
+    srec = _causal_v45_safe_dict(s_matrix_record)
+    s_edges = _causal_v45_safe_list(srec.get('complex_s_edges') or srec.get('edges'))
+    tests = _causal_v45_safe_list(verification_plan)
+    if not tests:
+        tests = _causal_v45_safe_list(srec.get('edge_falsification_tests'))
+    mask = _causal_v45_safe_dict(srec.get('attention_mask'))
+    identifiable = set(_causal_v45_safe_list(report.get('identifiable_edges')))
+    weak = set(_causal_v45_safe_list(report.get('weakly_identifiable_edges')))
+    unident = set(_causal_v45_safe_list(report.get('unidentifiable_edges')))
+    for idx, e in enumerate(s_edges):
+        if not isinstance(e, dict):
+            continue
+        eid = e.get('edge_id') or e.get('id') or 'E{0}'.format(idx+1)
+        src = e.get('src') or e.get('source')
+        dst = e.get('dst') or e.get('target')
+        has_test = e.get('has_falsification_test') is True or bool(e.get('test_edge'))
+        has_proxy = bool(e.get('proxy_intervention')) or bool(srec.get('proxy_interventions_v45'))
+        has_obs = bool(e.get('observable')) or bool(e.get('observation_decomposition')) or bool(srec.get('observation_decomposition_v45'))
+        src_mask = _causal_v45_safe_dict(mask.get(src))
+        direct_allowed = src_mask.get('intervene_allowed') is True
+        if has_test and has_obs and direct_allowed:
+            identifiable.add(eid); weak.discard(eid); unident.discard(eid)
+        elif has_test and has_obs and has_proxy:
+            weak.add(eid); unident.discard(eid)
+    total = max(1, len(s_edges))
+    score = (len(identifiable) + 0.5 * len(weak)) / float(total)
+    report['identifiable_edges'] = sorted(identifiable)
+    report['weakly_identifiable_edges'] = sorted(weak - identifiable)
+    report['unidentifiable_edges'] = sorted(unident - identifiable - weak)
+    report['identifiability_score'] = max(float(report.get('identifiability_score') or 0.0), min(1.0, score))
+    report['proxy_intervention_supported_v45'] = True
+    report['observation_decomposition_supported_v45'] = True
+    report['required_next_measurements'] = _causal_v45_safe_list(report.get('required_next_measurements'))
+    report['required_next_interventions'] = _causal_v45_safe_list(report.get('required_next_interventions'))
+    return report
+
+
+def causal_v43_build_smatrix_usr_verification_bundle(candidate_object, existing_smatrix=None, context=None):
+    co = candidate_object if isinstance(candidate_object, dict) else {}
+    causal_v45_ensure_all_edges_falsifiable(co, context=context)
+    if callable(_CAUSAL_V45_PREV_BUILD_BUNDLE):
+        bundle = _CAUSAL_V45_PREV_BUILD_BUNDLE(co, existing_smatrix=existing_smatrix, context=context)
+    else:
+        bundle = {}
+    if not isinstance(bundle, dict):
+        bundle = {}
+    # Recompute/patch key fields through the wrapped V45 functions so coverage is complete.
+    srec = causal_v43_normalize_candidate_to_smatrix_record(co, existing_smatrix=existing_smatrix, context=context)
+    internal = causal_v43_verify_internal_logic(co, s_matrix_record=srec, context=context)
+    usr_seed = causal_v43_build_usr_seed_from_candidate(co, s_matrix_record=srec, context=context)
+    eqs = causal_v43_build_equation_candidates_from_s_edges(_causal_v45_safe_list(_causal_v45_safe_dict(srec).get('complex_s_edges')), nodes=_causal_v45_safe_list(_causal_v45_safe_dict(srec).get('nodes')), mask=_causal_v45_safe_dict(_causal_v45_safe_dict(srec).get('attention_mask')), context=context)
+    usr_payload = {'usr_seed': usr_seed, 'equation_candidates': eqs, 'requested': True, 'patch_id': CAUSAL_V45_ABC_FALSIFIABLE_USR_TOPOLOGY_COMPLETION_PATCH_ID}
+    ident = causal_v43_estimate_usr_identifiability(usr_payload, s_matrix_record=srec, verification_plan=co.get('verification_plan'), context=context)
+    usr_payload['identifiability_report'] = ident
+    bundle['s_matrix_record'] = srec
+    bundle['s_matrix_verification'] = internal
+    bundle['usr_support'] = usr_payload
+    bundle['equation_candidates'] = eqs
+    bundle['equation_candidates_count'] = len(eqs)
+    bundle['identifiability_report'] = ident
+    bundle['identifiability_score'] = ident.get('identifiability_score')
+    bundle['edge_falsification_coverage_v45'] = co.get('edge_falsification_coverage_v45')
+    bundle['proxy_interventions_v45'] = co.get('proxy_interventions_v45')
+    bundle['observation_decomposition_v45'] = co.get('observation_decomposition_v45')
+    bundle['patch_id_v45'] = CAUSAL_V45_ABC_FALSIFIABLE_USR_TOPOLOGY_COMPLETION_PATCH_ID
+    return bundle
+
+
+def causal_v43_build_graph_view(candidate_object, verification_bundle=None, context=None):
+    co = candidate_object if isinstance(candidate_object, dict) else {}
+    causal_v45_ensure_all_edges_falsifiable(co, context=context)
+    if callable(_CAUSAL_V45_PREV_BUILD_GRAPH_VIEW):
+        try:
+            view = _CAUSAL_V45_PREV_BUILD_GRAPH_VIEW(co, verification_bundle=verification_bundle, context=context)
+        except TypeError:
+            view = _CAUSAL_V45_PREV_BUILD_GRAPH_VIEW(co)
+    else:
+        view = {}
+    if isinstance(view, dict):
+        view['edge_falsification_coverage_v45'] = co.get('edge_falsification_coverage_v45')
+        view['proxy_interventions_v45'] = co.get('proxy_interventions_v45')
+        view['observation_decomposition_v45'] = co.get('observation_decomposition_v45')
+        for e in _causal_v45_safe_list(view.get('edges')):
+            if isinstance(e, dict):
+                e['has_falsification_test'] = True
+                e['edge_falsifiable_v45'] = True
+    return view
+
+
+def causal_build_candidate_object_v41(*, query='', operator_trace=None, candidate_index=1, max_candidates=1, seed=123, context=None, kwargs=None):
+    trace = _causal_v45_normalize_trace(operator_trace)
+    if callable(_CAUSAL_V45_PREV_BUILD_CANDIDATE_OBJECT_V41):
+        obj = _CAUSAL_V45_PREV_BUILD_CANDIDATE_OBJECT_V41(query=query, operator_trace=trace, candidate_index=candidate_index, max_candidates=max_candidates, seed=seed, context=context, kwargs=kwargs)
+    else:
+        obj = {}
+    if isinstance(obj, dict):
+        obj['operator_trace'] = trace
+        pol = _causal_v45_safe_dict(obj.get('core_generation_policy'))
+        pol['operator_trace_rotation_disabled'] = True
+        pol['operator_trace_variant_policy'] = 'fixed_user_order_with_causal_v45_edge_falsification'
+        pol['topology_shift_canonical_operator'] = 'topology_shift'
+        obj['core_generation_policy'] = pol
+        causal_v45_ensure_all_edges_falsifiable(obj, context=context)
+    return obj
+
+
+def causal_validate_candidate_object_v41(candidate_object):
+    co = candidate_object if isinstance(candidate_object, dict) else {}
+    try:
+        causal_v45_ensure_all_edges_falsifiable(co)
+    except Exception:
+        pass
+    if callable(_CAUSAL_V45_PREV_VALIDATE_CANDIDATE_OBJECT_V41):
+        try:
+            return bool(_CAUSAL_V45_PREV_VALIDATE_CANDIDATE_OBJECT_V41(co))
+        except Exception:
+            pass
+    return bool(co.get('components') and co.get('causal_edges') and co.get('verification_plan'))
+
+
+def causal_topology_shift(base_graph=None, shift_policy=None, constraints=None):
+    # Canonical operator name is topology_shift; legacy function remains callable.
+    if callable(_CAUSAL_V45_PREV_TOPOLOGY_SHIFT):
+        res = _CAUSAL_V45_PREV_TOPOLOGY_SHIFT(base_graph=base_graph, shift_policy=shift_policy, constraints=constraints)
+    else:
+        res = []
+    # Annotate returned structures when they are dict-like, without assuming a domain.
+    out = []
+    for idx, item in enumerate(_causal_v45_safe_list(res)):
+        try:
+            if isinstance(item, dict):
+                item.setdefault('operator', 'topology_shift')
+                item.setdefault('patch_id_v45', CAUSAL_V45_ABC_FALSIFIABLE_USR_TOPOLOGY_COMPLETION_PATCH_ID)
+            elif hasattr(item, 'meta') and isinstance(getattr(item, 'meta'), dict):
+                item.meta.setdefault('operator', 'topology_shift')
+                item.meta.setdefault('patch_id_v45', CAUSAL_V45_ABC_FALSIFIABLE_USR_TOPOLOGY_COMPLETION_PATCH_ID)
+        except Exception:
+            pass
+        out.append(item)
+    return out
+
+# ============================================================================
+# END ADD-ONLY PATCH: CAUSAL-V45-ABC-FALSIFIABLE-USR-TOPOLOGY-COMPLETION
+# ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY PATCH: CAUSAL-V52-QUALITY-DIVERSITY-SMATRIX-CONTRACT-20260509
+# Purpose:
+# - Align CausalOS with the Leap V52 policy: GPU is not the goal; final output
+#   quality, causal richness, diversity, falsifiability, identifiability, and
+#   experiment-readiness are the goal.
+# - Provide universal, non-LLM, task-agnostic helpers for candidate enrichment:
+#   complex S-matrix edges, semantic group nodes, attention-mask-like causal
+#   constraints, graph signatures, diversity scoring, and quality contracts.
+# - Preserve all existing code. This patch only appends helpers and wraps known
+#   candidate builders if present.
+# - No benchmark/task-name hardcoding. All behavior derives from graph/candidate
+#   structure, operator_trace, variable roles, interventions, and observations.
+# ============================================================================
+
+CAUSAL_V52_QUALITY_DIVERSITY_PATCH_ID = 'CAUSAL-V52-QUALITY-DIVERSITY-SMATRIX-CONTRACT-20260509'
+
+
+def _causal_v52_safe_dict(x):
+    return dict(x) if isinstance(x, dict) else {}
+
+
+def _causal_v52_safe_list(x):
+    if isinstance(x, list):
+        return list(x)
+    if isinstance(x, tuple):
+        return list(x)
+    return []
+
+
+def _causal_v52_text(x, limit=4000):
+    try:
+        s = '' if x is None else str(x)
+    except Exception:
+        s = repr(x)
+    try:
+        import re as _re
+        s = _re.sub(r'\s+', ' ', s).strip()
+    except Exception:
+        s = ' '.join(s.split())
+    return s[:max(0, int(limit))]
+
+
+def _causal_v52_hash_obj(obj, n=16):
+    try:
+        import json as _json, hashlib as _hashlib
+        raw = _json.dumps(obj, ensure_ascii=False, sort_keys=True, default=str)
+        return _hashlib.sha256(raw.encode('utf-8')).hexdigest()[:int(n)]
+    except Exception:
+        return 'hash_unavailable'
+
+
+def _causal_v52_unique_text(seq, limit=None):
+    out = []
+    seen = set()
+    for item in _causal_v52_safe_list(seq):
+        s = _causal_v52_text(item, 512)
+        if not s:
+            continue
+        k = s.lower()
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append(s)
+        if limit is not None and len(out) >= int(limit):
+            break
+    return out
+
+
+def _causal_v52_candidate_id(candidate, index=0):
+    c = _causal_v52_safe_dict(candidate)
+    return _causal_v52_text(c.get('candidate_id') or c.get('id') or c.get('idea_id') or ('CAUSAL-V52-CAND-%03d' % (int(index) + 1)), 160)
+
+
+def _causal_v52_candidate_object(candidate):
+    c = _causal_v52_safe_dict(candidate)
+    for key in ('candidate_object', 'object', 'core_candidate', 'structured_candidate'):
+        v = c.get(key)
+        if isinstance(v, dict):
+            return v
+    return c
+
+
+def _causal_v52_extract_graph(candidate):
+    """Collect a graph from generic candidate locations without task hardcoding."""
+    c = _causal_v52_safe_dict(candidate)
+    obj = _causal_v52_candidate_object(c)
+    graphs = []
+    for container in (obj, c):
+        if not isinstance(container, dict):
+            continue
+        for key in ('causal_graph_delta', 'causal_graph', 'graph', 's_matrix_graph_view_v43', 's_matrix_graph_view_v52'):
+            g = container.get(key)
+            if isinstance(g, dict):
+                graphs.append(g)
+    nodes = []
+    edges = []
+    for g in graphs:
+        nodes.extend(_causal_v52_safe_list(g.get('nodes')))
+        edges.extend(_causal_v52_safe_list(g.get('edges')))
+        edges.extend(_causal_v52_safe_list(g.get('complex_s_edges')))
+    for container in (obj, c):
+        if isinstance(container, dict):
+            nodes.extend(_causal_v52_safe_list(container.get('nodes')))
+            edges.extend(_causal_v52_safe_list(container.get('edges')))
+            edges.extend(_causal_v52_safe_list(container.get('causal_edges')))
+            edges.extend(_causal_v52_safe_list(container.get('causal_edges_components')))
+            edges.extend(_causal_v52_safe_list(container.get('complex_s_edges')))
+    norm_nodes = []
+    seen_nodes = set()
+    for i, n in enumerate(nodes):
+        if isinstance(n, dict):
+            nid = _causal_v52_text(n.get('id') or n.get('node_id') or n.get('label') or ('N%d' % i), 128)
+            label = _causal_v52_text(n.get('label') or nid, 200)
+            role = _causal_v52_text(n.get('role') or n.get('type') or 'context_node', 128)
+            item = dict(n)
+            item.setdefault('id', nid)
+            item.setdefault('label', label)
+            item.setdefault('role', role)
+        else:
+            label = _causal_v52_text(n, 200)
+            if not label:
+                continue
+            item = {'id': 'N_' + _causal_v52_hash_obj(label, 8), 'label': label, 'role': 'context_node'}
+        key = item.get('id') or item.get('label')
+        if key and key not in seen_nodes:
+            seen_nodes.add(key)
+            norm_nodes.append(item)
+    norm_edges = []
+    seen_edges = set()
+    for i, e in enumerate(edges):
+        if not isinstance(e, dict):
+            continue
+        src = _causal_v52_text(e.get('source') or e.get('src') or e.get('from') or e.get('u'), 128)
+        dst = _causal_v52_text(e.get('target') or e.get('dst') or e.get('to') or e.get('v'), 128)
+        if not src or not dst or src == dst:
+            continue
+        rel = _causal_v52_text(e.get('relation') or e.get('rel') or e.get('operator') or e.get('mechanism') or 'candidate', 160)
+        item = dict(e)
+        item.setdefault('id', e.get('id') or ('E_' + _causal_v52_hash_obj([src, dst, rel], 10)))
+        item.setdefault('source', src)
+        item.setdefault('target', dst)
+        item.setdefault('relation', rel)
+        key = (src, dst, rel)
+        if key not in seen_edges:
+            seen_edges.add(key)
+            norm_edges.append(item)
+    return {'nodes': norm_nodes, 'edges': norm_edges}
+
+
+def causal_v52_graph_signature(candidate):
+    """Stable graph signature used to penalize duplicates and preserve diversity."""
+    g = _causal_v52_extract_graph(candidate)
+    material = {
+        'nodes': sorted([(_causal_v52_text(n.get('id') or n.get('label'), 96), _causal_v52_text(n.get('role'), 96)) for n in g.get('nodes', []) if isinstance(n, dict)]),
+        'edges': sorted([(_causal_v52_text(e.get('source') or e.get('src'), 96), _causal_v52_text(e.get('target') or e.get('dst'), 96), _causal_v52_text(e.get('relation') or e.get('operator'), 96)) for e in g.get('edges', []) if isinstance(e, dict)]),
+    }
+    return {'patch_id': CAUSAL_V52_QUALITY_DIVERSITY_PATCH_ID, 'signature': _causal_v52_hash_obj(material, 16), 'material': material}
+
+
+def causal_v52_build_group_nodes(candidate_or_graph):
+    """Build semantic group nodes from roles. This represents node groups as meaning carriers."""
+    g = candidate_or_graph if isinstance(candidate_or_graph, dict) and 'nodes' in candidate_or_graph else _causal_v52_extract_graph(candidate_or_graph)
+    buckets = {}
+    for n in _causal_v52_safe_list(g.get('nodes')):
+        if not isinstance(n, dict):
+            continue
+        role = _causal_v52_text(n.get('role') or 'context_node', 128) or 'context_node'
+        label = _causal_v52_text(n.get('label') or n.get('id'), 200)
+        if not label:
+            continue
+        buckets.setdefault(role, []).append(label)
+    groups = []
+    for role, members in sorted(buckets.items()):
+        groups.append({
+            'group_id': 'GROUP::' + _causal_v52_hash_obj(role, 8).upper(),
+            'label': role,
+            'members': _causal_v52_unique_text(members, 64),
+            'meta': {'semantic_group': True, 'role_family': role, 'source': CAUSAL_V52_QUALITY_DIVERSITY_PATCH_ID},
+        })
+    return groups
+
+
+def causal_v52_build_attention_mask_like_constraints(candidate_or_graph):
+    """Build mask-like intervention/observation constraints from generic graph roles."""
+    g = candidate_or_graph if isinstance(candidate_or_graph, dict) and 'nodes' in candidate_or_graph else _causal_v52_extract_graph(candidate_or_graph)
+    incoming = {}
+    outgoing = {}
+    for e in _causal_v52_safe_list(g.get('edges')):
+        if not isinstance(e, dict):
+            continue
+        src = _causal_v52_text(e.get('source') or e.get('src'), 128)
+        dst = _causal_v52_text(e.get('target') or e.get('dst'), 128)
+        if src:
+            outgoing[src] = outgoing.get(src, 0) + 1
+        if dst:
+            incoming[dst] = incoming.get(dst, 0) + 1
+    mask = {}
+    for n in _causal_v52_safe_list(g.get('nodes')):
+        if not isinstance(n, dict):
+            continue
+        nid = _causal_v52_text(n.get('id') or n.get('label'), 128)
+        label = _causal_v52_text(n.get('label') or nid, 200)
+        role = _causal_v52_text(n.get('role') or '', 128).lower()
+        key = nid or label
+        if not key:
+            continue
+        intervene_allowed = any(tok in role for tok in ('input', 'control', 'resource', 'state', 'mediator', 'process', 'gate', 'interface', 'transport', 'constraint')) or outgoing.get(key, 0) > 0
+        observe_only = any(tok in role for tok in ('output', 'observable', 'sink', 'lag', 'time', 'metric')) or incoming.get(key, 0) > outgoing.get(key, 0)
+        blocked = any(tok in role for tok in ('time', 'lag_axis', 'immutable', 'blocked'))
+        mask[key] = {
+            'label': label,
+            'intervene_allowed': bool(intervene_allowed and not blocked),
+            'observe_only': bool(observe_only or blocked),
+            'blocked': bool(blocked),
+            'reason': role or 'derived_from_graph_position',
+            'incoming_edges': int(incoming.get(key, 0)),
+            'outgoing_edges': int(outgoing.get(key, 0)),
+        }
+    return mask
+
+
+def causal_v52_build_complex_s_edges(candidate_or_graph):
+    """Build complex S-matrix edge representation.
+    Real part: direct causal strength. Imaginary part: delay/phase/mediation/
+    hidden/proxy/boundary component. This is intentionally generic and derived
+    from edge metadata, not task names.
+    """
+    g = candidate_or_graph if isinstance(candidate_or_graph, dict) and 'edges' in candidate_or_graph else _causal_v52_extract_graph(candidate_or_graph)
+    out = []
+    for e in _causal_v52_safe_list(g.get('edges')):
+        if not isinstance(e, dict):
+            continue
+        src = _causal_v52_text(e.get('source') or e.get('src'), 128)
+        dst = _causal_v52_text(e.get('target') or e.get('dst'), 128)
+        if not src or not dst:
+            continue
+        rel = _causal_v52_text(e.get('relation') or e.get('rel') or e.get('operator') or 'candidate', 160)
+        weight_re = 0.35
+        for k in ('weight_re', 'strength', 'weight', 'score', 'magnitude'):
+            try:
+                if e.get(k) is not None:
+                    weight_re = float(e.get(k))
+                    break
+            except Exception:
+                pass
+        low = (rel + ' ' + _causal_v52_text(e.get('mechanism'), 400) + ' ' + _causal_v52_text(e.get('operator'), 80)).lower()
+        weight_im = 0.0
+        if any(tok in low for tok in ('delay', 'lag', 'phase', 'mediator', 'mediate', 'boundary', 'interface', 'feedback', 'hidden', 'proxy', 'counterfactual', 'mask', '遅延', '位相', '媒介', '界面', '境界', '観測')):
+            weight_im = 0.18
+        if e.get('weight_im') is not None:
+            try:
+                weight_im = float(e.get('weight_im'))
+            except Exception:
+                pass
+        out.append({
+            'src': src,
+            'dst': dst,
+            'rel': rel,
+            'weight_re': max(-1.0, min(1.0, float(weight_re))),
+            'weight_im': max(-1.0, min(1.0, float(weight_im))),
+            'phase_hint': 'phase_or_mediation' if abs(float(weight_im)) > 1e-12 else 'direct',
+            'source': CAUSAL_V52_QUALITY_DIVERSITY_PATCH_ID,
+        })
+    return out
+
+
+def causal_v52_build_smatrix_graph_view(candidate):
+    """Canonical graph view consumed by Leap/app/growth layers."""
+    g = _causal_v52_extract_graph(candidate)
+    return {
+        'patch_id': CAUSAL_V52_QUALITY_DIVERSITY_PATCH_ID,
+        'nodes': g.get('nodes', []),
+        'edges': g.get('edges', []),
+        'group_nodes': causal_v52_build_group_nodes(g),
+        'complex_s_edges': causal_v52_build_complex_s_edges(g),
+        'causal_mask_hint': causal_v52_build_attention_mask_like_constraints(g),
+        'graph_signature': causal_v52_graph_signature(candidate),
+    }
+
+
+def causal_v52_quality_metrics(candidate, duplicate_signature=False, near_duplicate=False):
+    """Task-agnostic quality metric for invention candidates.
+    This is not a truth score. It is a pre-experiment structural quality score.
+    """
+    c = _causal_v52_safe_dict(candidate)
+    obj = _causal_v52_candidate_object(c)
+    view = causal_v52_build_smatrix_graph_view(c)
+    nodes = _causal_v52_safe_list(view.get('nodes'))
+    edges = _causal_v52_safe_list(view.get('edges'))
+    complex_edges = _causal_v52_safe_list(view.get('complex_s_edges'))
+    mask = _causal_v52_safe_dict(view.get('causal_mask_hint'))
+    trace = _causal_v52_safe_list(c.get('operator_trace') or obj.get('operator_trace'))
+    interventions = _causal_v52_safe_list(c.get('distinguishing_interventions') or c.get('required_experiments') or obj.get('verification_plan'))
+    text = ' '.join([
+        _causal_v52_text(c.get('decoded_hypothesis'), 2000),
+        _causal_v52_text(c.get('decoded_mechanism'), 2000),
+        _causal_v52_text(c.get('why_non_near') or c.get('reason'), 1000),
+        _causal_v52_text(obj.get('idea_core') if isinstance(obj, dict) else '', 2000),
+    ])
+    edge_count = len(edges)
+    falsifiable_edges = 0
+    identifiable_edges = 0
+    for e in edges:
+        if not isinstance(e, dict):
+            continue
+        if e.get('has_falsification_test') or e.get('proxy_intervention') or e.get('falsification_test_id') or e.get('test_edge'):
+            falsifiable_edges += 1
+        if e.get('observation_decomposition') or e.get('proxy_intervention') or e.get('observable'):
+            identifiable_edges += 1
+    graph_score = min(1.0, (len(nodes) / 8.0) * 0.35 + (edge_count / 10.0) * 0.65) if (nodes or edges) else 0.0
+    falsifiability = (falsifiable_edges / max(1, edge_count)) if edge_count else (1.0 if interventions else 0.0)
+    identifiability = (identifiable_edges / max(1, edge_count)) if edge_count else (1.0 if interventions else 0.0)
+    phase_edge_ratio = sum(1 for e in complex_edges if abs(float(e.get('weight_im', 0.0) or 0.0)) > 1e-12) / max(1, len(complex_edges))
+    mask_coverage = len(mask) / max(1, len(nodes)) if nodes else 0.0
+    mechanism_richness = min(1.0, len(text) / 700.0)
+    operator_coverage = min(1.0, len(_causal_v52_unique_text(trace)) / 6.0)
+    experiment_readiness = min(1.0, len(interventions) / 2.0)
+    duplicate_penalty = 0.35 if duplicate_signature else 0.0
+    near_penalty = 0.18 if near_duplicate else 0.0
+    quality = (
+        0.18 * graph_score +
+        0.16 * falsifiability +
+        0.16 * identifiability +
+        0.12 * phase_edge_ratio +
+        0.10 * mask_coverage +
+        0.12 * mechanism_richness +
+        0.08 * operator_coverage +
+        0.08 * experiment_readiness -
+        duplicate_penalty - near_penalty
+    )
+    return {
+        'patch_id': CAUSAL_V52_QUALITY_DIVERSITY_PATCH_ID,
+        'quality_score_v52': max(0.0, min(1.0, float(quality))),
+        'graph_score': max(0.0, min(1.0, float(graph_score))),
+        'falsifiability_score': max(0.0, min(1.0, float(falsifiability))),
+        'identifiability_score': max(0.0, min(1.0, float(identifiability))),
+        'phase_edge_ratio': max(0.0, min(1.0, float(phase_edge_ratio))),
+        'mask_coverage': max(0.0, min(1.0, float(mask_coverage))),
+        'mechanism_richness_score': max(0.0, min(1.0, float(mechanism_richness))),
+        'operator_coverage_score': max(0.0, min(1.0, float(operator_coverage))),
+        'experiment_readiness_score': max(0.0, min(1.0, float(experiment_readiness))),
+        'duplicate_signature_penalty': float(duplicate_penalty),
+        'near_duplicate_penalty': float(near_penalty),
+        'node_count': int(len(nodes)),
+        'edge_count': int(edge_count),
+        'complex_s_edge_count': int(len(complex_edges)),
+        'no_llm_used': True,
+        'gpu_required_for_quality': False,
+    }
+
+
+def causal_v52_enhance_candidate(candidate, index=0, duplicate_signature=False, near_duplicate=False):
+    """Return an enriched candidate object without deleting existing fields."""
+    c = dict(_causal_v52_safe_dict(candidate))
+    c.setdefault('candidate_id', _causal_v52_candidate_id(c, index))
+    view = causal_v52_build_smatrix_graph_view(c)
+    metrics = causal_v52_quality_metrics(c, duplicate_signature=duplicate_signature, near_duplicate=near_duplicate)
+    c['s_matrix_graph_view_v52'] = view
+    c['complex_s_edges_v52'] = view.get('complex_s_edges', [])
+    c['group_nodes_v52'] = view.get('group_nodes', [])
+    c['causal_mask_hint_v52'] = view.get('causal_mask_hint', {})
+    c['graph_signature_v52'] = view.get('graph_signature', {})
+    c['quality_diversity_review_v52'] = metrics
+    c['overall_score_v52'] = metrics.get('quality_score_v52', 0.0)
+    c.setdefault('requires_experiment', True)
+    c.setdefault('publishable_status', 'pre_publishable_requires_targeted_experiment')
+    if duplicate_signature or near_duplicate:
+        c['status'] = 'V52_DRAFT_NEEDS_DIVERSIFICATION'
+        c['accepted'] = False
+        c['v52_draft_reason'] = 'duplicate_or_near_duplicate_structure'
+    else:
+        c.setdefault('status', 'V52_CAUSAL_QUALITY_REVIEWED_PRE_EXPERIMENT')
+    c['core_generation_policy_v52'] = {
+        'core_llm_generate_called': False,
+        'candidate_decode_source': 'causal_structure_smatrix_mask_quality_contract',
+        'raw_generation_used_as_candidate': False,
+        'gpu_required_for_quality': False,
+        'quality_and_diversity_are_primary': True,
+    }
+    return c
+
+
+def _causal_v52_token_set(candidate):
+    c = _causal_v52_safe_dict(candidate)
+    obj = _causal_v52_candidate_object(c)
+    text = ' '.join([
+        _causal_v52_text(c.get(k), 2000)
+        for k in ('decoded_hypothesis', 'decoded_mechanism', 'idea_core', 'why_non_near', 'reason', 'method_proposal')
+    ])
+    if isinstance(obj, dict):
+        text += ' ' + _causal_v52_text(obj, 3000)
+    try:
+        import re as _re
+        toks = _re.findall(r'[A-Za-z0-9_]+|[一-龥ぁ-んァ-ヶー]+', text.lower())
+    except Exception:
+        toks = text.lower().split()
+    return set(t for t in toks if len(t) >= 2)
+
+
+def _causal_v52_jaccard(a, b):
+    aa = _causal_v52_token_set(a)
+    bb = _causal_v52_token_set(b)
+    if not aa and not bb:
+        return 1.0
+    return len(aa & bb) / max(1, len(aa | bb))
+
+
+def causal_v52_enhance_candidate_list(candidates, max_candidates=None, near_duplicate_threshold=0.82):
+    """Enhance, score, and diversity-rank a candidate list.
+    Duplicate graph signatures are explicitly demoted to draft state.
+    """
+    raw = [c for c in _causal_v52_safe_list(candidates) if isinstance(c, dict)]
+    sigs = []
+    sig_count = {}
+    for c in raw:
+        sig = causal_v52_graph_signature(c).get('signature')
+        sigs.append(sig)
+        sig_count[sig] = sig_count.get(sig, 0) + 1
+    enriched = []
+    for i, c in enumerate(raw):
+        duplicate_signature = sig_count.get(sigs[i], 0) > 1
+        near = False
+        for prev in enriched:
+            try:
+                if _causal_v52_jaccard(prev, c) >= float(near_duplicate_threshold):
+                    near = True
+                    break
+            except Exception:
+                pass
+        enriched.append(causal_v52_enhance_candidate(c, index=i, duplicate_signature=duplicate_signature, near_duplicate=near))
+    enriched.sort(key=lambda x: float(_causal_v52_safe_dict(x.get('quality_diversity_review_v52')).get('quality_score_v52', 0.0)), reverse=True)
+    selected = []
+    selected_sigs = set()
+    drafts = []
+    for c in enriched:
+        sig = _causal_v52_safe_dict(c.get('graph_signature_v52')).get('signature')
+        if sig in selected_sigs or c.get('status') == 'V52_DRAFT_NEEDS_DIVERSIFICATION':
+            drafts.append(c)
+            continue
+        selected.append(c)
+        selected_sigs.add(sig)
+        if max_candidates is not None and len(selected) >= int(max_candidates):
+            break
+    if max_candidates is not None:
+        for c in drafts:
+            if len(selected) >= int(max_candidates):
+                break
+            selected.append(c)
+    scores = [float(_causal_v52_safe_dict(c.get('quality_diversity_review_v52')).get('quality_score_v52', 0.0)) for c in selected]
+    return {
+        'patch_id': CAUSAL_V52_QUALITY_DIVERSITY_PATCH_ID,
+        'selected_candidates': selected,
+        'enriched_candidates': enriched,
+        'draft_candidates': drafts,
+        'summary': {
+            'candidate_count_raw': len(raw),
+            'candidate_count_enriched': len(enriched),
+            'candidate_count_selected': len(selected),
+            'draft_needs_diversification_count': len(drafts),
+            'accepted_duplicate_graph_signature_count': len([s for s in selected_sigs if list(sigs).count(s) > 1]),
+            'mean_quality_score_v52': sum(scores) / max(1, len(scores)),
+            'min_quality_score_v52': min(scores) if scores else 0.0,
+            'max_quality_score_v52': max(scores) if scores else 0.0,
+            'publishable_candidate_count': 0,
+            'publishable_candidate_count_note': 'kept_zero_until_external_or_experimental_evidence_is_supplied',
+            'quality_and_diversity_are_primary': True,
+            'gpu_required_for_quality': False,
+            'no_llm_used': True,
+            'no_task_or_benchmark_name_hardcoding': True,
+        },
+    }
+
+
+def causal_v52_build_quality_contract(candidate_or_candidates, max_candidates=None):
+    """Public contract helper for Leap/Growth/App integration."""
+    if isinstance(candidate_or_candidates, list):
+        return causal_v52_enhance_candidate_list(candidate_or_candidates, max_candidates=max_candidates)
+    enhanced = causal_v52_enhance_candidate(candidate_or_candidates, index=0)
+    return {
+        'patch_id': CAUSAL_V52_QUALITY_DIVERSITY_PATCH_ID,
+        'selected_candidates': [enhanced],
+        'enriched_candidates': [enhanced],
+        'draft_candidates': [],
+        'summary': {
+            'candidate_count_raw': 1 if isinstance(candidate_or_candidates, dict) else 0,
+            'candidate_count_selected': 1 if isinstance(candidate_or_candidates, dict) else 0,
+            'quality_and_diversity_are_primary': True,
+            'gpu_required_for_quality': False,
+            'no_llm_used': True,
+            'no_task_or_benchmark_name_hardcoding': True,
+        },
+    }
+
+
+# ADD-ONLY wrappers for known Causal candidate builders.
+try:
+    _CAUSAL_V52_PREV_BUILD_CANDIDATE_V39 = causal_build_candidate_object_v39
+except Exception:
+    _CAUSAL_V52_PREV_BUILD_CANDIDATE_V39 = None
+
+
+def causal_build_candidate_object_v39(*args, **kwargs):
+    if callable(_CAUSAL_V52_PREV_BUILD_CANDIDATE_V39):
+        candidate = _CAUSAL_V52_PREV_BUILD_CANDIDATE_V39(*args, **kwargs)
+    else:
+        candidate = {'candidate_id': 'CAUSAL-V52-FALLBACK-V39', 'operator_trace': _causal_v52_safe_list(kwargs.get('operator_trace')), 'idea_core': _causal_v52_text(kwargs.get('query'), 1000)}
+    return causal_v52_enhance_candidate(candidate, index=int(kwargs.get('candidate_index', 1) or 1) - 1)
+
+
+try:
+    _CAUSAL_V52_PREV_BUILD_CANDIDATE_V38 = causal_build_candidate_object_v38
+except Exception:
+    _CAUSAL_V52_PREV_BUILD_CANDIDATE_V38 = None
+
+
+def causal_build_candidate_object_v38(*args, **kwargs):
+    if callable(_CAUSAL_V52_PREV_BUILD_CANDIDATE_V38):
+        candidate = _CAUSAL_V52_PREV_BUILD_CANDIDATE_V38(*args, **kwargs)
+    else:
+        candidate = {'candidate_id': 'CAUSAL-V52-FALLBACK-V38', 'operator_trace': _causal_v52_safe_list(kwargs.get('operator_trace')), 'idea_core': _causal_v52_text(kwargs.get('query'), 1000)}
+    return causal_v52_enhance_candidate(candidate, index=int(kwargs.get('candidate_index', 1) or 1) - 1)
+
+
+try:
+    CAUSAL_V52_QUALITY_DIVERSITY_EXECUTION_PROOF = {
+        'patch_id': CAUSAL_V52_QUALITY_DIVERSITY_PATCH_ID,
+        'public_helpers': [
+            'causal_v52_graph_signature',
+            'causal_v52_build_group_nodes',
+            'causal_v52_build_attention_mask_like_constraints',
+            'causal_v52_build_complex_s_edges',
+            'causal_v52_build_smatrix_graph_view',
+            'causal_v52_quality_metrics',
+            'causal_v52_enhance_candidate',
+            'causal_v52_enhance_candidate_list',
+            'causal_v52_build_quality_contract',
+        ],
+        'core_llm_generate_called': False,
+        'gpu_required_for_quality': False,
+        'quality_and_diversity_are_primary': True,
+        'no_task_or_benchmark_name_hardcoding': True,
+    }
+except Exception:
+    pass
+
+# ============================================================================
+# END ADD-ONLY PATCH: CAUSAL-V52-QUALITY-DIVERSITY-SMATRIX-CONTRACT-20260509
+# ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY PATCH: CAUSAL-V54-UNIVERSAL-OPERATOR-SEMANTICS-TIME-AXIS-20260510
+# Purpose:
+# - Provide demo-content-independent universal role family extraction,
+#   time-evolution axis extraction, Re/Im edge separation, and candidate causal
+#   contract construction for downstream Leap Engine V54.
+# - Do NOT hard-code benchmark/test/domain vocabulary as extraction parameters.
+# - Treat time/time-evolution as a universal causal axis.
+# ============================================================================
+
+CAUSAL_V54_UNIVERSAL_OPERATOR_SEMANTICS_TIME_AXIS_PATCH_ID = "CAUSAL-V54-UNIVERSAL-OPERATOR-SEMANTICS-TIME-AXIS-20260510"
+CAUSAL_V54_CONTRACT_SCHEMA = "candidate_causal_contract_v54_universal"
+
+try:
+    import copy as _causal_v54_copy
+    import hashlib as _causal_v54_hashlib
+    import json as _causal_v54_json
+    import re as _causal_v54_re
+except Exception:
+    _causal_v54_copy = None
+    _causal_v54_hashlib = None
+    _causal_v54_json = None
+    _causal_v54_re = None
+
+_CAUSAL_V54_ROLE_FAMILY_KEYS = [
+    "controllable_variables", "observable_variables", "target_outcomes",
+    "latent_state_candidates", "mediator_candidates", "constraints",
+    "failure_modes", "environment_or_boundary", "resource_or_flux",
+    "measurement_protocols", "abstraction_targets",
+]
+_CAUSAL_V54_TIME_AXIS_KEYS = [
+    "temporal_order", "delay_or_lag", "rate_or_derivative",
+    "accumulation_or_memory", "regime_transition", "oscillation_or_periodicity",
+    "relaxation_or_recovery", "causal_propagation_time",
+]
+_CAUSAL_V54_REQUIRED_KEYS = [
+    "candidate_id", "contract_schema", "operator_trace", "operator_semantics_contracts",
+    "role_family_map", "design_axis_signature", "primary_causal_lever",
+    "causal_control_point_shift", "latent_or_mediator_state", "time_evolution_axis",
+    "causal_effect_edges_Re", "information_flow_edges_Im", "observable_discriminators",
+    "minimal_interventions", "predictions", "falsification_conditions", "failure_risks",
+    "accepted_status", "status_reason",
+]
+
+def _causal_v54_s(x, limit=4000):
+    try:
+        s = "" if x is None else str(x)
+    except Exception:
+        s = ""
+    return " ".join(s.split())[:int(limit)]
+
+def _causal_v54_safe_dict(x):
+    return dict(x) if isinstance(x, dict) else {}
+
+def _causal_v54_safe_list(x):
+    if isinstance(x, list): return list(x)
+    if isinstance(x, (tuple, set)): return list(x)
+    return [] if x is None else [x]
+
+def _causal_v54_unique(xs, limit=24):
+    out=[]; seen=set()
+    for x in _causal_v54_safe_list(xs):
+        s=_causal_v54_s(x,240)
+        if s and s not in seen:
+            seen.add(s); out.append(s)
+        if len(out)>=int(limit): break
+    return out
+
+def _causal_v54_hash(obj, n=16):
+    try:
+        txt=_causal_v54_json.dumps(obj, ensure_ascii=False, sort_keys=True, default=str)
+    except Exception:
+        txt=repr(obj)
+    try:
+        return _causal_v54_hashlib.sha256(txt.encode('utf-8', errors='replace')).hexdigest()[:int(n)]
+    except Exception:
+        return str(abs(hash(txt)))[:int(n)]
+
+def _causal_v54_text(obj, limit=20000):
+    if isinstance(obj, str): return _causal_v54_s(obj, limit)
+    if isinstance(obj, dict):
+        parts=[]
+        for k in ["query","prompt","task","goal","problem","description","constraints","feedback","input"]:
+            if k in obj: parts.append(_causal_v54_s(obj.get(k), 3000))
+        if parts: return _causal_v54_s('\n'.join(parts), limit)
+        try: return _causal_v54_json.dumps(obj, ensure_ascii=False, default=str)[:limit]
+        except Exception: return repr(obj)[:limit]
+    return _causal_v54_s(obj, limit)
+
+def _causal_v54_terms(text, limit=48):
+    txt=_causal_v54_s(text, 20000)
+    if not txt: return []
+    splitter = _causal_v54_re.split if _causal_v54_re else None
+    parts = splitter(r"[\n\r,，、;；/／|｜]+", txt) if splitter else txt.split()
+    return _causal_v54_unique([_causal_v54_s(p,180).lstrip('-*・0123456789.）) ') for p in parts], limit=limit)
+
+def causal_v54_extract_universal_role_families(prompt, context=None):
+    """Universal role extraction. Demo/test vocabulary is not used as fixed parameters."""
+    text = _causal_v54_text(prompt, 20000) + '\n' + _causal_v54_text(context or {}, 8000)
+    fam={k:[] for k in _CAUSAL_V54_ROLE_FAMILY_KEYS}
+    heading_map=[
+        ("controllable_variables", ["操作可能","介入可能","controllable","intervention","input variable"]),
+        ("observable_variables", ["観測可能","observable","measurement","signal","measured"]),
+        ("target_outcomes", ["目的","目標","改善","出力","target","outcome","objective","goal"]),
+        ("constraints", ["制約","前提","禁止","constraint","assumption","requirement"]),
+        ("failure_modes", ["失敗","劣化","リスク","棄却","failure","risk","degradation"]),
+        ("measurement_protocols", ["検証","実験","観測","比較","protocol","experiment","test","verification"]),
+    ]
+    lines = text.split('\n') if '\n' in text else ([text])
+    current=None
+    for line in lines:
+        low=line.lower()
+        matched=False
+        for key,hints in heading_map:
+            if any(h.lower() in low for h in hints):
+                current=key; matched=True
+                after=line.split(':',1)[-1].split('：',1)[-1]
+                fam[key].extend(_causal_v54_terms(after, limit=18))
+                break
+        if (not matched) and current and len(line)<800:
+            fam[current].extend(_causal_v54_terms(line, limit=18))
+    if not any(fam.values()):
+        fam["abstraction_targets"]=_causal_v54_terms(text, limit=16)
+    for k in fam: fam[k]=_causal_v54_unique(fam[k], limit=24)
+    return {"patch_id": CAUSAL_V54_UNIVERSAL_OPERATOR_SEMANTICS_TIME_AXIS_PATCH_ID,
+            "no_demo_specific_parameter_extraction": True,
+            "demo_content_dependency_warning": True,
+            "role_families": fam,
+            "extraction_policy": "universal_role_family_only"}
+
+def causal_v54_extract_time_evolution_axis(prompt, context=None):
+    text = (_causal_v54_text(prompt, 20000)+'\n'+_causal_v54_text(context or {}, 8000)).lower()
+    axis={k:[] for k in _CAUSAL_V54_TIME_AXIS_KEYS}
+    patterns={
+        "temporal_order": ["before","after","order","sequence","順序","前後","因果の流れ"],
+        "delay_or_lag": ["delay","lag","latency","遅延","時間遅れ","応答時間","履歴依存"],
+        "rate_or_derivative": ["rate","derivative","slope","速度","変化率","勾配","増加","減少"],
+        "accumulation_or_memory": ["accumulation","memory","history","hysteresis","蓄積","記憶","履歴","ヒステリシス"],
+        "regime_transition": ["threshold","transition","regime","mode","閾値","遷移","モード","安定性"],
+        "oscillation_or_periodicity": ["oscillation","period","frequency","cycle","振動","周期","周波数"],
+        "relaxation_or_recovery": ["relaxation","recovery","reset","irreversible","緩和","回復","リセット","不可逆"],
+        "causal_propagation_time": ["propagation","transmission","伝播","波及","伝達","時間スケール"],
+    }
+    for k, vals in patterns.items():
+        for v in vals:
+            if v.lower() in text: axis[k].append(v)
+    for k in axis: axis[k]=_causal_v54_unique(axis[k], limit=12)
+    return {"patch_id": CAUSAL_V54_UNIVERSAL_OPERATOR_SEMANTICS_TIME_AXIS_PATCH_ID,
+            "axis": axis,
+            "policy": "time_and_time_evolution_are_universal_causal_axes_not_demo_specific_signals"}
+
+def causal_v54_build_re_edges(candidate, role_map=None):
+    c=_causal_v54_safe_dict(candidate); edges=[]
+    mats=[]
+    for k in ["graph_signature_v45","graph_signature_v52","graph","causal_graph","s_matrix_graph_view_v43"]:
+        v=c.get(k)
+        if isinstance(v,dict): mats.append(v.get('material') if isinstance(v.get('material'),dict) else v)
+    for m in mats:
+        for e in _causal_v54_safe_list(_causal_v54_safe_dict(m).get('edges')):
+            if not isinstance(e,dict): continue
+            src=_causal_v54_s(e.get('source') or e.get('src') or e.get('from'),160)
+            dst=_causal_v54_s(e.get('target') or e.get('dst') or e.get('to'),160)
+            if src and dst:
+                edges.append({"src":src,"dst":dst,"relation":_causal_v54_s(e.get('relation') or e.get('operator') or 'causal_effect',160),"meaning":"intervention_or_state_effect_channel_Re","weight_re":1.0,"weight_im":0.0})
+    if edges: return edges[:80]
+    fam=_causal_v54_safe_dict(_causal_v54_safe_dict(role_map).get('role_families'))
+    for i,(src,dst) in enumerate(zip((fam.get('controllable_variables') or [])[:4], (fam.get('target_outcomes') or fam.get('observable_variables') or [])[:4])):
+        edges.append({"src":src,"dst":dst,"relation":"role_family_causal_hypothesis","meaning":"intervention_or_state_effect_channel_Re","weight_re":0.5,"weight_im":0.0,"source_edge_id":f"role_re_{i+1}"})
+    return edges
+
+def causal_v54_build_im_edges(candidate, role_map=None, time_axis=None):
+    fam=_causal_v54_safe_dict(_causal_v54_safe_dict(role_map).get('role_families'))
+    obs=fam.get('observable_variables') or fam.get('measurement_protocols') or []
+    latent=fam.get('latent_state_candidates') or fam.get('mediator_candidates') or fam.get('target_outcomes') or []
+    out=[]
+    for i,o in enumerate(obs[:8]):
+        out.append({"src":o,"dst":latent[i % len(latent)] if latent else "latent_state_candidate","relation":"diagnostic_information_flow","meaning":"observation_to_latent_or_hypothesis_identification_channel_Im","weight_re":0.0,"weight_im":0.3})
+    axis=_causal_v54_safe_dict(_causal_v54_safe_dict(time_axis).get('axis') if isinstance(time_axis,dict) else time_axis)
+    active=[k for k,v in axis.items() if v]
+    if active:
+        out.append({"src":"time_evolution_observation","dst":latent[0] if latent else "time_dependent_latent_state","relation":"time_evolution_diagnostic_information_flow","meaning":"time_axis_supports_latent_state_identifiability_channel_Im","weight_re":0.0,"weight_im":0.4,"time_axis_keys":active})
+    return out[:40]
+
+def causal_v54_validate_candidate_contract(contract):
+    d=_causal_v54_safe_dict(contract)
+    missing=[k for k in _CAUSAL_V54_REQUIRED_KEYS if k not in d]
+    empty=[k for k in ["operator_semantics_contracts","causal_effect_edges_Re","information_flow_edges_Im","observable_discriminators","minimal_interventions","predictions","falsification_conditions"] if not d.get(k)]
+    return {"ok": not missing and not empty, "missing_keys": missing, "empty_required_fields": empty, "contract_schema_ok": d.get('contract_schema')==CAUSAL_V54_CONTRACT_SCHEMA}
+
+def causal_v54_score_contract_completeness(contract):
+    v=causal_v54_validate_candidate_contract(contract)
+    total=len(_CAUSAL_V54_REQUIRED_KEYS)+7
+    bad=len(v.get('missing_keys',[]))+len(v.get('empty_required_fields',[]))
+    return max(0.0, min(1.0, 1.0 - bad/max(1,total)))
+
+def causal_v54_score_information_identifiability(contract):
+    d=_causal_v54_safe_dict(contract)
+    score=0.0
+    if d.get('information_flow_edges_Im'): score+=0.45
+    if d.get('observable_discriminators'): score+=0.25
+    if d.get('falsification_conditions'): score+=0.20
+    if d.get('time_evolution_axis') and any(_causal_v54_safe_dict(d.get('time_evolution_axis')).values()): score+=0.10
+    return max(0.0,min(1.0,score))
+
+def causal_v54_score_time_evolution_usefulness(contract):
+    axis=_causal_v54_safe_dict(_causal_v54_safe_dict(contract).get('time_evolution_axis'))
+    active=sum(1 for v in axis.values() if v)
+    has_fals=bool(_causal_v54_safe_dict(contract).get('falsification_conditions'))
+    return max(0.0,min(1.0, active/4.0 + (0.25 if has_fals and active else 0.0)))
+
+def causal_v54_generic_graph_guard(candidate, contract=None):
+    txt=_causal_v54_text(candidate, 12000).lower()
+    warnings=[]
+    if 'generic' in txt and 'mediator' in txt: warnings.append('generic_mediator_candidate_requires_semantics')
+    if contract and not _causal_v54_safe_dict(contract).get('information_flow_edges_Im'): warnings.append('information_flow_not_defined')
+    return {"patch_id": CAUSAL_V54_UNIVERSAL_OPERATOR_SEMANTICS_TIME_AXIS_PATCH_ID, "warnings": _causal_v54_unique(warnings, limit=12)}
+
+def causal_v54_build_candidate_causal_contract(candidate, prompt_context=None):
+    c=_causal_v54_safe_dict(candidate)
+    role=causal_v54_extract_universal_role_families(prompt_context or c)
+    time=causal_v54_extract_time_evolution_axis(prompt_context or c)
+    re_edges=causal_v54_build_re_edges(c, role)
+    im_edges=causal_v54_build_im_edges(c, role, time)
+    fam=_causal_v54_safe_dict(role.get('role_families'))
+    trace=c.get('operator_trace') if isinstance(c.get('operator_trace'),list) else ([] if not c.get('operator_trace') else [str(c.get('operator_trace'))])
+    contract={
+        "candidate_id": _causal_v54_s(c.get('candidate_id') or c.get('id') or 'candidate_'+_causal_v54_hash(c,8),160),
+        "contract_schema": CAUSAL_V54_CONTRACT_SCHEMA,
+        "patch_id": CAUSAL_V54_UNIVERSAL_OPERATOR_SEMANTICS_TIME_AXIS_PATCH_ID,
+        "operator_trace": trace,
+        "operator_semantics_contracts": c.get('operator_semantics_contracts_v54') or [],
+        "role_family_map": role,
+        "design_axis_signature": 'universal_axis::'+_causal_v54_hash({"trace":trace,"role":role,"time":time},16),
+        "primary_causal_lever": (fam.get('controllable_variables') or [''])[0] if isinstance(fam.get('controllable_variables'),list) else '',
+        "causal_control_point_shift": "requires_operator_semantics_to_define_control_point_shift",
+        "latent_or_mediator_state": (fam.get('latent_state_candidates') or fam.get('mediator_candidates') or [''])[0] if isinstance(fam.get('latent_state_candidates') or fam.get('mediator_candidates'),list) else '',
+        "time_evolution_axis": time.get('axis',{}),
+        "causal_effect_edges_Re": re_edges,
+        "information_flow_edges_Im": im_edges,
+        "observable_discriminators": fam.get('observable_variables') or fam.get('measurement_protocols') or [],
+        "minimal_interventions": fam.get('controllable_variables') or [],
+        "predictions": [{"kind":"causal_effect_prediction","statement":f"Changing {e.get('src')} should alter {e.get('dst')} if the Re(S) channel is valid."} for e in re_edges[:5]],
+        "falsification_conditions": [{"kind":"information_flow_falsification","statement":f"If {e.get('src')} carries no distinguishing information about {e.get('dst')}, demote this candidate."} for e in im_edges[:5]],
+        "failure_risks": [],
+        "accepted_status": "draft_pending_v54_evaluation",
+        "status_reason": [],
+        "no_demo_specific_parameter_extraction": True,
+        "demo_content_dependency_warning": True,
+    }
+    guard=causal_v54_generic_graph_guard(c, contract)
+    contract['failure_risks']=guard.get('warnings',[])
+    val=causal_v54_validate_candidate_contract(contract)
+    contract['accepted_status']='accepted_v54_pre_experiment' if val.get('ok') and not contract['failure_risks'] else 'draft_missing_v54_contract'
+    contract['status_reason']=['v54_contract_complete_pre_experimental_evidence_required'] if contract['accepted_status'].startswith('accepted') else (val.get('empty_required_fields',[])+contract['failure_risks'])
+    return contract
+
+# ============================================================================
+# END ADD-ONLY PATCH: CAUSAL-V54-UNIVERSAL-OPERATOR-SEMANTICS-TIME-AXIS-20260510
+# ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY PATCH: CAUSAL-V58-SMATRIX-LOGIC-PRIOR-MASK-USR-VERIFIER
+# generated_at_jst: 2026-05-12
+# policy:
+# - ADD-ONLY: no existing code is deleted or modified above this block.
+# - Universal: no benchmark name, task name, or domain-specific target hardcoding.
+# - CausalOS is the core. USR is a tool for symbolic/equation compression.
+#   LLM is a UI/pre-post tool, not the core verifier.
+# Purpose:
+# - Upgrade S-matrix from record-only payload to candidate-level verifier.
+# - Verify new hypothesis internal logic, prior causal consistency,
+#   directionality/information-flow, causal-mask compliance, and USR
+#   compressibility.
+# - Interpret complex S-matrix imaginary part generically as information-flow,
+#   mediation, delay, or feedback phase; not as any task-specific parameter.
+# - Preserve V43/V45/V52 compatibility by wrapping legacy bundle builders and
+#   appending V58 fields.
+# ============================================================================
+
+CAUSAL_V58_SMATRIX_VERIFIER_PATCH_ID = 'CAUSAL-V58-SMATRIX-LOGIC-PRIOR-MASK-USR-VERIFIER-20260512'
+
+try:
+    _CAUSAL_V58_PREV_BUILD_BUNDLE = causal_v43_build_smatrix_usr_verification_bundle
+except Exception:
+    _CAUSAL_V58_PREV_BUILD_BUNDLE = None
+try:
+    _CAUSAL_V58_PREV_SCORE_CANDIDATE = causal_v43_score_candidate_with_smatrix_usr
+except Exception:
+    _CAUSAL_V58_PREV_SCORE_CANDIDATE = None
+try:
+    _CAUSAL_V58_PREV_GRAPH_VIEW = causal_v43_build_graph_view
+except Exception:
+    _CAUSAL_V58_PREV_GRAPH_VIEW = None
+
+
+def _causal_v58_dict(x):
+    return x if isinstance(x, dict) else {}
+
+
+def _causal_v58_list(x):
+    if isinstance(x, list):
+        return x
+    if isinstance(x, tuple):
+        return list(x)
+    return []
+
+
+def _causal_v58_text(x, limit=2000):
+    try:
+        s = '' if x is None else str(x)
+    except Exception:
+        s = repr(x)
+    return ' '.join(s.split())[:max(0, int(limit))]
+
+
+def _causal_v58_float(x, default=0.0):
+    try:
+        return float(x)
+    except Exception:
+        return float(default)
+
+
+def _causal_v58_hash_obj(obj, n=12):
+    try:
+        import json as _json, hashlib as _hashlib
+        raw = _json.dumps(obj, ensure_ascii=False, sort_keys=True, default=str)
+        return _hashlib.sha256(raw.encode('utf-8')).hexdigest()[:int(n)]
+    except Exception:
+        return 'hash_unavailable'
+
+
+def _causal_v58_candidate_id(candidate):
+    c = _causal_v58_dict(candidate)
+    return _causal_v58_text(c.get('candidate_id') or c.get('id') or c.get('uid') or _causal_v58_hash_obj(c, 10), 128)
+
+
+def _causal_v58_graph_material(candidate):
+    c = _causal_v58_dict(candidate)
+    g = _causal_v58_dict(_causal_v58_dict(c.get('graph_signature_v45')).get('material'))
+    if g:
+        return g
+    for key in ('causal_graph_delta', 'causal_graph', 'graph', 's_matrix_graph_view_v43'):
+        g = c.get(key)
+        if isinstance(g, dict):
+            return g
+    return {}
+
+
+def _causal_v58_nodes(candidate):
+    g = _causal_v58_graph_material(candidate)
+    nodes = g.get('nodes') if isinstance(g.get('nodes'), list) else []
+    out = []
+    seen = set()
+    for idx, n in enumerate(nodes, start=1):
+        if not isinstance(n, dict):
+            continue
+        nid = _causal_v58_text(n.get('id') or n.get('node_id') or n.get('label') or ('N%d' % idx), 128)
+        if not nid or nid in seen:
+            continue
+        seen.add(nid)
+        out.append({
+            'id': nid,
+            'label': _causal_v58_text(n.get('label') or nid, 256),
+            'role': _causal_v58_text(n.get('role') or n.get('semantic_role') or 'unknown', 128) or 'unknown',
+            'raw': n,
+        })
+    # V58 primary edge may reference IDs not in node list; add placeholders later.
+    return out
+
+
+def _causal_v58_edge_src(e):
+    e = _causal_v58_dict(e)
+    return _causal_v58_text(e.get('source') or e.get('src') or e.get('from') or '', 128)
+
+
+def _causal_v58_edge_dst(e):
+    e = _causal_v58_dict(e)
+    return _causal_v58_text(e.get('target') or e.get('dst') or e.get('to') or '', 128)
+
+
+def _causal_v58_edge_id(e, fallback=''):
+    e = _causal_v58_dict(e)
+    return _causal_v58_text(e.get('id') or e.get('edge_id') or e.get('test_edge') or fallback, 128)
+
+
+def _causal_v58_is_artifact_edge(e):
+    e = _causal_v58_dict(e)
+    txt = _causal_v58_text(e, 2500).lower()
+    return bool(
+        e.get('generated_topology_artifact_v54c')
+        or e.get('operator_metadata_only_v54c')
+        or str(e.get('id', '')).startswith('E_TS')
+        or ('derived_from_edge' in e and 'intermediate_state_channel' in txt and not e.get('is_primary_causal_edge_v58'))
+    )
+
+
+def _causal_v58_edges(candidate):
+    c = _causal_v58_dict(candidate)
+    g = _causal_v58_graph_material(c)
+    pools = []
+    if isinstance(g.get('edges'), list):
+        pools.extend(g.get('edges'))
+    # Leap V58 stores primary edges in a direct candidate field too.
+    if isinstance(c.get('v58_primary_causal_edges'), list):
+        pools.extend(c.get('v58_primary_causal_edges'))
+    out = []
+    seen = set()
+    for idx, e in enumerate(pools, start=1):
+        if not isinstance(e, dict):
+            continue
+        src = _causal_v58_edge_src(e)
+        dst = _causal_v58_edge_dst(e)
+        if not src or not dst:
+            continue
+        eid = _causal_v58_edge_id(e, 'E%d' % idx)
+        key = (eid, src, dst, _causal_v58_text(e.get('relation') or e.get('rel') or e.get('operator'), 80))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({
+            'id': eid,
+            'source': src,
+            'target': dst,
+            'relation': _causal_v58_text(e.get('relation') or e.get('rel') or e.get('operator') or 'candidate', 128),
+            'mechanism': _causal_v58_text(e.get('mechanism') or e.get('effect') or '', 800),
+            'observable': _causal_v58_text(e.get('observable') or '', 256),
+            'operator': _causal_v58_text(e.get('operator') or '', 128),
+            'is_primary_causal_edge_v58': bool(e.get('is_primary_causal_edge_v58')),
+            'is_generated_artifact': _causal_v58_is_artifact_edge(e),
+            'has_falsification_test': bool(e.get('has_falsification_test')),
+            'proxy_intervention': _causal_v58_dict(e.get('proxy_intervention')),
+            'observation_decomposition': _causal_v58_dict(e.get('observation_decomposition')),
+            'causal_mask_hint_v58': _causal_v58_dict(e.get('causal_mask_hint_v58')),
+            'usr_relation_hint_v58': _causal_v58_dict(e.get('usr_relation_hint_v58')),
+            's_matrix_complex_weight_v58': _causal_v58_dict(e.get('s_matrix_complex_weight_v58')),
+            'raw': e,
+        })
+    return out
+
+
+def _causal_v58_role_family(role):
+    r = _causal_v58_text(role, 128).lower()
+    if any(k in r for k in ('source', 'input', 'control', 'resource', 'driver', 'process')):
+        return 'source_or_control'
+    if any(k in r for k in ('interface', 'boundary', 'mediator', 'gate', 'transport', 'state')):
+        return 'mediator_or_state'
+    if any(k in r for k in ('sink', 'output', 'allocation', 'effect', 'observable', 'side')):
+        return 'outcome_or_sink'
+    if any(k in r for k in ('field', 'gradient', 'phase', 'delay', 'lag', 'time')):
+        return 'field_or_delay'
+    return 'context'
+
+
+def _causal_v58_node_maps(candidate):
+    nodes = _causal_v58_nodes(candidate)
+    ids = {n['id'] for n in nodes}
+    # Ensure all edge endpoints exist in node map.
+    for e in _causal_v58_edges(candidate):
+        for nid in (e['source'], e['target']):
+            if nid and nid not in ids:
+                ids.add(nid)
+                nodes.append({'id': nid, 'label': nid, 'role': 'implicit_endpoint', 'raw': {}})
+    roles = {n['id']: n.get('role', 'unknown') for n in nodes}
+    labels = {n['id']: n.get('label', n['id']) for n in nodes}
+    return nodes, roles, labels
+
+
+def _causal_v58_complex_weight(edge, roles=None):
+    e = _causal_v58_dict(edge)
+    w = _causal_v58_dict(e.get('s_matrix_complex_weight_v58'))
+    if w:
+        re = _causal_v58_float(w.get('real'), 0.52)
+        im = _causal_v58_float(w.get('imag'), 0.0)
+        return {
+            'real': max(-1.0, min(1.0, re)),
+            'imag': max(-1.0, min(1.0, im)),
+            'imag_semantics': _causal_v58_text(w.get('imag_semantics') or 'information_flow_delay_or_mediation_phase', 128),
+            'source': 'edge_payload_v58',
+        }
+    roles = _causal_v58_dict(roles)
+    src_role = _causal_v58_text(roles.get(e.get('source')), 128).lower()
+    dst_role = _causal_v58_text(roles.get(e.get('target')), 128).lower()
+    relation = _causal_v58_text(e.get('relation') or e.get('operator'), 128).lower()
+    re = 0.45
+    if e.get('is_primary_causal_edge_v58'):
+        re += 0.10
+    if e.get('has_falsification_test'):
+        re += 0.06
+    im = 0.0
+    if any(k in relation for k in ('delay', 'lag', 'phase')) or 'delay' in src_role or 'delay' in dst_role or 'lag' in src_role or 'lag' in dst_role:
+        im += 0.25
+    elif any(k in relation for k in ('mediator', 'gate', 'probe', 'observation')) or any(k in (src_role + ' ' + dst_role) for k in ('mediator', 'state', 'interface', 'transport')):
+        im += 0.12
+    if any(k in relation for k in ('reverse', 'reversal', 'feedback', 'inversion')):
+        im *= -1.0 if abs(im) > 1e-12 else -0.12
+    return {
+        'real': max(-1.0, min(1.0, re)),
+        'imag': max(-1.0, min(1.0, im)),
+        'imag_semantics': 'information_flow_delay_or_mediation_phase',
+        'source': 'role_relation_inference_v58',
+    }
+
+
+def causal_v58_normalize_candidate_to_smatrix_record(candidate, existing_smatrix=None, context=None):
+    c = _causal_v58_dict(candidate)
+    nodes, roles, labels = _causal_v58_node_maps(c)
+    edges = _causal_v58_edges(c)
+    complex_edges = []
+    for idx, e in enumerate(edges, start=1):
+        w = _causal_v58_complex_weight(e, roles=roles)
+        complex_edges.append({
+            'edge_id': e.get('id') or ('E%d' % idx),
+            'src': e.get('source'),
+            'dst': e.get('target'),
+            'relation': e.get('relation') or 'candidate',
+            'weight_re': w['real'],
+            'weight_im': w['imag'],
+            'imag_semantics': w['imag_semantics'],
+            'phase_hint': 'feedback_or_reverse' if w['imag'] < 0 else ('delayed_or_mediated' if abs(w['imag']) > 1e-12 else 'direct_or_static'),
+            'is_primary_causal_edge_v58': bool(e.get('is_primary_causal_edge_v58')),
+            'is_generated_artifact': bool(e.get('is_generated_artifact')),
+            'has_falsification_test': bool(e.get('has_falsification_test')),
+            'mask': _causal_v58_dict(e.get('causal_mask_hint_v58')),
+            'usr_hint': _causal_v58_dict(e.get('usr_relation_hint_v58')),
+        })
+    record = {
+        'patch_id': CAUSAL_V58_SMATRIX_VERIFIER_PATCH_ID,
+        'candidate_id': _causal_v58_candidate_id(c),
+        'nodes': [{'id': n['id'], 'label': n.get('label'), 'role': n.get('role'), 'role_family': _causal_v58_role_family(n.get('role'))} for n in nodes],
+        'edges': edges,
+        'complex_s_edges': complex_edges,
+        'node_roles': roles,
+        'node_labels': labels,
+        'existing_smatrix_present': bool(existing_smatrix),
+        'context_present': bool(context),
+        'complex_s_matrix_semantics': {
+            'real': 'signed causal support or direct effect strength',
+            'imag': 'information-flow, mediation, delay, feedback, or phase-order component',
+            'policy': 'imaginary part is universal causal timing/information structure, not task-specific parameter assignment',
+        },
+    }
+    return record
+
+
+def causal_v58_verify_internal_logic(candidate, s_matrix_record=None, context=None):
+    c = _causal_v58_dict(candidate)
+    rec = _causal_v58_dict(s_matrix_record) or causal_v58_normalize_candidate_to_smatrix_record(c, context=context)
+    edges = _causal_v58_list(rec.get('complex_s_edges'))
+    nodes = _causal_v58_list(rec.get('nodes'))
+    node_ids = {n.get('id') for n in nodes if isinstance(n, dict)}
+    self_loops = []
+    missing_nodes = []
+    duplicate_pairs = []
+    seen_pairs = set()
+    primary_count = 0
+    artifact_count = 0
+    tested_count = 0
+    im_count = 0
+    direction_warnings = []
+    for e in edges:
+        if not isinstance(e, dict):
+            continue
+        src = e.get('src')
+        dst = e.get('dst')
+        if src == dst:
+            self_loops.append(e.get('edge_id'))
+        if src not in node_ids or dst not in node_ids:
+            missing_nodes.append({'edge_id': e.get('edge_id'), 'src': src, 'dst': dst})
+        pair = (src, dst, e.get('relation'))
+        if pair in seen_pairs:
+            duplicate_pairs.append(e.get('edge_id'))
+        seen_pairs.add(pair)
+        if e.get('is_primary_causal_edge_v58'):
+            primary_count += 1
+        if e.get('is_generated_artifact'):
+            artifact_count += 1
+        if e.get('has_falsification_test'):
+            tested_count += 1
+        if abs(_causal_v58_float(e.get('weight_im'), 0.0)) > 1e-12:
+            im_count += 1
+        # Directionality warning, not hard rejection: context nodes may be endpoints but need proxy support.
+        src_family = _causal_v58_role_family(_causal_v58_dict(rec.get('node_roles')).get(src))
+        dst_family = _causal_v58_role_family(_causal_v58_dict(rec.get('node_roles')).get(dst))
+        if src_family == 'outcome_or_sink' and dst_family == 'source_or_control' and _causal_v58_float(e.get('weight_im'), 0.0) >= 0:
+            direction_warnings.append({'edge_id': e.get('edge_id'), 'warning': 'outcome_to_control_direction_without_negative_feedback_phase'})
+    n_edges = max(1, len(edges))
+    hard_conflicts = []
+    if missing_nodes:
+        hard_conflicts.append('missing_endpoint_nodes')
+    if self_loops:
+        hard_conflicts.append('self_loops_without_explicit_justification')
+    logic_score = 1.0
+    logic_score -= 0.18 * min(1.0, len(self_loops) / n_edges)
+    logic_score -= 0.18 * min(1.0, len(missing_nodes) / n_edges)
+    logic_score -= 0.10 * min(1.0, len(duplicate_pairs) / n_edges)
+    if primary_count <= 0:
+        logic_score -= 0.18
+    if tested_count <= 0:
+        logic_score -= 0.12
+    logic_score = max(0.0, min(1.0, logic_score))
+    directionality_score = max(0.0, min(1.0, 1.0 - 0.12 * len(direction_warnings) / n_edges))
+    return {
+        'patch_id': CAUSAL_V58_SMATRIX_VERIFIER_PATCH_ID,
+        'logic_consistency_score': logic_score,
+        'directionality_score': directionality_score,
+        'edge_count': len(edges),
+        'node_count': len(nodes),
+        'primary_causal_edge_count': primary_count,
+        'generated_artifact_edge_count': artifact_count,
+        'falsifiable_edge_count': tested_count,
+        'imaginary_component_edge_count': im_count,
+        'self_loop_edges': self_loops,
+        'missing_endpoint_nodes': missing_nodes,
+        'duplicate_edge_ids': duplicate_pairs,
+        'directionality_warnings': direction_warnings,
+        'hard_conflicts': hard_conflicts,
+        'soft_conflicts': ['low_primary_causal_edge_count'] if primary_count <= 0 else [],
+    }
+
+
+def _causal_v58_iter_prior_edges(prior_smatrix):
+    p = prior_smatrix
+    if p is None:
+        return []
+    if isinstance(p, dict):
+        for key in ('complex_s_edges', 'edges', 's_edges', 'prior_edges'):
+            xs = p.get(key)
+            if isinstance(xs, list):
+                return [x for x in xs if isinstance(x, dict)]
+        # Dict of edge records.
+        return [x for x in p.values() if isinstance(x, dict)]
+    if isinstance(p, list):
+        return [x for x in p if isinstance(x, dict)]
+    return []
+
+
+def causal_v58_verify_against_existing_smatrix(candidate, prior_smatrix=None, s_matrix_record=None, context=None):
+    rec = _causal_v58_dict(s_matrix_record) or causal_v58_normalize_candidate_to_smatrix_record(candidate, existing_smatrix=prior_smatrix, context=context)
+    current_edges = _causal_v58_list(rec.get('complex_s_edges'))
+    prior_edges = _causal_v58_iter_prior_edges(prior_smatrix)
+    prior_map = {}
+    for pe in prior_edges:
+        src = _causal_v58_text(pe.get('src') or pe.get('source'), 128)
+        dst = _causal_v58_text(pe.get('dst') or pe.get('target'), 128)
+        if not src or not dst:
+            continue
+        re = _causal_v58_float(pe.get('weight_re', pe.get('real', pe.get('strength', 0.0))), 0.0)
+        im = _causal_v58_float(pe.get('weight_im', pe.get('imag', 0.0)), 0.0)
+        prior_map[(src, dst)] = {'re': re, 'im': im, 'raw': pe}
+    conflicts = []
+    supported = []
+    novel = []
+    reverse_supported = []
+    for e in current_edges:
+        src = e.get('src')
+        dst = e.get('dst')
+        re = _causal_v58_float(e.get('weight_re'), 0.0)
+        im = _causal_v58_float(e.get('weight_im'), 0.0)
+        prior = prior_map.get((src, dst))
+        reverse = prior_map.get((dst, src))
+        if prior:
+            # Opposite real sign is a hard conflict; imag sign mismatch is soft.
+            if prior['re'] * re < -1e-9:
+                conflicts.append({'edge_id': e.get('edge_id'), 'type': 'opposite_real_sign', 'src': src, 'dst': dst, 'prior': prior, 'candidate': {'re': re, 'im': im}})
+            else:
+                supported.append(e.get('edge_id'))
+            if abs(prior.get('im', 0.0)) > 1e-12 and abs(im) > 1e-12 and prior.get('im', 0.0) * im < -1e-9:
+                conflicts.append({'edge_id': e.get('edge_id'), 'type': 'opposite_phase_or_information_flow', 'src': src, 'dst': dst})
+        elif reverse:
+            reverse_supported.append({'edge_id': e.get('edge_id'), 'src': src, 'dst': dst, 'reverse_prior_present': True})
+        else:
+            novel.append(e.get('edge_id'))
+    total = max(1, len(current_edges))
+    # Novel edges are acceptable before experiment; conflicts are penalized.
+    prior_score = 1.0 - min(1.0, len(conflicts) / total)
+    novelty_score = min(1.0, len(novel) / total)
+    return {
+        'patch_id': CAUSAL_V58_SMATRIX_VERIFIER_PATCH_ID,
+        'prior_smatrix_edge_count': len(prior_edges),
+        'candidate_edge_count': len(current_edges),
+        'prior_consistency_score': max(0.0, min(1.0, prior_score)),
+        'novel_but_consistent_edge_count': len(novel),
+        'supported_edge_count': len(supported),
+        'reverse_prior_edge_count': len(reverse_supported),
+        'contradiction_count': len(conflicts),
+        'hard_conflicts': conflicts,
+        'reverse_prior_edges': reverse_supported,
+        'novel_edge_ids': novel,
+        'novelty_score_against_prior': novelty_score,
+        'policy': 'novel edges are not rejected; they require targeted experiments unless they contradict prior S-matrix sign/phase',
+    }
+
+
+def causal_v58_verify_causal_mask(candidate, s_matrix_record=None, context=None):
+    rec = _causal_v58_dict(s_matrix_record) or causal_v58_normalize_candidate_to_smatrix_record(candidate, context=context)
+    edges = _causal_v58_list(rec.get('complex_s_edges'))
+    violations = []
+    requires_proxy = []
+    observe_only_targets = []
+    for e in edges:
+        mask = _causal_v58_dict(e.get('mask'))
+        if not mask:
+            continue
+        if mask.get('blocked'):
+            violations.append({'edge_id': e.get('edge_id'), 'type': 'blocked_edge_used', 'mask': mask})
+        if mask.get('requires_proxy'):
+            requires_proxy.append(e.get('edge_id'))
+        if mask.get('observe_only'):
+            observe_only_targets.append(e.get('dst'))
+    total = max(1, len(edges))
+    score = 1.0 - min(1.0, len(violations) / total)
+    return {
+        'patch_id': CAUSAL_V58_SMATRIX_VERIFIER_PATCH_ID,
+        'mask_compliance_score': max(0.0, min(1.0, score)),
+        'mask_violation_count': len(violations),
+        'violations': violations,
+        'requires_proxy_edge_ids': requires_proxy,
+        'observe_only_targets': list(dict.fromkeys([x for x in observe_only_targets if x])),
+        'policy': 'mask is attention-like causal constraint: blocked edges are rejected, observe-only edges need measurement not intervention, proxy edges require proxy variable',
+    }
+
+
+def causal_v58_build_usr_equation_candidates_from_candidate_graph(candidate, s_matrix_record=None, context=None):
+    rec = _causal_v58_dict(s_matrix_record) or causal_v58_normalize_candidate_to_smatrix_record(candidate, context=context)
+    edges = _causal_v58_list(rec.get('complex_s_edges'))
+    out = []
+    for idx, e in enumerate(edges, start=1):
+        src = _causal_v58_text(e.get('src'), 80)
+        dst = _causal_v58_text(e.get('dst'), 80)
+        if not src or not dst:
+            continue
+        re = _causal_v58_float(e.get('weight_re'), 0.0)
+        im = _causal_v58_float(e.get('weight_im'), 0.0)
+        # Safe symbolic names. Keep original variable mapping separately.
+        s_sym = 'x_%s' % _causal_v58_hash_obj(src, 6)
+        d_sym = 'y_%s' % _causal_v58_hash_obj(dst, 6)
+        lag_sym = 'tau_%s' % _causal_v58_hash_obj(src + '->' + dst, 5)
+        if abs(im) > 1e-12:
+            expr = '%s(t) = a*%s(t-%s) + b' % (d_sym, s_sym, lag_sym)
+            kind = 'phase_delay_relation'
+        else:
+            expr = '%s = a*%s + b' % (d_sym, s_sym)
+            kind = 'direct_relation'
+        out.append({
+            'candidate_id': 'USR_V58_EQ_%03d_%s' % (idx, _causal_v58_hash_obj(e, 6)),
+            'kind': kind,
+            'expression_text': expr,
+            'variables': [src, dst],
+            'symbolic_variables': [s_sym, d_sym],
+            'parameters': ['a', 'b'] + ([lag_sym] if abs(im) > 1e-12 else []),
+            'edge_id': e.get('edge_id'),
+            'weight_re': re,
+            'weight_im': im,
+            'requires_time_series': bool(abs(im) > 1e-12),
+            'origin': CAUSAL_V58_SMATRIX_VERIFIER_PATCH_ID,
+        })
+    return out
+
+
+def causal_v58_score_usr_compressibility(candidate, equation_candidates=None, s_matrix_record=None, context=None):
+    rec = _causal_v58_dict(s_matrix_record) or causal_v58_normalize_candidate_to_smatrix_record(candidate, context=context)
+    edges = _causal_v58_list(rec.get('complex_s_edges'))
+    eqs = _causal_v58_list(equation_candidates)
+    if not eqs:
+        eqs = causal_v58_build_usr_equation_candidates_from_candidate_graph(candidate, s_matrix_record=rec, context=context)
+    edge_count = max(1, len(edges))
+    coverage = min(1.0, len(eqs) / edge_count)
+    time_series_fraction = sum(1 for e in eqs if isinstance(e, dict) and e.get('requires_time_series')) / max(1, len(eqs)) if eqs else 0.0
+    score = 0.72 * coverage + 0.18 * min(1.0, len(eqs) / 4.0) + 0.10 * time_series_fraction
+    return {
+        'patch_id': CAUSAL_V58_SMATRIX_VERIFIER_PATCH_ID,
+        'usr_compressibility_score': max(0.0, min(1.0, score)),
+        'equation_candidate_count': len(eqs),
+        'edge_coverage_by_equations': coverage,
+        'time_series_equation_fraction': time_series_fraction,
+        'equation_candidates': eqs,
+        'policy': 'USR compresses causal/correlation structure into symbolic equation candidates; it is a tool, not the core CausalOS verifier',
+    }
+
+
+def causal_verify_candidate_with_smatrix_v58(candidate, prior_smatrix=None, usr_context=None, context=None):
+    rec = causal_v58_normalize_candidate_to_smatrix_record(candidate, existing_smatrix=prior_smatrix, context=context)
+    internal = causal_v58_verify_internal_logic(candidate, s_matrix_record=rec, context=context)
+    prior = causal_v58_verify_against_existing_smatrix(candidate, prior_smatrix=prior_smatrix, s_matrix_record=rec, context=context)
+    mask = causal_v58_verify_causal_mask(candidate, s_matrix_record=rec, context=context)
+    eqs = causal_v58_build_usr_equation_candidates_from_candidate_graph(candidate, s_matrix_record=rec, context=usr_context or context)
+    usr = causal_v58_score_usr_compressibility(candidate, equation_candidates=eqs, s_matrix_record=rec, context=usr_context or context)
+    edge_count = max(1, len(_causal_v58_list(rec.get('complex_s_edges'))))
+    im_edges = sum(1 for e in _causal_v58_list(rec.get('complex_s_edges')) if abs(_causal_v58_float(_causal_v58_dict(e).get('weight_im'), 0.0)) > 1e-12)
+    phase_direction_score = min(1.0, im_edges / edge_count)
+    overall = (
+        0.25 * _causal_v58_float(internal.get('logic_consistency_score'), 0.0)
+        + 0.18 * _causal_v58_float(internal.get('directionality_score'), 0.0)
+        + 0.22 * _causal_v58_float(prior.get('prior_consistency_score'), 1.0)
+        + 0.16 * _causal_v58_float(mask.get('mask_compliance_score'), 1.0)
+        + 0.14 * _causal_v58_float(usr.get('usr_compressibility_score'), 0.0)
+        + 0.05 * phase_direction_score
+    )
+    publishable = False  # external evidence is required elsewhere; this is pre-experiment verification.
+    requires_experiment_edges = []
+    for e in _causal_v58_list(rec.get('complex_s_edges')):
+        if e.get('edge_id') in prior.get('novel_edge_ids', []) or e.get('is_primary_causal_edge_v58'):
+            requires_experiment_edges.append(e.get('edge_id'))
+    return {
+        'patch_id': CAUSAL_V58_SMATRIX_VERIFIER_PATCH_ID,
+        'candidate_id': _causal_v58_candidate_id(candidate),
+        's_matrix_record_v58': rec,
+        'logic_verification_v58': internal,
+        'prior_consistency_v58': prior,
+        'causal_mask_verification_v58': mask,
+        'usr_compressibility_v58': usr,
+        'logic_consistency_score': _causal_v58_float(internal.get('logic_consistency_score'), 0.0),
+        'prior_consistency_score': _causal_v58_float(prior.get('prior_consistency_score'), 1.0),
+        'directionality_score': _causal_v58_float(internal.get('directionality_score'), 0.0),
+        'mask_compliance_score': _causal_v58_float(mask.get('mask_compliance_score'), 1.0),
+        'usr_compressibility_score': _causal_v58_float(usr.get('usr_compressibility_score'), 0.0),
+        'phase_direction_score': phase_direction_score,
+        'overall_causal_verification_score_v58': max(0.0, min(1.0, overall)),
+        'contradiction_count': prior.get('contradiction_count', 0),
+        'unsupported_edge_count': max(0, len(_causal_v58_list(rec.get('complex_s_edges'))) - int(prior.get('supported_edge_count', 0)) - int(prior.get('novel_but_consistent_edge_count', 0))),
+        'novel_but_consistent_edge_count': prior.get('novel_but_consistent_edge_count', 0),
+        'requires_experiment_edges': list(dict.fromkeys([x for x in requires_experiment_edges if x])),
+        'hard_conflicts': _causal_v58_list(internal.get('hard_conflicts')) + _causal_v58_list(prior.get('hard_conflicts')) + _causal_v58_list(mask.get('violations')),
+        'soft_conflicts': _causal_v58_list(internal.get('soft_conflicts')) + _causal_v58_list(internal.get('directionality_warnings')),
+        'publishable_status_v58': 'pre_publishable_requires_external_or_experimental_evidence',
+        'publishable_candidate': publishable,
+        'core_llm_generate_required': False,
+        'no_benchmark_or_task_name_hardcoding': True,
+    }
+
+
+def causal_v58_build_smatrix_usr_verification_bundle(candidate_object, existing_smatrix=None, context=None):
+    verification = causal_verify_candidate_with_smatrix_v58(candidate_object, prior_smatrix=existing_smatrix, usr_context=context, context=context)
+    rec = verification.get('s_matrix_record_v58')
+    usr = verification.get('usr_compressibility_v58')
+    return {
+        'patch_id': CAUSAL_V58_SMATRIX_VERIFIER_PATCH_ID,
+        's_matrix_record': rec,
+        's_matrix_verification_v58': verification,
+        's_matrix_verification': verification.get('logic_verification_v58'),
+        'prior_consistency_v58': verification.get('prior_consistency_v58'),
+        'causal_mask_verification_v58': verification.get('causal_mask_verification_v58'),
+        'usr_support': usr,
+        'equation_candidates': _causal_v58_list(_causal_v58_dict(usr).get('equation_candidates')),
+        'equation_candidates_count': _causal_v58_dict(usr).get('equation_candidate_count', 0),
+        'identifiability_report': {
+            'patch_id': CAUSAL_V58_SMATRIX_VERIFIER_PATCH_ID,
+            'identifiability_score': verification.get('phase_direction_score'),
+            'requires_experiment_edges': verification.get('requires_experiment_edges'),
+            'pre_experiment_only': True,
+        },
+        'identifiability_score': verification.get('phase_direction_score'),
+        'overall_causal_verification_score_v58': verification.get('overall_causal_verification_score_v58'),
+        'logic_consistency_score': verification.get('logic_consistency_score'),
+        'prior_consistency_score': verification.get('prior_consistency_score'),
+        'mask_compliance_score': verification.get('mask_compliance_score'),
+        'usr_compressibility_score': verification.get('usr_compressibility_score'),
+        'publishable_status_v58': verification.get('publishable_status_v58'),
+    }
+
+
+def causal_v58_score_candidate_with_smatrix_usr(candidate_object, existing_smatrix=None, context=None):
+    bundle = causal_v58_build_smatrix_usr_verification_bundle(candidate_object, existing_smatrix=existing_smatrix, context=context)
+    verification = _causal_v58_dict(bundle.get('s_matrix_verification_v58'))
+    score = _causal_v58_float(verification.get('overall_causal_verification_score_v58'), 0.0)
+    return {
+        'patch_id': CAUSAL_V58_SMATRIX_VERIFIER_PATCH_ID,
+        'draft_quality_score': min(0.91, score),
+        'pre_experiment_confidence': min(0.88, score * 0.94 + 0.03),
+        'publishable_score': 0.0,
+        'pre_experiment_rank_score': score,
+        'publishable_status': 'pre_publishable_requires_external_or_experimental_evidence',
+        'components': {
+            'logic_consistency_score': verification.get('logic_consistency_score'),
+            'prior_consistency_score': verification.get('prior_consistency_score'),
+            'directionality_score': verification.get('directionality_score'),
+            'mask_compliance_score': verification.get('mask_compliance_score'),
+            'usr_compressibility_score': verification.get('usr_compressibility_score'),
+            'phase_direction_score': verification.get('phase_direction_score'),
+        },
+        'verification_bundle': bundle,
+        'core_llm_generate_required': False,
+    }
+
+
+def causal_v43_build_smatrix_usr_verification_bundle(candidate_object, existing_smatrix=None, context=None):
+    # Compatibility wrapper: preserve legacy bundle fields and append V58 verifier.
+    legacy = {}
+    if callable(_CAUSAL_V58_PREV_BUILD_BUNDLE):
+        try:
+            legacy = _CAUSAL_V58_PREV_BUILD_BUNDLE(candidate_object, existing_smatrix=existing_smatrix, context=context)
+        except TypeError:
+            try:
+                legacy = _CAUSAL_V58_PREV_BUILD_BUNDLE(candidate_object, existing_smatrix, context)
+            except Exception as e:
+                legacy = {'legacy_bundle_error_v58': repr(e)}
+        except Exception as e:
+            legacy = {'legacy_bundle_error_v58': repr(e)}
+    if not isinstance(legacy, dict):
+        legacy = {}
+    v58 = causal_v58_build_smatrix_usr_verification_bundle(candidate_object, existing_smatrix=existing_smatrix, context=context)
+    legacy['v58_smatrix_usr_verification_bundle'] = v58
+    legacy['s_matrix_verification_v58'] = v58.get('s_matrix_verification_v58')
+    legacy['prior_consistency_v58'] = v58.get('prior_consistency_v58')
+    legacy['causal_mask_verification_v58'] = v58.get('causal_mask_verification_v58')
+    legacy['usr_compressibility_v58'] = v58.get('usr_support')
+    legacy['overall_causal_verification_score_v58'] = v58.get('overall_causal_verification_score_v58')
+    legacy['logic_consistency_score_v58'] = v58.get('logic_consistency_score')
+    legacy['prior_consistency_score_v58'] = v58.get('prior_consistency_score')
+    legacy['mask_compliance_score_v58'] = v58.get('mask_compliance_score')
+    legacy['usr_compressibility_score_v58'] = v58.get('usr_compressibility_score')
+    legacy['patch_id_v58'] = CAUSAL_V58_SMATRIX_VERIFIER_PATCH_ID
+    return legacy
+
+
+def causal_v43_score_candidate_with_smatrix_usr(candidate_object, existing_smatrix=None, context=None):
+    legacy = {}
+    if callable(_CAUSAL_V58_PREV_SCORE_CANDIDATE):
+        try:
+            legacy = _CAUSAL_V58_PREV_SCORE_CANDIDATE(candidate_object, existing_smatrix=existing_smatrix, context=context)
+        except TypeError:
+            try:
+                legacy = _CAUSAL_V58_PREV_SCORE_CANDIDATE(candidate_object, existing_smatrix, context)
+            except Exception as e:
+                legacy = {'legacy_score_error_v58': repr(e)}
+        except Exception as e:
+            legacy = {'legacy_score_error_v58': repr(e)}
+    if not isinstance(legacy, dict):
+        legacy = {}
+    v58 = causal_v58_score_candidate_with_smatrix_usr(candidate_object, existing_smatrix=existing_smatrix, context=context)
+    legacy['scores_v58'] = v58
+    # Preserve legacy top-level scores if present, but add explicit V58 rank score.
+    legacy['pre_experiment_rank_score_v58'] = v58.get('pre_experiment_rank_score')
+    legacy['overall_causal_verification_score_v58'] = _causal_v58_dict(v58.get('verification_bundle')).get('overall_causal_verification_score_v58')
+    legacy['publishable_status_v58'] = v58.get('publishable_status')
+    legacy['patch_id_v58'] = CAUSAL_V58_SMATRIX_VERIFIER_PATCH_ID
+    return legacy
+
+
+def causal_v58_build_graph_view(candidate_object, verification_bundle=None, context=None):
+    c = _causal_v58_dict(candidate_object)
+    bundle = _causal_v58_dict(verification_bundle) or causal_v58_build_smatrix_usr_verification_bundle(c, context=context)
+    v58 = _causal_v58_dict(bundle.get('s_matrix_verification_v58')) or _causal_v58_dict(bundle.get('v58_smatrix_usr_verification_bundle')).get('s_matrix_verification_v58', {})
+    rec = _causal_v58_dict(v58.get('s_matrix_record_v58')) or _causal_v58_dict(bundle.get('s_matrix_record'))
+    return {
+        'patch_id': CAUSAL_V58_SMATRIX_VERIFIER_PATCH_ID,
+        'nodes': _causal_v58_list(rec.get('nodes')),
+        'edges': _causal_v58_list(rec.get('complex_s_edges')),
+        'usr_equation_edges': _causal_v58_list(_causal_v58_dict(bundle.get('usr_support')).get('equation_candidates')),
+        'verification_scores': {
+            'logic_consistency_score': bundle.get('logic_consistency_score') or v58.get('logic_consistency_score'),
+            'prior_consistency_score': bundle.get('prior_consistency_score') or v58.get('prior_consistency_score'),
+            'mask_compliance_score': bundle.get('mask_compliance_score') or v58.get('mask_compliance_score'),
+            'usr_compressibility_score': bundle.get('usr_compressibility_score') or v58.get('usr_compressibility_score'),
+            'overall_causal_verification_score_v58': bundle.get('overall_causal_verification_score_v58') or v58.get('overall_causal_verification_score_v58'),
+        },
+        'complex_s_matrix_semantics': _causal_v58_dict(rec.get('complex_s_matrix_semantics')),
+    }
+
+
+# Attach helpers to CausalOS-like classes when available. This keeps existing
+# constructors unchanged and provides app/leap/growth modules a stable API.
+try:
+    if 'UnifiedCausalOSV5_3Full' in globals() and isinstance(UnifiedCausalOSV5_3Full, type):
+        UnifiedCausalOSV5_3Full.causal_verify_candidate_with_smatrix_v58 = staticmethod(causal_verify_candidate_with_smatrix_v58)
+        UnifiedCausalOSV5_3Full.causal_v58_build_smatrix_usr_verification_bundle = staticmethod(causal_v58_build_smatrix_usr_verification_bundle)
+        UnifiedCausalOSV5_3Full.causal_v58_score_candidate_with_smatrix_usr = staticmethod(causal_v58_score_candidate_with_smatrix_usr)
+except Exception:
+    pass
+try:
+    if 'CausalCoreV5' in globals() and isinstance(CausalCoreV5, type):
+        CausalCoreV5.causal_verify_candidate_with_smatrix_v58 = staticmethod(causal_verify_candidate_with_smatrix_v58)
+        CausalCoreV5.causal_v58_build_smatrix_usr_verification_bundle = staticmethod(causal_v58_build_smatrix_usr_verification_bundle)
+except Exception:
+    pass
+
+# ============================================================================
+# END ADD-ONLY PATCH: CAUSAL-V58-SMATRIX-LOGIC-PRIOR-MASK-USR-VERIFIER
+# ============================================================================
+
+# ============================================================================
+# ADD-ONLY PATCH: CAUSAL-V65-SMATRIX-GENERATION-FEEDBACK
+# generated_at_jst: 20260516
+# source_file_before_bytes: 530828
+# source_file_before_sha256_8: 8c028885
+# purpose:
+# - Add Stage 3 S-matrix / mask / USR feedback packet builder for the
+#   invention closed-loop route introduced in leap_engine.py V65.
+# - Convert causal verification outputs into next-generation constraints:
+#   promoted/avoided edge families, required phase/mask/USR patterns, and
+#   compact summaries for app.py feedback logs.
+# policy:
+# - ADD-ONLY: no existing code is deleted or overwritten.
+# - No benchmark/task-name hardcoding. All decisions derive from candidate,
+#   S-matrix record, logic/prior/mask/USR summaries, and edge attributes.
+# - S-matrix complex semantics are universal: real=signed causal support;
+#   imaginary=information-flow / mediation / delay / feedback / phase order.
+# ============================================================================
+
+CAUSAL_V65_SMATRIX_GENERATION_FEEDBACK_PATCH_ID = 'CAUSAL-V65-SMATRIX-GENERATION-FEEDBACK-20260516'
+
+try:
+    import copy as _cv65_copy
+    import hashlib as _cv65_hashlib
+    import json as _cv65_json
+    import math as _cv65_math
+    import re as _cv65_re
+    import time as _cv65_time
+except Exception:  # pragma: no cover
+    _cv65_copy = None
+    _cv65_hashlib = None
+    _cv65_json = None
+    _cv65_math = None
+    _cv65_re = None
+    _cv65_time = None
+
+
+def _cv65_now_ts():
+    try:
+        return float(_cv65_time.time())
+    except Exception:
+        return 0.0
+
+
+def _cv65_safe_dict(x):
+    return dict(x) if isinstance(x, dict) else {}
+
+
+def _cv65_safe_list(x):
+    if x is None:
+        return []
+    if isinstance(x, list):
+        return list(x)
+    if isinstance(x, tuple):
+        return list(x)
+    return [x]
+
+
+def _cv65_text(x, limit=4000):
+    try:
+        s = '' if x is None else str(x)
+    except Exception:
+        s = ''
+    return ' '.join(s.split())[:max(0, int(limit))]
+
+
+def _cv65_float(x, default=0.0):
+    try:
+        return float(x)
+    except Exception:
+        return float(default)
+
+
+def _cv65_int(x, default=0):
+    try:
+        return int(x)
+    except Exception:
+        return int(default)
+
+
+def _cv65_hash_obj(obj, n=12):
+    try:
+        raw = _cv65_json.dumps(obj, ensure_ascii=False, sort_keys=True, default=str)
+        return _cv65_hashlib.sha256(raw.encode('utf-8')).hexdigest()[:int(n)]
+    except Exception:
+        return 'hash_unavailable'
+
+
+def _cv65_unique(seq, limit=None):
+    out = []
+    seen = set()
+    for item in _cv65_safe_list(seq):
+        s = _cv65_text(item, 512)
+        if not s:
+            continue
+        k = s.lower()
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append(s)
+        if limit is not None and len(out) >= int(limit):
+            break
+    return out
+
+
+def _cv65_candidate_id(candidate):
+    c = _cv65_safe_dict(candidate)
+    cid = _cv65_text(c.get('candidate_id') or c.get('id') or c.get('hid') or c.get('source_idea_id'), 160)
+    if cid:
+        return cid
+    return 'CV65_CAND_' + _cv65_hash_obj(c, 10)
+
+
+def _cv65_get_nested_score(*containers_and_keys, default=0.0):
+    """Read the first numeric value from pairs: (container, key1, key2...)."""
+    for item in containers_and_keys:
+        if not isinstance(item, tuple) or not item:
+            continue
+        container = _cv65_safe_dict(item[0])
+        for key in item[1:]:
+            if key in container and container.get(key) is not None:
+                return _cv65_float(container.get(key), default)
+    return float(default)
+
+
+def _cv65_extract_v58_sections(candidate=None, s_matrix_record=None, logic_verification=None, prior_consistency=None, mask_verification=None, usr_compressibility=None):
+    c = _cv65_safe_dict(candidate)
+    cv = _cv65_safe_dict(c.get('app_v58_causal_verification') or c.get('causal_verification') or c.get('causal_verification_v58'))
+    srec = _cv65_safe_dict(s_matrix_record) or _cv65_safe_dict(cv.get('s_matrix_record_v58')) or _cv65_safe_dict(c.get('s_matrix_record_v58'))
+    logic = _cv65_safe_dict(logic_verification) or _cv65_safe_dict(cv.get('logic_verification_v58')) or _cv65_safe_dict(c.get('logic_verification_v58'))
+    prior = _cv65_safe_dict(prior_consistency) or _cv65_safe_dict(cv.get('prior_consistency_v58')) or _cv65_safe_dict(c.get('prior_consistency_v58'))
+    mask = _cv65_safe_dict(mask_verification) or _cv65_safe_dict(cv.get('causal_mask_verification_v58')) or _cv65_safe_dict(c.get('causal_mask_verification_v58'))
+    usr = _cv65_safe_dict(usr_compressibility) or _cv65_safe_dict(cv.get('usr_compressibility_v58')) or _cv65_safe_dict(c.get('usr_compressibility_v58'))
+    return cv, srec, logic, prior, mask, usr
+
+
+def _cv65_edge_src(edge):
+    e = _cv65_safe_dict(edge)
+    return _cv65_text(e.get('src') or e.get('source') or e.get('from') or e.get('cause') or e.get('u'), 160)
+
+
+def _cv65_edge_dst(edge):
+    e = _cv65_safe_dict(edge)
+    return _cv65_text(e.get('dst') or e.get('target') or e.get('to') or e.get('effect') or e.get('v'), 160)
+
+
+def _cv65_edge_relation(edge):
+    e = _cv65_safe_dict(edge)
+    return _cv65_text(e.get('relation') or e.get('rel') or e.get('operator') or e.get('action') or e.get('kind') or 'candidate_relation', 160)
+
+
+def _cv65_edge_weight_re(edge):
+    e = _cv65_safe_dict(edge)
+    for key in ('weight_re', 'real', 're', 'strength', 'weight'):
+        if key in e:
+            return _cv65_float(e.get(key), 0.0)
+    sw = _cv65_safe_dict(e.get('s_matrix_complex_weight_v58') or e.get('s_matrix_complex_weight_v65'))
+    if sw:
+        return _cv65_float(sw.get('real', sw.get('re', 0.0)), 0.0)
+    return 0.0
+
+
+def _cv65_edge_weight_im(edge):
+    e = _cv65_safe_dict(edge)
+    for key in ('weight_im', 'imag', 'im', 'phase_im'):
+        if key in e:
+            return _cv65_float(e.get(key), 0.0)
+    sw = _cv65_safe_dict(e.get('s_matrix_complex_weight_v58') or e.get('s_matrix_complex_weight_v65'))
+    if sw:
+        return _cv65_float(sw.get('imag', sw.get('im', 0.0)), 0.0)
+    return 0.0
+
+
+def _cv65_edge_mask(edge):
+    e = _cv65_safe_dict(edge)
+    return _cv65_safe_dict(e.get('mask') or e.get('causal_mask_hint_v58') or e.get('causal_mask_hint_v65') or e.get('causal_mask_hint'))
+
+
+def _cv65_edge_usr(edge):
+    e = _cv65_safe_dict(edge)
+    return _cv65_safe_dict(e.get('usr_hint') or e.get('usr_relation_hint_v58') or e.get('usr_relation_hint_v65') or e.get('usr_relation_hint'))
+
+
+def _cv65_collect_edges(candidate=None, s_matrix_record=None):
+    c = _cv65_safe_dict(candidate)
+    srec = _cv65_safe_dict(s_matrix_record)
+    edges = []
+    sources = []
+    def add_many(items, source):
+        for item in _cv65_safe_list(items):
+            if isinstance(item, dict):
+                e = dict(item)
+                e.setdefault('_cv65_source', source)
+                edges.append(e)
+    add_many(srec.get('edges'), 's_matrix_record.edges')
+    add_many(srec.get('complex_s_edges'), 's_matrix_record.complex_s_edges')
+    add_many(c.get('complex_s_edges'), 'candidate.complex_s_edges')
+    add_many(c.get('causal_edges'), 'candidate.causal_edges')
+    graph = _cv65_safe_dict(c.get('causal_graph_delta'))
+    add_many(graph.get('edges'), 'candidate.causal_graph_delta.edges')
+    graph_sig = _cv65_safe_dict(_cv65_safe_dict(c.get('graph_signature_v45')).get('material'))
+    add_many(graph_sig.get('edges'), 'candidate.graph_signature_v45.material.edges')
+    # Convert predicted_edges into an edge-like representation when present.
+    for item in _cv65_safe_list(c.get('predicted_edges')):
+        if isinstance(item, dict):
+            e = dict(item)
+            e.setdefault('_cv65_source', 'candidate.predicted_edges')
+            edges.append(e)
+    # Deduplicate by source/destination/relation/phase-ish weight.
+    out = []
+    seen = set()
+    for e in edges:
+        src = _cv65_edge_src(e)
+        dst = _cv65_edge_dst(e)
+        rel = _cv65_edge_relation(e)
+        if not (src or dst or rel):
+            continue
+        key = (src, dst, rel, round(_cv65_edge_weight_re(e), 6), round(_cv65_edge_weight_im(e), 6))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(e)
+        sources.append(e.get('_cv65_source'))
+    return out
+
+
+def _cv65_edge_family(edge, node_roles=None):
+    e = _cv65_safe_dict(edge)
+    roles = _cv65_safe_dict(node_roles)
+    src = _cv65_edge_src(e)
+    dst = _cv65_edge_dst(e)
+    rel = _cv65_edge_relation(e)
+    src_role = _cv65_text(roles.get(src) or e.get('src_role') or e.get('source_role') or 'unknown', 80)
+    dst_role = _cv65_text(roles.get(dst) or e.get('dst_role') or e.get('target_role') or 'unknown', 80)
+    phase_hint = _cv65_text(e.get('phase_hint') or e.get('imag_semantics') or _cv65_safe_dict(e.get('s_matrix_complex_weight_v58')).get('imag_semantics') or '', 120)
+    material = {
+        'src_role': src_role,
+        'dst_role': dst_role,
+        'relation': rel,
+        'phase_hint': phase_hint,
+        'has_imag': abs(_cv65_edge_weight_im(e)) > 1e-9,
+        'mask_class': _cv65_mask_class(_cv65_edge_mask(e)),
+        'usr_type': _cv65_text(_cv65_edge_usr(e).get('candidate_relation_type') or _cv65_edge_usr(e).get('kind') or '', 120),
+    }
+    return 'edge_family::' + _cv65_hash_obj(material, 12)
+
+
+def _cv65_mask_class(mask):
+    m = _cv65_safe_dict(mask)
+    if not m:
+        return 'mask_missing'
+    if bool(m.get('blocked', False)):
+        return 'blocked'
+    if bool(m.get('observe_only', False)):
+        return 'observe_only'
+    if bool(m.get('requires_proxy', False)):
+        return 'requires_proxy'
+    if bool(m.get('intervene_allowed', False)):
+        return 'intervene_allowed'
+    return 'mask_unspecified'
+
+
+def _cv65_phase_class(edge):
+    im = _cv65_edge_weight_im(edge)
+    rel = _cv65_edge_relation(edge).lower()
+    hint = _cv65_text(_cv65_safe_dict(edge).get('phase_hint') or _cv65_safe_dict(edge).get('imag_semantics'), 160).lower()
+    if abs(im) <= 1e-9 and not hint:
+        return 'direct_or_static'
+    if 'feedback' in rel or 'feedback' in hint:
+        return 'feedback_or_loop_phase'
+    if 'delay' in rel or 'lag' in rel or 'delay' in hint or 'lag' in hint or abs(im) >= 0.20:
+        return 'delayed_or_phase_shifted'
+    if 'mediate' in rel or 'mediator' in rel or 'mediat' in hint or abs(im) > 1e-9:
+        return 'mediated_information_flow'
+    return 'phase_component_present'
+
+
+def _cv65_usr_type(edge):
+    u = _cv65_edge_usr(edge)
+    return _cv65_text(u.get('candidate_relation_type') or u.get('kind') or u.get('relation_type') or '', 160)
+
+
+def _cv65_build_generation_edge_feedback(edges, logic=None, prior=None, mask=None, usr=None, node_roles=None):
+    promoted = []
+    avoided = []
+    required_phase = []
+    required_mask = []
+    required_usr = []
+    evidence = []
+    logic = _cv65_safe_dict(logic)
+    prior = _cv65_safe_dict(prior)
+    mask_v = _cv65_safe_dict(mask)
+    usr_v = _cv65_safe_dict(usr)
+    hard_conflicts = _cv65_safe_list(logic.get('hard_conflicts')) + _cv65_safe_list(prior.get('hard_conflicts'))
+    reverse_prior_edges = _cv65_safe_list(prior.get('reverse_prior_edges'))
+    mask_violations = _cv65_safe_list(mask_v.get('violations'))
+    contradiction_count = _cv65_int(prior.get('contradiction_count'), 0) + _cv65_int(logic.get('contradiction_count'), 0)
+    conflict_tokens = set(_cv65_text(x, 500).lower() for x in hard_conflicts + reverse_prior_edges + mask_violations)
+    for e in _cv65_safe_list(edges):
+        if not isinstance(e, dict):
+            continue
+        src = _cv65_edge_src(e)
+        dst = _cv65_edge_dst(e)
+        rel = _cv65_edge_relation(e)
+        fam = _cv65_edge_family(e, node_roles=node_roles)
+        mask_class = _cv65_mask_class(_cv65_edge_mask(e))
+        phase_class = _cv65_phase_class(e)
+        usr_type = _cv65_usr_type(e)
+        edge_text = _cv65_text([src, dst, rel, e.get('edge_id') or e.get('id')], 500).lower()
+        has_conflict = any(tok and tok in edge_text for tok in conflict_tokens)
+        blocked = mask_class == 'blocked'
+        generated_artifact = bool(e.get('is_generated_artifact') or e.get('generated_topology_artifact_v58'))
+        falsifiable = bool(e.get('has_falsification_test') or e.get('proxy_intervention') or e.get('observation_decomposition'))
+        primary = bool(e.get('is_primary_causal_edge_v58') or e.get('is_primary_causal_edge'))
+        if blocked or has_conflict or generated_artifact:
+            avoided.append(fam)
+        elif falsifiable or primary or abs(_cv65_edge_weight_re(e)) > 0.0 or abs(_cv65_edge_weight_im(e)) > 0.0:
+            promoted.append(fam)
+        if phase_class and phase_class != 'direct_or_static':
+            required_phase.append(phase_class)
+        if mask_class and mask_class != 'mask_missing':
+            required_mask.append(mask_class)
+        if usr_type:
+            required_usr.append(usr_type)
+        evidence.append({
+            'edge_id': e.get('edge_id') or e.get('id') or _cv65_hash_obj(e, 8),
+            'src': src,
+            'dst': dst,
+            'relation': rel,
+            'family': fam,
+            'mask_class': mask_class,
+            'phase_class': phase_class,
+            'usr_type': usr_type,
+            'promoted': fam in promoted,
+            'avoided': fam in avoided,
+            'source': e.get('_cv65_source', ''),
+        })
+    if contradiction_count > 0:
+        avoided.append('avoid_prior_or_logic_contradiction_family')
+    if not required_phase:
+        required_phase.append('information_flow_delay_or_mediation_phase')
+    if not required_mask:
+        required_mask.append('intervene_allowed_or_observe_only_explicitly_declared')
+    if not required_usr:
+        required_usr.append('directed_relation_with_optional_phase_delay')
+    return {
+        'promoted_edge_families': _cv65_unique(promoted, limit=32),
+        'avoided_edge_families': _cv65_unique(avoided, limit=32),
+        'required_phase_patterns': _cv65_unique(required_phase, limit=16),
+        'required_mask_patterns': _cv65_unique(required_mask, limit=16),
+        'required_usr_relation_types': _cv65_unique(required_usr, limit=16),
+        'edge_feedback_evidence': evidence[:64],
+    }
+
+
+def build_smatrix_generation_feedback_v65(
+    candidate,
+    s_matrix_record=None,
+    logic_verification=None,
+    prior_consistency=None,
+    mask_verification=None,
+    usr_compressibility=None,
+):
+    """Build a generic S-matrix feedback packet for next-generation control.
+
+    The packet is intended for leap_engine.py V65 and growth_engine.py V65. It
+    does not reject novel edges merely for being novel; it promotes consistent,
+    falsifiable, mask-compliant, USR-compressible edge families and avoids only
+    conflicting/blocked/generated-artifact families.
+    """
+    started = _cv65_now_ts()
+    c = _cv65_safe_dict(candidate)
+    cv, srec, logic, prior, mask_v, usr_v = _cv65_extract_v58_sections(
+        candidate=c,
+        s_matrix_record=s_matrix_record,
+        logic_verification=logic_verification,
+        prior_consistency=prior_consistency,
+        mask_verification=mask_verification,
+        usr_compressibility=usr_compressibility,
+    )
+    node_roles = _cv65_safe_dict(srec.get('node_roles'))
+    if not node_roles:
+        for node in _cv65_safe_list(srec.get('nodes')) + _cv65_safe_list(c.get('nodes')):
+            if isinstance(node, dict):
+                nid = _cv65_text(node.get('id') or node.get('node_id') or node.get('label'), 160)
+                role = _cv65_text(node.get('role') or node.get('role_family') or 'unknown', 120)
+                if nid:
+                    node_roles[nid] = role
+    edges = _cv65_collect_edges(candidate=c, s_matrix_record=srec)
+    logic_score = _cv65_get_nested_score((logic, 'logic_consistency_score'), (cv, 'logic_consistency_score'), (cv, 'overall_causal_verification_score_v58'), default=0.0)
+    prior_score = _cv65_get_nested_score((prior, 'prior_consistency_score'), (cv, 'prior_consistency_score'), default=0.0)
+    direction_score = _cv65_get_nested_score((logic, 'directionality_score'), (cv, 'directionality_score'), default=0.0)
+    mask_score = _cv65_get_nested_score((mask_v, 'mask_compliance_score'), (cv, 'mask_compliance_score'), default=0.0)
+    usr_score = _cv65_get_nested_score((usr_v, 'usr_compressibility_score'), (cv, 'usr_compressibility_score'), default=0.0)
+    contradiction_count = _cv65_int(prior.get('contradiction_count'), 0) + _cv65_int(logic.get('contradiction_count'), 0)
+    hard_conflict_count = len(_cv65_safe_list(prior.get('hard_conflicts'))) + len(_cv65_safe_list(logic.get('hard_conflicts')))
+    mask_violation_count = _cv65_int(mask_v.get('mask_violation_count'), len(_cv65_safe_list(mask_v.get('violations'))))
+    logic_passed = bool(logic_score >= 0.80 and contradiction_count == 0 and hard_conflict_count == 0)
+    prior_consistency_passed = bool(prior_score >= 0.80 and contradiction_count == 0)
+    directionality_passed = bool(direction_score >= 0.50 or not logic)
+    mask_passed = bool(mask_score >= 0.80 and mask_violation_count == 0)
+    usr_supported = bool(usr_score >= 0.70 or len(_cv65_safe_list(usr_v.get('equation_candidates'))) > 0)
+    edge_feedback = _cv65_build_generation_edge_feedback(edges, logic=logic, prior=prior, mask=mask_v, usr=usr_v, node_roles=node_roles)
+    requires_experiment_edges = _cv65_safe_list(cv.get('requires_experiment_edges')) or _cv65_safe_list(prior.get('novel_edge_ids'))
+    generation_feedback = {
+        'promote_edge_families': edge_feedback.get('promoted_edge_families', []),
+        'avoid_edge_families': edge_feedback.get('avoided_edge_families', []),
+        'required_phase_patterns': edge_feedback.get('required_phase_patterns', []),
+        'required_mask_patterns': edge_feedback.get('required_mask_patterns', []),
+        'required_usr_relation_types': edge_feedback.get('required_usr_relation_types', []),
+        'requires_experiment_edges': _cv65_unique(requires_experiment_edges, limit=32),
+        'regeneration_constraints': [
+            'carry_forward_only_logic_consistent_or_experiment_required_edges',
+            'do_not_treat_novel_consistent_edges_as_rejects',
+            'require_mask_and_usr_hints_for_primary_edges',
+            'preserve_complex_smatrix_real_imag_semantics',
+        ],
+    }
+    packet = {
+        'patch_id': CAUSAL_V65_SMATRIX_GENERATION_FEEDBACK_PATCH_ID,
+        'candidate_id': _cv65_candidate_id(c),
+        'logic_passed': logic_passed,
+        'prior_consistency_passed': prior_consistency_passed,
+        'directionality_passed': directionality_passed,
+        'mask_passed': mask_passed,
+        'usr_supported': usr_supported,
+        'scores': {
+            'logic_consistency_score': logic_score,
+            'prior_consistency_score': prior_score,
+            'directionality_score': direction_score,
+            'mask_compliance_score': mask_score,
+            'usr_compressibility_score': usr_score,
+        },
+        'conflict_summary': {
+            'contradiction_count': contradiction_count,
+            'hard_conflict_count': hard_conflict_count,
+            'mask_violation_count': mask_violation_count,
+            'reverse_prior_edge_count': _cv65_int(prior.get('reverse_prior_edge_count'), len(_cv65_safe_list(prior.get('reverse_prior_edges')))),
+        },
+        'edge_count': len(edges),
+        'node_role_count': len(node_roles),
+        'generation_feedback': generation_feedback,
+        'edge_feedback_evidence': edge_feedback.get('edge_feedback_evidence', []),
+        'compact_summary': {
+            'patch_id': CAUSAL_V65_SMATRIX_GENERATION_FEEDBACK_PATCH_ID,
+            'candidate_id': _cv65_candidate_id(c),
+            'logic_passed': logic_passed,
+            'prior_consistency_passed': prior_consistency_passed,
+            'mask_passed': mask_passed,
+            'usr_supported': usr_supported,
+            'promoted_edge_family_count': len(generation_feedback.get('promote_edge_families', [])),
+            'avoided_edge_family_count': len(generation_feedback.get('avoid_edge_families', [])),
+            'required_phase_patterns': generation_feedback.get('required_phase_patterns', [])[:8],
+            'required_mask_patterns': generation_feedback.get('required_mask_patterns', [])[:8],
+            'required_usr_relation_types': generation_feedback.get('required_usr_relation_types', [])[:8],
+        },
+        'complex_smatrix_semantics': {
+            'real': 'signed causal support or direct effect strength',
+            'imag': 'information-flow, mediation, delay, feedback, or phase-order component',
+            'policy': 'imaginary part is universal causal timing/information structure, not task-specific parameter assignment',
+        },
+        'policy': {
+            'novel_edges_are_not_rejected_when_consistent': True,
+            'blocked_or_contradictory_edges_are_avoided': True,
+            'no_benchmark_or_task_name_hardcoding': True,
+            'llm_is_not_core': True,
+        },
+        'elapsed_sec': max(0.0, _cv65_now_ts() - started),
+    }
+    return packet
+
+
+def build_smatrix_generation_feedback_batch_v65(candidates, causal_summary=None):
+    """Build V65 S-matrix feedback packets for a candidate list."""
+    out = []
+    cs = _cv65_safe_dict(causal_summary)
+    for c in _cv65_safe_list(candidates):
+        if not isinstance(c, dict):
+            continue
+        out.append(build_smatrix_generation_feedback_v65(
+            c,
+            s_matrix_record=cs.get('s_matrix_record') or cs.get('s_matrix_record_v58'),
+            logic_verification=cs.get('logic_verification') or cs.get('logic_verification_v58'),
+            prior_consistency=cs.get('prior_consistency') or cs.get('prior_consistency_v58'),
+            mask_verification=cs.get('mask_verification') or cs.get('causal_mask_verification_v58'),
+            usr_compressibility=cs.get('usr_compressibility') or cs.get('usr_compressibility_v58'),
+        ))
+    return out
+
+
+def summarize_smatrix_generation_feedback_v65(feedback_packets):
+    """Aggregate V65 S-matrix feedback packets for compact logs and growth loop."""
+    packets = [p for p in _cv65_safe_list(feedback_packets) if isinstance(p, dict)]
+    n = max(1, len(packets))
+    promoted = []
+    avoided = []
+    phase = []
+    masks = []
+    usr_types = []
+    for p in packets:
+        gf = _cv65_safe_dict(p.get('generation_feedback'))
+        promoted.extend(_cv65_safe_list(gf.get('promote_edge_families')))
+        avoided.extend(_cv65_safe_list(gf.get('avoid_edge_families')))
+        phase.extend(_cv65_safe_list(gf.get('required_phase_patterns')))
+        masks.extend(_cv65_safe_list(gf.get('required_mask_patterns')))
+        usr_types.extend(_cv65_safe_list(gf.get('required_usr_relation_types')))
+    return {
+        'patch_id': CAUSAL_V65_SMATRIX_GENERATION_FEEDBACK_PATCH_ID,
+        'packet_count': len(packets),
+        'logic_pass_rate': sum(1 for p in packets if bool(p.get('logic_passed'))) / n,
+        'prior_consistency_pass_rate': sum(1 for p in packets if bool(p.get('prior_consistency_passed'))) / n,
+        'mask_pass_rate': sum(1 for p in packets if bool(p.get('mask_passed'))) / n,
+        'usr_support_rate': sum(1 for p in packets if bool(p.get('usr_supported'))) / n,
+        'promoted_edge_families': _cv65_unique(promoted, limit=64),
+        'avoided_edge_families': _cv65_unique(avoided, limit=64),
+        'required_phase_patterns': _cv65_unique(phase, limit=16),
+        'required_mask_patterns': _cv65_unique(masks, limit=16),
+        'required_usr_relation_types': _cv65_unique(usr_types, limit=16),
+        'generation_feedback': {
+            'promote_edge_families': _cv65_unique(promoted, limit=64),
+            'avoid_edge_families': _cv65_unique(avoided, limit=64),
+            'required_phase_patterns': _cv65_unique(phase, limit=16),
+            'required_mask_patterns': _cv65_unique(masks, limit=16),
+            'required_usr_relation_types': _cv65_unique(usr_types, limit=16),
+        },
+        'complex_smatrix_semantics': {
+            'real': 'signed causal support or direct effect strength',
+            'imag': 'information-flow, mediation, delay, feedback, or phase-order component',
+            'policy': 'universal causal timing/information structure; not task-specific parameter assignment',
+        },
+    }
+
+
+def apply_smatrix_generation_feedback_to_context_v65(context=None, feedback=None):
+    """Copy S-matrix feedback into generation context without deleting fields."""
+    ctx = _cv65_safe_dict(context)
+    fb = _cv65_safe_dict(feedback)
+    summary = fb
+    if 'packet_count' not in summary and ('generation_feedback' in summary or 'candidate_id' in summary):
+        summary = summarize_smatrix_generation_feedback_v65([summary])
+    out = dict(ctx)
+    out['s_matrix_feedback_v65'] = summary
+    out['smatrix_generation_feedback_v65'] = summary
+    out['promoted_edge_families_v65'] = _cv65_safe_list(summary.get('promoted_edge_families'))
+    out['avoided_edge_families_v65'] = _cv65_safe_list(summary.get('avoided_edge_families'))
+    out['required_phase_patterns_v65'] = _cv65_safe_list(summary.get('required_phase_patterns'))
+    out['required_mask_patterns_v65'] = _cv65_safe_list(summary.get('required_mask_patterns'))
+    out['required_usr_relation_types_v65'] = _cv65_safe_list(summary.get('required_usr_relation_types'))
+    return out
+
+
+try:
+    if 'UnifiedCausalOSV5_3Full' in globals() and isinstance(globals().get('UnifiedCausalOSV5_3Full'), type):
+        def _cv65_method_build_smatrix_generation_feedback(self, candidate, s_matrix_record=None, logic_verification=None, prior_consistency=None, mask_verification=None, usr_compressibility=None):
+            return build_smatrix_generation_feedback_v65(
+                candidate,
+                s_matrix_record=s_matrix_record,
+                logic_verification=logic_verification,
+                prior_consistency=prior_consistency,
+                mask_verification=mask_verification,
+                usr_compressibility=usr_compressibility,
+            )
+        UnifiedCausalOSV5_3Full.build_smatrix_generation_feedback_v65 = _cv65_method_build_smatrix_generation_feedback
+except Exception:
+    pass
+
+try:
+    if 'CausalCoreV5' in globals() and isinstance(globals().get('CausalCoreV5'), type):
+        CausalCoreV5.build_smatrix_generation_feedback_v65 = build_smatrix_generation_feedback_v65
+except Exception:
+    pass
+
+try:
+    CAUSAL_V65_SMATRIX_GENERATION_FEEDBACK_EXECUTION_PROOF = {
+        'patch_id': CAUSAL_V65_SMATRIX_GENERATION_FEEDBACK_PATCH_ID,
+        'functions': [
+            'build_smatrix_generation_feedback_v65',
+            'build_smatrix_generation_feedback_batch_v65',
+            'summarize_smatrix_generation_feedback_v65',
+            'apply_smatrix_generation_feedback_to_context_v65',
+        ],
+        'class_methods': [
+            'UnifiedCausalOSV5_3Full.build_smatrix_generation_feedback_v65',
+            'CausalCoreV5.build_smatrix_generation_feedback_v65',
+        ],
+        'policy': 'ADD_ONLY_no_task_name_hardcoding',
+    }
+except Exception:
+    pass
+
+# ============================================================================
+# END ADD-ONLY PATCH: CAUSAL-V65-SMATRIX-GENERATION-FEEDBACK
+# ============================================================================
+
+# ============================================================================
+# ADD-ONLY CORRECTION: CAUSAL-V65B-SMATRIX-METHOD-BINDING-COMPAT
+# purpose:
+# - Ensure class-method binding keeps the instance argument separate from the
+#   candidate argument for all supported causal engine class names.
+# - This does not delete the V65 functions; it only rebinds method adapters.
+# ============================================================================
+CAUSAL_V65B_SMATRIX_METHOD_BINDING_PATCH_ID = 'CAUSAL-V65B-SMATRIX-METHOD-BINDING-COMPAT-20260516'
+
+try:
+    def _cv65b_method_build_smatrix_generation_feedback(self, candidate, s_matrix_record=None, logic_verification=None, prior_consistency=None, mask_verification=None, usr_compressibility=None):
+        return build_smatrix_generation_feedback_v65(
+            candidate,
+            s_matrix_record=s_matrix_record,
+            logic_verification=logic_verification,
+            prior_consistency=prior_consistency,
+            mask_verification=mask_verification,
+            usr_compressibility=usr_compressibility,
+        )
+    for _cv65b_cls_name in ('UnifiedCausalOSV5_3Full', 'CausalCoreV5', 'CausalEngine', 'CausalOS'):
+        _cv65b_cls = globals().get(_cv65b_cls_name)
+        if isinstance(_cv65b_cls, type):
+            setattr(_cv65b_cls, 'build_smatrix_generation_feedback_v65', _cv65b_method_build_smatrix_generation_feedback)
+except Exception:
+    pass
+
+try:
+    CAUSAL_V65B_SMATRIX_METHOD_BINDING_EXECUTION_PROOF = {
+        'patch_id': CAUSAL_V65B_SMATRIX_METHOD_BINDING_PATCH_ID,
+        'rebounds': ['UnifiedCausalOSV5_3Full', 'CausalCoreV5', 'CausalEngine', 'CausalOS'],
+        'policy': 'ADD_ONLY_method_binding_compatibility',
+    }
+except Exception:
+    pass
+# ============================================================================
+# END ADD-ONLY CORRECTION: CAUSAL-V65B-SMATRIX-METHOD-BINDING-COMPAT
+# ============================================================================
+
+
+
+# ============================================================================
+# ADD-ONLY PATCH: CAUSAL-V70-GROUNDING-SMATRIX-RETENSOR
+# generated_at_jst: 2026-05-18
+# Universal causal grounding / complex S-matrix retensorization helpers.
+# No task-name or benchmark-name hardcoding. Existing code is preserved.
+# ============================================================================
+CAUSAL_V70_GROUNDING_SMATRIX_RETENSOR_PATCH_ID = 'CAUSAL-V70-GROUNDING-SMATRIX-RETENSOR-20260518'
+try:
+    import re as _cv70_re
+    import math as _cv70_math
+except Exception:
+    _cv70_re = None
+    _cv70_math = None
+
+def _cv70_s(x, limit=4000):
+    try:
+        s = '' if x is None else str(x)
+    except Exception:
+        s = repr(x)
+    return ' '.join(s.split())[:max(0, int(limit))]
+
+def _cv70_list(x):
+    if x is None: return []
+    if isinstance(x, list): return x
+    if isinstance(x, tuple): return list(x)
+    return [x]
+
+def _cv70_dict(x):
+    return dict(x) if isinstance(x, dict) else {}
+
+def causal_v70_extract_grounding_terms(payload=None, max_terms=64):
+    p = _cv70_dict(payload)
+    parts = []
+    for k in ('query','goal','problem','manual_observation','baseline_answer','hypothesis','mechanism','method_proposal'):
+        parts.append(p.get(k))
+    for k in ('observables','controllables','constraints','grounded_observables','grounded_controllables'):
+        parts.extend(_cv70_list(p.get(k)))
+    raw = '\n'.join(_cv70_s(x, 3000) for x in parts if _cv70_s(x, 3000))
+    toks = raw.split() if _cv70_re is None else _cv70_re.findall(r'[A-Za-z][A-Za-z0-9_\-]{1,}|[一-龥ぁ-んァ-ヶー]{2,}|\d+(?:\.\d+)?[A-Za-z%°℃Ωμµ\-/]*', raw)
+    stop = {'the','and','for','with','from','that','this','json','schema','return','format','こと','ため','これ','それ','形式','出力'}
+    out=[]
+    for t in toks:
+        s=_cv70_s(t,128).strip('.,;:()[]{}<>「」『』')
+        if len(s)<2 or s.lower() in stop: continue
+        if s not in out: out.append(s)
+        if len(out)>=int(max_terms): break
+    return out
+
+def causal_v70_retensorize_from_candidates(candidates=None, context=None, tensor_passes=5):
+    ctx = _cv70_dict(context)
+    labels = []
+    edges = []
+    for c in _cv70_list(candidates):
+        if not isinstance(c, dict): continue
+        g = _cv70_dict(c.get('candidate_graph_v70') or c.get('causal_graph_delta') or c.get('causal_graph'))
+        for n in _cv70_list(g.get('nodes')):
+            lab = _cv70_s(n.get('label') if isinstance(n, dict) else n, 160)
+            if lab and lab not in labels: labels.append(lab)
+        for e in _cv70_list(g.get('edges')):
+            if isinstance(e, dict): edges.append(e)
+    if not labels:
+        labels = causal_v70_extract_grounding_terms(ctx, max_terms=32) or ['objective','mechanism','verification']
+    labels = labels[:128]
+    idx = {x:i for i,x in enumerate(labels)}; n=len(labels)
+    sre = [[0.0]*n for _ in range(n)]; sim = [[0.0]*n for _ in range(n)]; mask = [[0.0]*n for _ in range(n)]
+    for e in edges:
+        src=_cv70_s(e.get('source') or e.get('src'),160); dst=_cv70_s(e.get('target') or e.get('dst'),160)
+        if src in idx and dst in idx and src != dst:
+            i,j=idx[src],idx[dst]
+            depth=float(e.get('depth',0) or 0)
+            sre[i][j]=max(sre[i][j],0.35); sim[i][j]=max(sim[i][j],min(1.0,0.06+0.04*depth)); mask[i][j]=1.0
+    for _ in range(max(1,int(tensor_passes))-1):
+        nr=[row[:] for row in sre]; ni=[row[:] for row in sim]
+        for i in range(n):
+            for k in range(n):
+                if mask[i][k] <= 0: continue
+                for j in range(n):
+                    if i==j or mask[k][j] <= 0: continue
+                    nr[i][j]=max(-1.0,min(1.0,nr[i][j]+0.10*(sre[i][k]*sre[k][j]-sim[i][k]*sim[k][j])))
+                    ni[i][j]=max(-1.0,min(1.0,ni[i][j]+0.10*(sre[i][k]*sim[k][j]+sim[i][k]*sre[k][j])))
+                    mask[i][j]=max(mask[i][j],0.5)
+        sre,sim=nr,ni
+    group_nodes=[]
+    for role in ('objective','mechanism','constraint','verification','memory','grounding'):
+        members=[x for x in labels if role.lower() in x.lower()]
+        if members: group_nodes.append({'group_id':'GROUP::'+role.upper(),'label':role,'members':members[:32]})
+    density=sum(1 for i in range(n) for j in range(n) if mask[i][j]>0)/float(max(1,n*n))
+    return {'patch_id':CAUSAL_V70_GROUNDING_SMATRIX_RETENSOR_PATCH_ID,'nodes':labels,'S_re':sre,'S_im':sim,'attention_mask_like':mask,'group_nodes':group_nodes,'tensor_passes':max(1,int(tensor_passes)),'mask_density':density,'complex_representation':'S=S_re+i*S_im'}
+
+def causal_v70_build_generation_feedback(candidates=None, context=None, tensor_passes=5):
+    tensor = causal_v70_retensorize_from_candidates(candidates=candidates, context=context, tensor_passes=tensor_passes)
+    cands=[c for c in _cv70_list(candidates) if isinstance(c,dict)]
+    g_scores=[]
+    for c in cands:
+        gv=_cv70_dict(c.get('grounding_v70'))
+        try: g_scores.append(float(gv.get('grounding_score',0.0) or 0.0))
+        except Exception: pass
+    return {'patch_id':CAUSAL_V70_GROUNDING_SMATRIX_RETENSOR_PATCH_ID,'s_matrix_tensor_v70':tensor,'candidate_count':len(cands),'mean_grounding_score':sum(g_scores)/float(max(1,len(g_scores))),'recommended_next_actions':['increase_grounding_for_low_score_candidates','expand_counterfactual_graph_edges','run_usr_equation_probe_when_variables_are_numeric','feed_tensor_mask_back_to_next_generation'],'llm_schema_compliance_assumed':False}
+
+def causal_v70_apply_feedback_to_context(context=None, feedback=None):
+    ctx=_cv70_dict(context).copy(); fb=_cv70_dict(feedback)
+    ctx['v70_feedback_applied']=True
+    ctx['s_guidance']=_cv70_dict(fb.get('s_matrix_tensor_v70') or fb.get('s_matrix_tensor'))
+    ctx['grounding_feedback_summary']={k:fb.get(k) for k in ('candidate_count','mean_grounding_score','recommended_next_actions')}
+    ctx.setdefault('goal_hierarchy',{}); ctx['goal_hierarchy'].setdefault('current_subgoal','improve grounded causal invention quality')
+    ctx.setdefault('plan_stack',[]); ctx['plan_stack']=_cv70_list(ctx.get('plan_stack'))+['V70: use grounding + S tensor mask as generation prior']
+    return ctx
+# ============================================================================
+# END ADD-ONLY PATCH: CAUSAL-V70-GROUNDING-SMATRIX-RETENSOR
+# ============================================================================

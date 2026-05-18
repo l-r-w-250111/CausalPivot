@@ -15480,3 +15480,2944 @@ for _growth_v43_name in [
 # ============================================================================
 # END ADD-ONLY PATCH: GROWTH-V43-SMATRIX-USR-REFLECTION
 # ============================================================================
+
+
+# ================= ADD-ONLY =================
+# Allow topology_shift in operation_controls (RIGHT panel source of truth)
+# ===========================================
+try:
+    if 'ALLOWED_OPERATORS' in globals():
+        if 'topology_shift' not in ALLOWED_OPERATORS:
+            ALLOWED_OPERATORS.append('topology_shift')
+except Exception:
+    pass
+
+
+# ============================================================================
+# ADD-ONLY PATCH: GROWTH-BC-DO-PROXY-OBS-DECOMP-REFLECTION-V1
+# generated_at_jst: 20260508_151628
+# source_file_before_bytes: 761344
+# source_file_before_sha256_8: 06903fa8
+# Policy:
+# - ADD-ONLY. Existing code above is preserved; wrappers call previous functions.
+# - No task-name-specific branching. All behavior is schema/structure/role based.
+# - No LLM text-generation or remote runtime call. Deterministic growth reflection only.
+# Purpose:
+# - Consume Leap/CausalOS B/C payloads as growth-loop evidence and divergence memory.
+# - B: track edge-level falsification contracts and prioritize untested/unsupported edges.
+# - C: track proxy-intervention and observational-decomposition gaps to improve
+#      next-loop identifiability, goals, measurements, and intervention planning.
+# ============================================================================
+
+GROWTH_BC_DO_PROXY_OBS_DECOMP_REFLECTION_PATCH_ID = "GROWTH-BC-DO-PROXY-OBS-DECOMP-REFLECTION-V1-20260508_151628"
+
+def _growth_bc_safe_dict(x):
+    return x if isinstance(x, dict) else {}
+
+def _growth_bc_safe_list(x):
+    if x is None:
+        return []
+    if isinstance(x, list):
+        return x
+    if isinstance(x, tuple):
+        return list(x)
+    return [x]
+
+def _growth_bc_text(x, limit=2000):
+    try:
+        s = "" if x is None else str(x)
+    except Exception:
+        s = repr(x)
+    return " ".join(s.split())[:max(0, int(limit))]
+
+def _growth_bc_float(x, default=0.0, lo=None, hi=None):
+    try:
+        v = float(x)
+    except Exception:
+        v = float(default)
+    try:
+        import math as _math
+        if not _math.isfinite(v):
+            v = float(default)
+    except Exception:
+        pass
+    if lo is not None:
+        v = max(float(lo), v)
+    if hi is not None:
+        v = min(float(hi), v)
+    return float(v)
+
+def _growth_bc_hash_obj(obj, n=12):
+    try:
+        import json as _json, hashlib as _hashlib
+        raw = _json.dumps(obj, ensure_ascii=False, sort_keys=True, default=str)
+        return _hashlib.sha256(raw.encode("utf-8")).hexdigest()[:int(n)]
+    except Exception:
+        return "hash_unavailable"
+
+def _growth_bc_candidate_id(candidate, idx=0):
+    c = _growth_bc_safe_dict(candidate)
+    co = _growth_bc_safe_dict(c.get("candidate_object")) or c
+    return _growth_bc_text(c.get("candidate_id") or co.get("candidate_id") or c.get("idea_id") or c.get("hypothesis_id") or ("candidate_%03d" % (int(idx) + 1)), 160)
+
+def _growth_bc_is_candidate_dict(d):
+    if not isinstance(d, dict):
+        return False
+    keys = set(d.keys())
+    bc_like = {"bc_verification_basis", "bc_basis_summary", "bc_falsification_contracts", "bc_proxy_intervention_plan", "bc_observational_decomposition", "s_matrix_record_bc_enriched"}
+    v43_like = {"s_matrix_record", "s_matrix_verification", "usr_support", "scores_v43"}
+    content_like = {"candidate_object", "causal_graph_delta", "causal_edges", "components", "verification_plan", "interventions"}
+    id_like = {"candidate_id", "idea_id", "hypothesis_id", "turn_id", "branch_id"}
+    return bool(keys & bc_like) or bool(keys & v43_like) or (bool(keys & id_like) and bool(keys & content_like))
+
+def growth_bc_extract_candidates_from_result(result, max_items=256):
+    """Recursively collect candidate dictionaries with B/C or causal evidence."""
+    out = []
+    seen = set()
+    candidate_keys = {
+        "generated_ideas", "decoded_candidates", "accepted_candidates", "rejected_candidates",
+        "candidates", "leap_candidates", "transferred_candidates", "scored_candidates",
+        "all_candidates", "ideas", "trials", "accepted_trials", "all_trials_panel",
+    }
+    def add(path, cand):
+        if not isinstance(cand, dict) or not _growth_bc_is_candidate_dict(cand):
+            return
+        cid = _growth_bc_candidate_id(cand, len(out))
+        key = cid + "::" + _growth_bc_hash_obj(cand, 16)
+        if key in seen:
+            return
+        seen.add(key)
+        out.append({"path": path, "candidate_id": cid, "candidate": cand})
+    def walk(obj, path="root", depth=0):
+        if len(out) >= int(max_items) or depth > 8:
+            return
+        if isinstance(obj, dict):
+            if _growth_bc_is_candidate_dict(obj):
+                add(path, obj)
+            for k, v in list(obj.items()):
+                if len(out) >= int(max_items):
+                    break
+                if k in candidate_keys and isinstance(v, list):
+                    for i, item in enumerate(v[:int(max_items)]):
+                        if isinstance(item, dict):
+                            add(path + "." + str(k) + "[" + str(i) + "]", item)
+                        elif isinstance(item, (dict, list, tuple)):
+                            walk(item, path + "." + str(k) + "[" + str(i) + "]", depth + 1)
+                elif isinstance(v, (dict, list, tuple)):
+                    walk(v, path + "." + str(k), depth + 1)
+        elif isinstance(obj, (list, tuple)):
+            for i, item in enumerate(list(obj)[:int(max_items)]):
+                if isinstance(item, (dict, list, tuple)):
+                    walk(item, path + "[" + str(i) + "]", depth + 1)
+    walk(result)
+    return out[:int(max_items)]
+
+def _growth_bc_get_enriched_record(candidate):
+    c = _growth_bc_safe_dict(candidate)
+    if isinstance(c.get("s_matrix_record_bc_enriched"), dict):
+        return c.get("s_matrix_record_bc_enriched")
+    basis = _growth_bc_safe_dict(c.get("bc_verification_basis"))
+    if isinstance(basis.get("s_matrix_record_bc_enriched"), dict):
+        return basis.get("s_matrix_record_bc_enriched")
+    if isinstance(c.get("s_matrix_record"), dict):
+        return c.get("s_matrix_record")
+    return {}
+
+def _growth_bc_get_contracts(candidate):
+    c = _growth_bc_safe_dict(candidate)
+    rec = _growth_bc_get_enriched_record(c)
+    obj = _growth_bc_safe_dict(c.get("bc_falsification_contracts")) or _growth_bc_safe_dict(rec.get("bc_falsification_contracts"))
+    return [x for x in _growth_bc_safe_list(obj.get("contracts")) if isinstance(x, dict)]
+
+def _growth_bc_get_proxy_plans(candidate):
+    c = _growth_bc_safe_dict(candidate)
+    rec = _growth_bc_get_enriched_record(c)
+    obj = _growth_bc_safe_dict(c.get("bc_proxy_intervention_plan")) or _growth_bc_safe_dict(rec.get("bc_proxy_intervention_plan"))
+    return [x for x in _growth_bc_safe_list(obj.get("plans")) if isinstance(x, dict)]
+
+def _growth_bc_get_observation_decompositions(candidate):
+    c = _growth_bc_safe_dict(candidate)
+    rec = _growth_bc_get_enriched_record(c)
+    obj = _growth_bc_safe_dict(c.get("bc_observational_decomposition")) or _growth_bc_safe_dict(rec.get("bc_observational_decomposition"))
+    return [x for x in _growth_bc_safe_list(obj.get("edge_decompositions")) if isinstance(x, dict)]
+
+def _growth_bc_contract_is_tested(contract):
+    c = _growth_bc_safe_dict(contract)
+    state = _growth_bc_text(c.get("evidence_state") or c.get("validation_status") or c.get("test_status") or "", 120).lower()
+    if state in {"tested", "validated", "observed", "observed_or_validated", "falsified", "refuted"}:
+        return True
+    if c.get("test_result") is not None or c.get("observed_effect") is not None:
+        return True
+    return False
+
+def growth_bc_build_reflection_context(result, history=None, context=None, max_candidates=256):
+    """Build growth-loop reflection memory from B/C verification basis payloads."""
+    candidates = growth_bc_extract_candidates_from_result(result, max_items=max_candidates)
+    untested_contracts = []
+    directly_intervenable_contracts = []
+    proxy_required_edges = []
+    proxy_without_source = []
+    observation_axes = []
+    required_measurements = []
+    required_interventions = []
+    edge_memory = []
+    candidate_focus = []
+    for idx, item in enumerate(candidates):
+        cand = _growth_bc_safe_dict(item.get("candidate"))
+        cid = item.get("candidate_id") or _growth_bc_candidate_id(cand, idx)
+        contracts = _growth_bc_get_contracts(cand)
+        proxies = _growth_bc_get_proxy_plans(cand)
+        decomps = _growth_bc_get_observation_decompositions(cand)
+        untested = 0
+        proxy_gap = 0
+        obs_gap = 0
+        for con in contracts:
+            row = {
+                "candidate_id": cid,
+                "edge_id": con.get("edge_id"),
+                "src": con.get("src"),
+                "dst": con.get("dst"),
+                "do_intervention": con.get("do_intervention"),
+                "observable": _growth_bc_safe_dict(con.get("expected_response")).get("observable"),
+                "directly_intervenable": bool(con.get("directly_intervenable")),
+                "contract_hash": con.get("contract_hash") or _growth_bc_hash_obj(con, 12),
+            }
+            edge_memory.append(row)
+            if con.get("directly_intervenable"):
+                directly_intervenable_contracts.append(row)
+            if not _growth_bc_contract_is_tested(con):
+                untested += 1
+                untested_contracts.append(row)
+                if row.get("do_intervention"):
+                    required_interventions.append({"candidate_id": cid, "edge_id": row.get("edge_id"), "intervention": row.get("do_intervention")})
+                if row.get("observable"):
+                    required_measurements.append({"candidate_id": cid, "edge_id": row.get("edge_id"), "measurement": row.get("observable")})
+        for plan in proxies:
+            if not plan.get("direct_do_available"):
+                proxy_gap += 1
+                proxy_row = {
+                    "candidate_id": cid,
+                    "edge_id": plan.get("edge_id"),
+                    "target_edge": plan.get("target_edge"),
+                    "primary_plan": plan.get("primary_plan"),
+                    "proxy_interventions": _growth_bc_safe_list(plan.get("proxy_interventions")),
+                    "measurement_target": plan.get("measurement_target"),
+                }
+                proxy_required_edges.append(proxy_row)
+                if not proxy_row["proxy_interventions"]:
+                    proxy_without_source.append(proxy_row)
+                else:
+                    for p in proxy_row["proxy_interventions"][:4]:
+                        if isinstance(p, dict) and p.get("proxy_node"):
+                            required_interventions.append({"candidate_id": cid, "edge_id": plan.get("edge_id"), "intervention": "proxy_do(%s)" % _growth_bc_text(p.get("proxy_node"), 160)})
+                if proxy_row.get("measurement_target"):
+                    required_measurements.append({"candidate_id": cid, "edge_id": plan.get("edge_id"), "measurement": proxy_row.get("measurement_target")})
+        for dec in decomps:
+            axes = _growth_bc_safe_list(dec.get("decomposition_axes"))
+            if axes:
+                observation_axes.extend([_growth_bc_text(a.get("axis") if isinstance(a, dict) else a, 240) for a in axes])
+            if not _growth_bc_safe_list(dec.get("available_columns_hint")):
+                obs_gap += 1
+                required_measurements.append({"candidate_id": cid, "edge_id": dec.get("edge_id"), "measurement": dec.get("observable_or_target")})
+        focus_score = min(1.0, 0.10 * len(contracts) + 0.20 * untested + 0.20 * proxy_gap + 0.10 * obs_gap)
+        candidate_focus.append({"candidate_id": cid, "focus_score_bc": focus_score, "untested_contract_count": untested, "proxy_gap_count": proxy_gap, "observation_gap_count": obs_gap})
+    candidate_focus = sorted(candidate_focus, key=lambda x: _growth_bc_float(x.get("focus_score_bc"), 0.0), reverse=True)
+    failed_patterns = []
+    if untested_contracts:
+        failed_patterns.append({"kind": "bc_untested_falsification_contracts", "count": len(untested_contracts)})
+    if proxy_required_edges:
+        failed_patterns.append({"kind": "bc_proxy_intervention_required", "count": len(proxy_required_edges)})
+    if proxy_without_source:
+        failed_patterns.append({"kind": "bc_proxy_source_missing", "count": len(proxy_without_source)})
+    reflection = {
+        "patch_id": GROWTH_BC_DO_PROXY_OBS_DECOMP_REFLECTION_PATCH_ID,
+        "candidate_count": len(candidates),
+        "edge_contract_memory": edge_memory[:256],
+        "untested_falsification_contracts": untested_contracts[:256],
+        "directly_intervenable_contracts": directly_intervenable_contracts[:256],
+        "proxy_required_edges": proxy_required_edges[:256],
+        "proxy_without_source": proxy_without_source[:128],
+        "observation_decomposition_axes": list(dict.fromkeys([a for a in observation_axes if a]))[:64],
+        "required_next_measurements_bc": required_measurements[:128],
+        "required_next_interventions_bc": required_interventions[:128],
+        "candidate_focus_ranking_bc": candidate_focus[:32],
+        "failed_patterns_bc": failed_patterns,
+        "recommended_next_view_bc": "prioritize_do_or_proxy_falsification_for_unidentified_edges" if (untested_contracts or proxy_required_edges) else "maintain_bc_contract_memory_and_collect_new_observables",
+        "recommended_goal_update_bc": "turn every promising draft into a falsifiable edge-level experiment before publishable judgement",
+        "request_usr_support": True,
+        "core_llm_generate_required": False,
+        "history_seen": history is not None,
+    }
+    return reflection
+
+def growth_bc_build_next_search_guidance(reflection_context, context=None):
+    """Convert B/C reflection into next-loop control signals."""
+    ref = _growth_bc_safe_dict(reflection_context)
+    prefer_edges = []
+    for key in ("untested_falsification_contracts", "proxy_required_edges", "proxy_without_source"):
+        for e in _growth_bc_safe_list(ref.get(key)):
+            if isinstance(e, dict):
+                prefer_edges.append({
+                    "source": key,
+                    "candidate_id": e.get("candidate_id"),
+                    "edge_id": e.get("edge_id"),
+                    "src": e.get("src") or _growth_bc_safe_dict(e.get("target_edge")).get("src"),
+                    "dst": e.get("dst") or _growth_bc_safe_dict(e.get("target_edge")).get("dst"),
+                    "observable": e.get("observable") or e.get("measurement_target"),
+                })
+    measurements = []
+    for m in _growth_bc_safe_list(ref.get("required_next_measurements_bc")):
+        if isinstance(m, dict) and m.get("measurement"):
+            measurements.append(_growth_bc_text(m.get("measurement"), 400))
+    interventions = []
+    for itv in _growth_bc_safe_list(ref.get("required_next_interventions_bc")):
+        if isinstance(itv, dict) and itv.get("intervention"):
+            interventions.append(_growth_bc_text(itv.get("intervention"), 400))
+    operator_bias = {
+        "falsification_test_design": 1.0 + min(0.8, 0.04 * len(_growth_bc_safe_list(ref.get("untested_falsification_contracts")))),
+        "observation_shift": 1.0 + min(0.7, 0.04 * len(measurements)),
+        "mediator_insertion": 1.0 + min(0.6, 0.05 * len(_growth_bc_safe_list(ref.get("proxy_required_edges")))),
+        "constraint_refinement": 1.0 + min(0.5, 0.06 * len(_growth_bc_safe_list(ref.get("proxy_without_source")))),
+        "topology_shift": 1.0 + min(0.4, 0.03 * len(prefer_edges)),
+    }
+    return {
+        "patch_id": GROWTH_BC_DO_PROXY_OBS_DECOMP_REFLECTION_PATCH_ID,
+        "prefer_falsification_edges": prefer_edges[:128],
+        "force_new_observation_axis_bc": list(dict.fromkeys([x for x in measurements if x]))[:64],
+        "intervention_targets_bc": list(dict.fromkeys([x for x in interventions if x]))[:64],
+        "operator_bias_bc": operator_bias,
+        "next_loop_requirements_bc": [
+            "preserve edge-level B/C contracts as divergence memory",
+            "do not promote untested draft candidates to publishable status",
+            "add proxy intervention or observation decomposition for every direct-do gap",
+        ],
+        "goal_update_hint_bc": ref.get("recommended_goal_update_bc"),
+        "core_llm_generate_required": False,
+    }
+
+def growth_bc_update_state_with_reflection(owner=None, reflection_context=None, guidance=None, append_only=True):
+    """Append B/C reflection to a growth-state-like object or dict."""
+    ref = _growth_bc_safe_dict(reflection_context)
+    gd = _growth_bc_safe_dict(guidance)
+    record = {
+        "patch_id": GROWTH_BC_DO_PROXY_OBS_DECOMP_REFLECTION_PATCH_ID,
+        "reflection": ref,
+        "guidance": gd,
+        "summary": {
+            "candidate_count": ref.get("candidate_count", 0),
+            "untested_contract_count": len(_growth_bc_safe_list(ref.get("untested_falsification_contracts"))),
+            "proxy_required_count": len(_growth_bc_safe_list(ref.get("proxy_required_edges"))),
+            "measurement_requirement_count": len(_growth_bc_safe_list(ref.get("required_next_measurements_bc"))),
+            "intervention_requirement_count": len(_growth_bc_safe_list(ref.get("required_next_interventions_bc"))),
+        },
+    }
+    if owner is not None:
+        try:
+            if isinstance(owner, dict):
+                hist = owner.get("bc_growth_reflection_memory_v1")
+                if not isinstance(hist, list):
+                    hist = []
+                hist.append(record)
+                owner["bc_growth_reflection_memory_v1"] = hist[-256:]
+                owner["latest_bc_growth_guidance_v1"] = gd
+            else:
+                hist = getattr(owner, "bc_growth_reflection_memory_v1", None)
+                if not isinstance(hist, list):
+                    hist = []
+                hist.append(record)
+                setattr(owner, "bc_growth_reflection_memory_v1", hist[-256:])
+                setattr(owner, "latest_bc_growth_guidance_v1", gd)
+        except Exception:
+            pass
+    return record
+
+# Wrap V43 reflection functions so B/C memory is merged into existing growth guidance.
+try:
+    _GROWTH_BC_PREV_V43_REFLECTION = growth_v43_build_reflection_context
+except Exception:
+    _GROWTH_BC_PREV_V43_REFLECTION = None
+try:
+    _GROWTH_BC_PREV_V43_GUIDANCE = growth_v43_build_next_search_guidance
+except Exception:
+    _GROWTH_BC_PREV_V43_GUIDANCE = None
+
+def growth_v43_build_reflection_context(result, history=None, context=None):
+    if callable(_GROWTH_BC_PREV_V43_REFLECTION):
+        base = _GROWTH_BC_PREV_V43_REFLECTION(result, history=history, context=context)
+    else:
+        base = {}
+    base = dict(base or {}) if isinstance(base, dict) else {"base_reflection_raw": base}
+    bc = growth_bc_build_reflection_context(result, history=history, context=context)
+    base["bc_reflection_context"] = bc
+    # Merge key B/C requirements into generic fields without deleting previous V43 content.
+    base.setdefault("required_next_measurements", [])
+    base.setdefault("required_next_interventions", [])
+    if isinstance(base.get("required_next_measurements"), list):
+        base["required_next_measurements"].extend(_growth_bc_safe_list(bc.get("required_next_measurements_bc"))[:64])
+    if isinstance(base.get("required_next_interventions"), list):
+        base["required_next_interventions"].extend(_growth_bc_safe_list(bc.get("required_next_interventions_bc"))[:64])
+    base.setdefault("failed_patterns", [])
+    if isinstance(base.get("failed_patterns"), list):
+        base["failed_patterns"].extend(_growth_bc_safe_list(bc.get("failed_patterns_bc")))
+    base["recommended_next_view_bc"] = bc.get("recommended_next_view_bc")
+    base["recommended_goal_update_bc"] = bc.get("recommended_goal_update_bc")
+    base.setdefault("core_llm_generate_required", False)
+    return base
+
+def growth_v43_build_next_search_guidance(reflection_context, context=None):
+    if callable(_GROWTH_BC_PREV_V43_GUIDANCE):
+        base = _GROWTH_BC_PREV_V43_GUIDANCE(reflection_context, context=context)
+    else:
+        base = {}
+    base = dict(base or {}) if isinstance(base, dict) else {"base_guidance_raw": base}
+    ref = _growth_bc_safe_dict(reflection_context)
+    bc_ref = _growth_bc_safe_dict(ref.get("bc_reflection_context")) or ref
+    bc_guidance = growth_bc_build_next_search_guidance(bc_ref, context=context)
+    base["bc_next_search_guidance"] = bc_guidance
+    # Merge B/C operator bias additively into existing operator_bias if present.
+    merged_bias = dict(_growth_bc_safe_dict(base.get("operator_bias")))
+    for k, v in _growth_bc_safe_dict(bc_guidance.get("operator_bias_bc")).items():
+        merged_bias[k] = max(_growth_bc_float(merged_bias.get(k), 1.0), _growth_bc_float(v, 1.0))
+    if merged_bias:
+        base["operator_bias"] = merged_bias
+    base.setdefault("prefer_falsification_edges", bc_guidance.get("prefer_falsification_edges", []))
+    base.setdefault("force_new_observation_axis_bc", bc_guidance.get("force_new_observation_axis_bc", []))
+    base.setdefault("intervention_targets_bc", bc_guidance.get("intervention_targets_bc", []))
+    base.setdefault("next_loop_requirements_bc", bc_guidance.get("next_loop_requirements_bc", []))
+    base.setdefault("core_llm_generate_required", False)
+    return base
+
+# Optional owner method for executor/state objects.
+def apply_bc_growth_reflection_v1(self=None, result=None, history=None, context=None, append_only=True):
+    ref = growth_v43_build_reflection_context(result or {}, history=history, context=context)
+    gd = growth_v43_build_next_search_guidance(ref, context=context)
+    return growth_bc_update_state_with_reflection(owner=self, reflection_context=ref.get("bc_reflection_context", ref), guidance=gd.get("bc_next_search_guidance", gd), append_only=append_only)
+
+try:
+    if "AutonomousGrowthExecutor" in globals() and isinstance(AutonomousGrowthExecutor, type):
+        AutonomousGrowthExecutor.apply_bc_growth_reflection_v1 = apply_bc_growth_reflection_v1
+except Exception:
+    pass
+try:
+    if "GrowthEngineLeapBridge" in globals() and isinstance(GrowthEngineLeapBridge, type):
+        GrowthEngineLeapBridge.apply_bc_growth_reflection_v1 = apply_bc_growth_reflection_v1
+except Exception:
+    pass
+
+try:
+    __all__
+except Exception:
+    __all__ = []
+for _growth_bc_export in [
+    "GROWTH_BC_DO_PROXY_OBS_DECOMP_REFLECTION_PATCH_ID",
+    "growth_bc_extract_candidates_from_result",
+    "growth_bc_build_reflection_context",
+    "growth_bc_build_next_search_guidance",
+    "growth_bc_update_state_with_reflection",
+    "growth_v43_build_reflection_context",
+    "growth_v43_build_next_search_guidance",
+    "apply_bc_growth_reflection_v1",
+]:
+    if _growth_bc_export not in __all__:
+        __all__.append(_growth_bc_export)
+# ============================================================================
+# END ADD-ONLY PATCH: GROWTH-BC-DO-PROXY-OBS-DECOMP-REFLECTION-V1
+# ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY PATCH: GROWTH-V60-STRONG-DUPLICATE-GRAPH-SIGNATURE-GATE
+# generated_at_jst: 20260509_101500
+# purpose:
+# - Treat duplicate graph signatures as a strong growth/diversity signal.
+# - Do not leave same-structure candidates accepted as if independent.
+# - Downgrade duplicate-structure candidates to explicit draft status while
+#   preserving all original fields and list membership for auditability.
+# - No task/benchmark-name hardcoding; logic uses generic graph/S-matrix fields.
+# ============================================================================
+GROWTH_V60_STRONG_DUPLICATE_GRAPH_SIGNATURE_GATE_PATCH_ID = 'GROWTH-V60-STRONG-DUPLICATE-GRAPH-SIGNATURE-GATE-20260509_101500'
+
+try:
+    _GROWTH_V60_PREV_GET_GRAPH_SIGNATURE = _growth_v43_get_graph_signature
+except Exception:
+    _GROWTH_V60_PREV_GET_GRAPH_SIGNATURE = None
+try:
+    _GROWTH_V60_PREV_SCORE_NEXT_FOCUS = _growth_v43_score_candidate_for_next_focus
+except Exception:
+    _GROWTH_V60_PREV_SCORE_NEXT_FOCUS = None
+try:
+    _GROWTH_V60_PREV_EXTRACT_CANDIDATES = growth_v43_extract_candidates_from_result
+except Exception:
+    _GROWTH_V60_PREV_EXTRACT_CANDIDATES = None
+try:
+    _GROWTH_V60_PREV_REFLECT_SMATRIX = growth_v43_build_reflection_from_smatrix_usr
+except Exception:
+    _GROWTH_V60_PREV_REFLECT_SMATRIX = None
+try:
+    _GROWTH_V60_PREV_ATTACH_REFLECTION = growth_v43_attach_reflection_to_result
+except Exception:
+    _GROWTH_V60_PREV_ATTACH_REFLECTION = None
+try:
+    _GROWTH_V60_PREV_CONTEXT_V43 = growth_v43_build_reflection_context
+except Exception:
+    _GROWTH_V60_PREV_CONTEXT_V43 = None
+try:
+    _GROWTH_V60_PREV_CONTEXT_BC = growth_bc_build_reflection_context
+except Exception:
+    _GROWTH_V60_PREV_CONTEXT_BC = None
+try:
+    _GROWTH_V60_PREV_GUIDANCE_V43 = growth_v43_build_next_search_guidance
+except Exception:
+    _GROWTH_V60_PREV_GUIDANCE_V43 = None
+try:
+    _GROWTH_V60_PREV_EVAL_RESULT = evaluate_leap_candidate_result
+except Exception:
+    _GROWTH_V60_PREV_EVAL_RESULT = None
+try:
+    _GROWTH_V60_PREV_EVAL_BUNDLE = evaluate_leap_candidate_bundle
+except Exception:
+    _GROWTH_V60_PREV_EVAL_BUNDLE = None
+
+
+def _growth_v60_safe_dict(x):
+    return x if isinstance(x, dict) else {}
+
+
+def _growth_v60_safe_list(x):
+    if x is None:
+        return []
+    if isinstance(x, list):
+        return x
+    if isinstance(x, tuple):
+        return list(x)
+    return [x]
+
+
+def _growth_v60_text(x, limit=2000):
+    try:
+        s = '' if x is None else str(x)
+    except Exception:
+        s = repr(x)
+    return ' '.join(s.split())[:max(0, int(limit))]
+
+
+def _growth_v60_hash_obj(obj, n=16):
+    try:
+        import json as _json, hashlib as _hashlib
+        raw = _json.dumps(obj, ensure_ascii=False, sort_keys=True, default=str)
+        return _hashlib.sha256(raw.encode('utf-8')).hexdigest()[:int(n)]
+    except Exception:
+        return 'hash_unavailable'
+
+
+def _growth_v60_candidate_id(candidate, idx=0):
+    c = _growth_v60_safe_dict(candidate)
+    co = _growth_v60_safe_dict(c.get('candidate_object')) or c
+    return _growth_v60_text(c.get('candidate_id') or co.get('candidate_id') or c.get('idea_id') or c.get('turn_id') or ('candidate_%03d' % (int(idx) + 1)), 160)
+
+
+def _growth_v60_get_nested(d, path):
+    cur = d
+    for key in path:
+        if not isinstance(cur, dict):
+            return None
+        cur = cur.get(key)
+    return cur
+
+
+def _growth_v43_get_graph_signature(candidate):
+    """V60 override: prefer latest graph signatures and fall back to structural material.
+
+    This preserves previous behavior but adds V45 topology signatures and a
+    stronger generic fallback so duplicate structure is not missed merely because
+    one route used a newer signature field name.
+    """
+    c = _growth_v60_safe_dict(candidate)
+    co = _growth_v60_safe_dict(c.get('candidate_object')) or c
+    # Strongest signatures first: post-topology-transform signatures must dominate.
+    for holder in (c, co):
+        for key in ('graph_signature_v45', 'graph_signature_v43', 'graph_signature'):
+            val = holder.get(key)
+            if isinstance(val, dict) and val.get('signature'):
+                return _growth_v60_text(val.get('signature'), 160)
+            if isinstance(val, str) and val.strip():
+                return _growth_v60_text(val, 160)
+    for path in (
+        ('diversity_penalty_v43', 'graph_signature_v43', 'signature'),
+        ('s_matrix_record', 'graph_signature'),
+        ('s_matrix_graph_view_v43', 'graph_signature'),
+        ('topology_shift_graph_transform_summary_v45', 'candidate_graph_signatures_v45'),
+    ):
+        val = _growth_v60_get_nested(c, path)
+        if isinstance(val, str) and val.strip():
+            return _growth_v60_text(val, 160)
+        if isinstance(val, list) and val:
+            return _growth_v60_text(val[0], 160)
+    # Fallback: generic structural material from roles/edges/operators/observables.
+    graph = _growth_v60_safe_dict(co.get('causal_graph_delta'))
+    nodes = []
+    edges = []
+    for key in ('components', 'nodes'):
+        nodes.extend(_growth_v60_safe_list(co.get(key)))
+    nodes.extend(_growth_v60_safe_list(_growth_v60_safe_dict(co.get('architecture')).get('components')))
+    nodes.extend(_growth_v60_safe_list(graph.get('nodes')))
+    edges.extend(_growth_v60_safe_list(co.get('causal_edges')))
+    edges.extend(_growth_v60_safe_list(co.get('edges')))
+    edges.extend(_growth_v60_safe_list(graph.get('edges')))
+    role_by_id = {}
+    roles = []
+    for n in nodes:
+        if not isinstance(n, dict):
+            continue
+        nid = _growth_v60_text(n.get('id') or n.get('node_id') or n.get('label') or n.get('name'), 120)
+        role = _growth_v60_text(n.get('role') or n.get('type') or 'context_node', 160).lower()
+        if nid:
+            role_by_id[nid] = role
+        if role:
+            roles.append(role)
+    edge_patterns = []
+    observables = []
+    for e in edges:
+        if not isinstance(e, dict):
+            continue
+        src = _growth_v60_text(e.get('source') or e.get('src') or e.get('from') or e.get('cause'), 120)
+        dst = _growth_v60_text(e.get('target') or e.get('dst') or e.get('to') or e.get('effect'), 120)
+        rel = _growth_v60_text(e.get('relation') or e.get('operator') or e.get('type'), 160).lower()
+        obs = _growth_v60_text(e.get('observable') or e.get('metric') or e.get('measurement'), 160).lower()
+        if src and dst:
+            edge_patterns.append((role_by_id.get(src, src.lower()), role_by_id.get(dst, dst.lower()), rel))
+        if obs:
+            observables.append(obs)
+    material = {'roles': sorted(set(roles)), 'edge_role_patterns': sorted(set(edge_patterns)), 'observables': sorted(set(observables))}
+    if material['roles'] or material['edge_role_patterns']:
+        return 'structural_fallback::' + _growth_v60_hash_obj(material, 16)
+    if callable(_GROWTH_V60_PREV_GET_GRAPH_SIGNATURE):
+        try:
+            return _GROWTH_V60_PREV_GET_GRAPH_SIGNATURE(candidate)
+        except Exception:
+            return ''
+    return ''
+
+
+def _growth_v60_result_candidate_lists(result):
+    r = _growth_v60_safe_dict(result)
+    paths = []
+    for key in ('generated_ideas', 'decoded_candidates', 'accepted_candidates', 'review_recommended', 'candidates', 'ideas'):
+        if isinstance(r.get(key), list):
+            paths.append((key, r.get(key)))
+    return paths
+
+
+def _growth_v60_collect_candidates_inplace(result):
+    items = []
+    seen = set()
+    for key, seq in _growth_v60_result_candidate_lists(result):
+        for idx, item in enumerate(seq):
+            if isinstance(item, dict):
+                ident = id(item)
+                if ident not in seen:
+                    seen.add(ident)
+                    items.append((key, idx, item))
+    # Fallback to existing extractor if list routes were not present.
+    if not items and callable(_GROWTH_V60_PREV_EXTRACT_CANDIDATES):
+        try:
+            for idx, item in enumerate(_GROWTH_V60_PREV_EXTRACT_CANDIDATES(result)):
+                if isinstance(item, dict):
+                    items.append(('extracted_candidates', idx, item))
+        except Exception:
+            pass
+    return items
+
+
+def _growth_v60_mark_duplicate_candidate(candidate, signature, first_candidate_id, duplicate_index):
+    c = _growth_v60_safe_dict(candidate)
+    cid = _growth_v60_candidate_id(c, duplicate_index)
+    if 'accepted_original_v60' not in c:
+        c['accepted_original_v60'] = c.get('accepted')
+    if 'accepted_v43_original_v60' not in c:
+        c['accepted_v43_original_v60'] = c.get('accepted_v43')
+    # Strong policy: same graph signature cannot remain accepted as a distinct candidate.
+    c['accepted'] = False
+    if 'accepted_v43' in c:
+        c['accepted_v43'] = False
+    c['accepted_as_draft_v43'] = True
+    c['candidate_publishable'] = False
+    c['publishable_status'] = 'draft_duplicate_graph_signature_requires_structural_diversification'
+    c['candidate_quality_status'] = 'draft_duplicate_graph_signature_v60'
+    c['growth_acceptance_status_v60'] = 'draft_duplicate_graph_signature'
+    c['duplicate_graph_signature_v60'] = {
+        'patch_id': GROWTH_V60_STRONG_DUPLICATE_GRAPH_SIGNATURE_GATE_PATCH_ID,
+        'candidate_id': cid,
+        'graph_signature': signature,
+        'first_candidate_id': first_candidate_id,
+        'duplicate_index': int(duplicate_index),
+        'policy': 'same_graph_signature_is_draft_not_accepted',
+        'reason': 'duplicate_or_isomorphic_graph_signature_detected_by_growth_engine',
+    }
+    # Apply a strong diversity penalty while preserving pre-existing score values.
+    score_components = c.get('score_components_v60') if isinstance(c.get('score_components_v60'), dict) else {}
+    score_components['duplicate_graph_signature_penalty_v60'] = max(float(score_components.get('duplicate_graph_signature_penalty_v60') or 0.0), 0.60)
+    c['score_components_v60'] = score_components
+    scores = c.get('scores_v43') if isinstance(c.get('scores_v43'), dict) else {}
+    if scores:
+        if 'pre_duplicate_publishable_score_v60' not in scores:
+            scores['pre_duplicate_publishable_score_v60'] = scores.get('publishable_score')
+        try:
+            scores['publishable_score'] = min(float(scores.get('publishable_score') or 0.0), 0.0)
+        except Exception:
+            scores['publishable_score'] = 0.0
+        try:
+            scores['pre_experiment_confidence'] = min(float(scores.get('pre_experiment_confidence') or 0.0), 0.25)
+        except Exception:
+            scores['pre_experiment_confidence'] = scores.get('pre_experiment_confidence')
+        c['scores_v43'] = scores
+    co = c.get('candidate_object')
+    if isinstance(co, dict):
+        co['growth_acceptance_status_v60'] = c['growth_acceptance_status_v60']
+        co['duplicate_graph_signature_v60'] = c['duplicate_graph_signature_v60']
+        pol = co.get('core_generation_policy') if isinstance(co.get('core_generation_policy'), dict) else {}
+        pol['growth_duplicate_graph_signature_policy_v60'] = 'draft_not_accepted'
+        co['core_generation_policy'] = pol
+    return c
+
+
+def growth_v60_apply_duplicate_graph_signature_policy(result, history=None, context=None, mutate=True):
+    """Apply strong duplicate-graph policy to a result object.
+
+    ADD-ONLY semantics: candidates are not removed from lists. Duplicate candidates
+    are explicitly marked as draft/not accepted, and non-duplicate accepted views are
+    provided as additional fields.
+    """
+    r = result if isinstance(result, dict) and mutate else dict(_growth_v60_safe_dict(result))
+    items = _growth_v60_collect_candidates_inplace(r)
+    seen = {}
+    duplicates = []
+    unique_items = []
+    unique_accepted = []
+    draft_duplicates = []
+    for pos, (list_name, idx, cand) in enumerate(items):
+        cid = _growth_v60_candidate_id(cand, pos)
+        sig = _growth_v43_get_graph_signature(cand)
+        cand['graph_signature_growth_v60'] = sig
+        if sig:
+            if sig in seen:
+                first = seen[sig]
+                _growth_v60_mark_duplicate_candidate(cand, sig, first.get('candidate_id'), pos)
+                row = {'candidate_id': cid, 'first_candidate_id': first.get('candidate_id'), 'graph_signature': sig, 'list_name': list_name, 'index': idx}
+                duplicates.append(row)
+                draft_duplicates.append(cand)
+            else:
+                seen[sig] = {'candidate_id': cid, 'list_name': list_name, 'index': idx}
+                unique_items.append(cand)
+                if cand.get('accepted') is True or cand.get('accepted_v43') is True:
+                    unique_accepted.append(cand)
+        else:
+            unique_items.append(cand)
+            if cand.get('accepted') is True or cand.get('accepted_v43') is True:
+                unique_accepted.append(cand)
+    summary = {
+        'patch_id': GROWTH_V60_STRONG_DUPLICATE_GRAPH_SIGNATURE_GATE_PATCH_ID,
+        'candidate_count_seen': len(items),
+        'unique_graph_signature_count': len(seen),
+        'duplicate_graph_signature_count': len(duplicates),
+        'duplicate_graph_signatures': duplicates[:128],
+        'accepted_unique_candidate_count': len(unique_accepted),
+        'draft_duplicate_candidate_count': len(draft_duplicates),
+        'policy': 'duplicates_are_draft_not_accepted',
+        'no_task_or_benchmark_name_hardcoding': True,
+    }
+    r['growth_duplicate_graph_signature_policy_v60'] = summary
+    r['accepted_candidates_nonduplicate_v60'] = unique_accepted
+    r['draft_duplicate_candidates_v60'] = draft_duplicates
+    debug = r.get('debug') if isinstance(r.get('debug'), dict) else {}
+    debug['growth_duplicate_graph_signature_policy_v60'] = summary
+    r['debug'] = debug
+    return r
+
+
+def _growth_v43_score_candidate_for_next_focus(candidate):
+    base = 0.0
+    if callable(_GROWTH_V60_PREV_SCORE_NEXT_FOCUS):
+        try:
+            base = float(_GROWTH_V60_PREV_SCORE_NEXT_FOCUS(candidate))
+        except Exception:
+            base = 0.0
+    c = _growth_v60_safe_dict(candidate)
+    dup = _growth_v60_safe_dict(c.get('duplicate_graph_signature_v60'))
+    # Duplicate candidates are not growth successes; they become high-priority
+    # diversification targets but low-priority accepted candidates.
+    if dup:
+        return max(base, 0.95)
+    return base
+
+
+def growth_v43_extract_candidates_from_result(result, max_items=256):
+    growth_v60_apply_duplicate_graph_signature_policy(result, mutate=True)
+    if callable(_GROWTH_V60_PREV_EXTRACT_CANDIDATES):
+        return _GROWTH_V60_PREV_EXTRACT_CANDIDATES(result, max_items=max_items)
+    return [x[2] for x in _growth_v60_collect_candidates_inplace(result)][:int(max_items)]
+
+
+def growth_v43_build_reflection_from_smatrix_usr(last_result, history=None, context=None):
+    growth_v60_apply_duplicate_graph_signature_policy(last_result, history=history, context=context, mutate=True)
+    if callable(_GROWTH_V60_PREV_REFLECT_SMATRIX):
+        ref = _GROWTH_V60_PREV_REFLECT_SMATRIX(last_result, history=history, context=context)
+    else:
+        ref = {}
+    if isinstance(ref, dict):
+        dup_summary = _growth_v60_safe_dict(_growth_v60_safe_dict(last_result).get('growth_duplicate_graph_signature_policy_v60'))
+        ref['duplicate_graph_signature_policy_v60'] = dup_summary
+        if dup_summary.get('duplicate_graph_signature_count'):
+            failed = _growth_v60_safe_list(ref.get('failed_patterns'))
+            failed.append({'kind': 'duplicate_graph_signature_blocked_acceptance_v60', 'count': dup_summary.get('duplicate_graph_signature_count')})
+            ref['failed_patterns'] = failed
+            controls = ref.get('next_search_controls') if isinstance(ref.get('next_search_controls'), dict) else {}
+            controls['avoid_graph_signatures_v60'] = [d.get('graph_signature') for d in _growth_v60_safe_list(dup_summary.get('duplicate_graph_signatures')) if isinstance(d, dict) and d.get('graph_signature')]
+            controls['require_new_graph_signature_v60'] = True
+            controls['min_unique_graph_signature_delta_v60'] = 1
+            ref['next_search_controls'] = controls
+    return ref
+
+
+def growth_v43_attach_reflection_to_result(result, history=None, context=None):
+    growth_v60_apply_duplicate_graph_signature_policy(result, history=history, context=context, mutate=True)
+    if callable(_GROWTH_V60_PREV_ATTACH_REFLECTION):
+        out = _GROWTH_V60_PREV_ATTACH_REFLECTION(result, history=history, context=context)
+    else:
+        out = result
+    growth_v60_apply_duplicate_graph_signature_policy(out, history=history, context=context, mutate=True)
+    return out
+
+
+def growth_v43_build_reflection_context(result, history=None, context=None):
+    growth_v60_apply_duplicate_graph_signature_policy(result, history=history, context=context, mutate=True)
+    if callable(_GROWTH_V60_PREV_CONTEXT_V43):
+        ctx = _GROWTH_V60_PREV_CONTEXT_V43(result, history=history, context=context)
+    else:
+        ctx = {}
+    if isinstance(ctx, dict):
+        ctx['duplicate_graph_signature_policy_v60'] = _growth_v60_safe_dict(_growth_v60_safe_dict(result).get('growth_duplicate_graph_signature_policy_v60'))
+    return ctx
+
+
+def growth_bc_build_reflection_context(result, history=None, context=None, max_candidates=256):
+    growth_v60_apply_duplicate_graph_signature_policy(result, history=history, context=context, mutate=True)
+    if callable(_GROWTH_V60_PREV_CONTEXT_BC):
+        ctx = _GROWTH_V60_PREV_CONTEXT_BC(result, history=history, context=context, max_candidates=max_candidates)
+    else:
+        ctx = {}
+    if isinstance(ctx, dict):
+        ctx['duplicate_graph_signature_policy_v60'] = _growth_v60_safe_dict(_growth_v60_safe_dict(result).get('growth_duplicate_graph_signature_policy_v60'))
+    return ctx
+
+
+def growth_v43_build_next_search_guidance(reflection_context, context=None):
+    if callable(_GROWTH_V60_PREV_GUIDANCE_V43):
+        guidance = _GROWTH_V60_PREV_GUIDANCE_V43(reflection_context, context=context)
+    else:
+        guidance = {}
+    if isinstance(guidance, dict):
+        dup = _growth_v60_safe_dict(_growth_v60_safe_dict(reflection_context).get('duplicate_graph_signature_policy_v60'))
+        if dup.get('duplicate_graph_signature_count'):
+            guidance['require_new_graph_signature_v60'] = True
+            guidance['avoid_graph_signatures_v60'] = [d.get('graph_signature') for d in _growth_v60_safe_list(dup.get('duplicate_graph_signatures')) if isinstance(d, dict) and d.get('graph_signature')]
+            guidance['diversity_pressure_v60'] = max(float(guidance.get('diversity_pressure_v60') or 0.0), 0.85)
+            guidance['duplicate_acceptance_policy_v60'] = 'draft_not_accepted'
+    return guidance
+
+
+def evaluate_leap_candidate_result(result, baseline_ir=None, context=None, novelty_threshold=0.18, coherence_threshold=0.20):
+    growth_v60_apply_duplicate_graph_signature_policy(result, context=context, mutate=True)
+    if callable(_GROWTH_V60_PREV_EVAL_RESULT):
+        out = _GROWTH_V60_PREV_EVAL_RESULT(result, baseline_ir=baseline_ir, context=context, novelty_threshold=novelty_threshold, coherence_threshold=coherence_threshold)
+    else:
+        out = result
+    if isinstance(out, dict):
+        growth_v60_apply_duplicate_graph_signature_policy(out, context=context, mutate=True)
+    return out
+
+
+def evaluate_leap_candidate_bundle(bundle, min_candidate_count=1, min_interventions=1, result_fallback=None):
+    if isinstance(bundle, dict):
+        growth_v60_apply_duplicate_graph_signature_policy(bundle, mutate=True)
+    if isinstance(result_fallback, dict):
+        growth_v60_apply_duplicate_graph_signature_policy(result_fallback, mutate=True)
+    if callable(_GROWTH_V60_PREV_EVAL_BUNDLE):
+        try:
+            return _GROWTH_V60_PREV_EVAL_BUNDLE(bundle, min_candidate_count=min_candidate_count, min_interventions=min_interventions, result_fallback=result_fallback)
+        except TypeError:
+            try:
+                return _GROWTH_V60_PREV_EVAL_BUNDLE(bundle, min_candidate_count=min_candidate_count, min_interventions=min_interventions)
+            except TypeError:
+                return _GROWTH_V60_PREV_EVAL_BUNDLE(bundle)
+    return {'status': 'ok', 'duplicate_graph_signature_policy_v60': _growth_v60_safe_dict(bundle).get('growth_duplicate_graph_signature_policy_v60')}
+
+# ============================================================================
+# END ADD-ONLY PATCH: GROWTH-V60-STRONG-DUPLICATE-GRAPH-SIGNATURE-GATE
+# ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY PATCH: GROWTH-V52-QUALITY-DIVERSITY-META-FEEDBACK-20260509
+# Purpose:
+# - Align Growth Engine with Leap/Causal V52: GPU use is not the objective;
+#   final candidate quality, diversity, falsifiability, identifiability,
+#   causal richness, and experiment-readiness are the objective.
+# - Consume V52 candidate contracts if present, but also work with generic
+#   candidate dictionaries from any upstream route.
+# - Convert weak quality/diversity signals into metacognitive feedback:
+#   failure_memory, next operator guidance, view/goal refinement hints, and
+#   pre-experiment candidate lifecycle classification.
+# - ADD-ONLY only. No existing functions/classes are deleted.
+# - No benchmark/task-name hardcoding. All behavior derives from candidate
+#   structure, graph signatures, quality metrics, masks, S-matrix, and tests.
+# ============================================================================
+
+GROWTH_V52_QUALITY_DIVERSITY_PATCH_ID = 'GROWTH-V52-QUALITY-DIVERSITY-META-FEEDBACK-20260509'
+
+
+def _growth_v52_safe_dict(x):
+    return dict(x) if isinstance(x, dict) else {}
+
+
+def _growth_v52_safe_list(x):
+    if isinstance(x, list):
+        return list(x)
+    if isinstance(x, tuple):
+        return list(x)
+    return []
+
+
+def _growth_v52_text(x, limit=4000):
+    try:
+        s = '' if x is None else str(x)
+    except Exception:
+        s = repr(x)
+    try:
+        import re as _re
+        s = _re.sub(r'\s+', ' ', s).strip()
+    except Exception:
+        s = ' '.join(s.split())
+    return s[:max(0, int(limit))]
+
+
+def _growth_v52_hash_obj(obj, n=16):
+    try:
+        import json as _json, hashlib as _hashlib
+        raw = _json.dumps(obj, ensure_ascii=False, sort_keys=True, default=str)
+        return _hashlib.sha256(raw.encode('utf-8')).hexdigest()[:int(n)]
+    except Exception:
+        return 'hash_unavailable'
+
+
+def _growth_v52_candidate_id(candidate, index=0):
+    c = _growth_v52_safe_dict(candidate)
+    return _growth_v52_text(c.get('candidate_id') or c.get('id') or c.get('idea_id') or ('GROWTH-V52-CAND-%03d' % (int(index) + 1)), 160)
+
+
+def _growth_v52_candidate_metrics(candidate):
+    c = _growth_v52_safe_dict(candidate)
+    # Prefer Causal/Leap V52 quality reviews, then older GPU/review signals.
+    for key in ('quality_diversity_review_v52', 'gpu_review_flags', 'gpu_tensor_evaluation', 'scores_v43'):
+        v = c.get(key)
+        if isinstance(v, dict):
+            return dict(v)
+    return {}
+
+
+def _growth_v52_graph_signature(candidate):
+    c = _growth_v52_safe_dict(candidate)
+    for key in ('graph_signature_v52', 'graph_signature_v45', 'graph_signature'):
+        v = c.get(key)
+        if isinstance(v, dict) and v.get('signature'):
+            return _growth_v52_text(v.get('signature'), 80)
+        if isinstance(v, str) and v.strip():
+            return _growth_v52_text(v, 80)
+    # Generic fallback: hash structure-bearing keys.
+    material = {}
+    for key in ('s_matrix_graph_view_v52', 's_matrix_graph_view_v43', 'candidate_object', 'causal_graph_delta', 'causal_edges', 'complex_s_edges_v52'):
+        if key in c:
+            material[key] = c.get(key)
+    if not material:
+        material = {'candidate_id': _growth_v52_candidate_id(c)}
+    return _growth_v52_hash_obj(material, 16)
+
+
+def _growth_v52_token_set(candidate):
+    c = _growth_v52_safe_dict(candidate)
+    text = ' '.join([
+        _growth_v52_text(c.get(k), 2000)
+        for k in ('decoded_hypothesis', 'decoded_mechanism', 'idea_core', 'why_non_near', 'reason', 'method_proposal')
+    ])
+    for key in ('candidate_object', 's_matrix_graph_view_v52', 'quality_diversity_review_v52'):
+        if isinstance(c.get(key), dict):
+            text += ' ' + _growth_v52_text(c.get(key), 3000)
+    try:
+        import re as _re
+        toks = _re.findall(r'[A-Za-z0-9_]+|[一-龥ぁ-んァ-ヶー]+', text.lower())
+    except Exception:
+        toks = text.lower().split()
+    return set(t for t in toks if len(t) >= 2)
+
+
+def _growth_v52_jaccard(a, b):
+    aa = _growth_v52_token_set(a)
+    bb = _growth_v52_token_set(b)
+    if not aa and not bb:
+        return 1.0
+    return len(aa & bb) / max(1, len(aa | bb))
+
+
+def _growth_v52_quality_score(candidate):
+    c = _growth_v52_safe_dict(candidate)
+    m = _growth_v52_candidate_metrics(c)
+    for key in ('quality_score_v52', 'overall_score_v52', 'draft_quality_score', 'pre_experiment_confidence', 'publishable_score', 'overall_score', 'score'):
+        try:
+            if m.get(key) is not None:
+                return max(0.0, min(1.0, float(m.get(key))))
+        except Exception:
+            pass
+        try:
+            if c.get(key) is not None:
+                return max(0.0, min(1.0, float(c.get(key))))
+        except Exception:
+            pass
+    # Generic fallback from presence of core structures.
+    structure_count = 0
+    for key in ('s_matrix_graph_view_v52', 's_matrix_graph_view_v43', 'complex_s_edges_v52', 'group_nodes_v52', 'causal_mask_hint_v52', 'distinguishing_interventions'):
+        v = c.get(key)
+        if isinstance(v, (dict, list)) and bool(v):
+            structure_count += 1
+    return min(1.0, 0.15 + 0.12 * structure_count)
+
+
+def _growth_v52_classify_candidate(candidate, duplicate_signature=False, near_duplicate=False):
+    c = _growth_v52_safe_dict(candidate)
+    metrics = _growth_v52_candidate_metrics(c)
+    q = _growth_v52_quality_score(c)
+    fals = 0.0
+    ident = 0.0
+    exp = 0.0
+    try:
+        fals = float(metrics.get('falsifiability_score', metrics.get('falsifiable_edge_ratio', 0.0)) or 0.0)
+    except Exception:
+        fals = 0.0
+    try:
+        ident = float(metrics.get('identifiability_score', metrics.get('observation_decomposition_ratio', 0.0)) or 0.0)
+    except Exception:
+        ident = 0.0
+    try:
+        exp = float(metrics.get('experiment_readiness_score', 0.0) or 0.0)
+    except Exception:
+        exp = 0.0
+    interventions = _growth_v52_safe_list(c.get('distinguishing_interventions') or c.get('required_experiments'))
+    if interventions:
+        exp = max(exp, min(1.0, len(interventions) / 2.0))
+    reasons = []
+    if duplicate_signature:
+        reasons.append('duplicate_graph_signature')
+    if near_duplicate:
+        reasons.append('near_duplicate_semantics')
+    if q < 0.45:
+        reasons.append('low_structural_quality')
+    if fals < 0.45:
+        reasons.append('weak_falsifiability')
+    if ident < 0.45:
+        reasons.append('weak_identifiability')
+    if exp < 0.45:
+        reasons.append('weak_experiment_readiness')
+    if duplicate_signature or near_duplicate:
+        status = 'draft_needs_diversification'
+        accepted = False
+    elif q >= 0.55 and fals >= 0.45 and ident >= 0.45 and exp >= 0.45:
+        status = 'pre_experiment_accepted'
+        accepted = True
+    else:
+        status = 'draft_requires_targeted_improvement'
+        accepted = False
+    return {
+        'status': status,
+        'accepted': bool(accepted),
+        'quality_score': q,
+        'falsifiability_score': max(0.0, min(1.0, fals)),
+        'identifiability_score': max(0.0, min(1.0, ident)),
+        'experiment_readiness_score': max(0.0, min(1.0, exp)),
+        'reasons': reasons,
+        'publishable_status': 'pre_publishable_requires_targeted_experiment',
+        'publishable': False,
+    }
+
+
+def growth_v52_review_candidate_pool(candidates, max_candidates=None, near_duplicate_threshold=0.82):
+    """Review candidate pool for quality/diversity without using LLM.
+    Returns selected candidates plus metacognitive feedback used by Growth Engine.
+    """
+    raw = [c for c in _growth_v52_safe_list(candidates) if isinstance(c, dict)]
+    sigs = []
+    sig_count = {}
+    for c in raw:
+        sig = _growth_v52_graph_signature(c)
+        sigs.append(sig)
+        sig_count[sig] = sig_count.get(sig, 0) + 1
+    reviewed = []
+    for i, c0 in enumerate(raw):
+        c = dict(c0)
+        duplicate = sig_count.get(sigs[i], 0) > 1
+        near = False
+        for prev in reviewed:
+            try:
+                if _growth_v52_jaccard(prev, c) >= float(near_duplicate_threshold):
+                    near = True
+                    break
+            except Exception:
+                pass
+        cls = _growth_v52_classify_candidate(c, duplicate_signature=duplicate, near_duplicate=near)
+        c['growth_quality_lifecycle_v52'] = {
+            'patch_id': GROWTH_V52_QUALITY_DIVERSITY_PATCH_ID,
+            'candidate_id': _growth_v52_candidate_id(c, i),
+            'graph_signature': sigs[i],
+            'duplicate_signature': bool(duplicate),
+            'near_duplicate': bool(near),
+            **cls,
+        }
+        c['growth_feedback_v52'] = _growth_v52_candidate_feedback(c, cls)
+        # Never mark as publishable without external/experimental evidence.
+        c['publishable_status'] = 'pre_publishable_requires_targeted_experiment'
+        c['requires_experiment'] = True
+        if cls.get('status') == 'draft_needs_diversification':
+            c['status'] = 'V52_GROWTH_DRAFT_NEEDS_DIVERSIFICATION'
+            c['accepted'] = False
+        elif cls.get('accepted'):
+            c['status'] = c.get('status') or 'V52_GROWTH_PRE_EXPERIMENT_ACCEPTED'
+            c['accepted'] = True
+        else:
+            c['status'] = 'V52_GROWTH_DRAFT_REQUIRES_TARGETED_IMPROVEMENT'
+            c['accepted'] = False
+        reviewed.append(c)
+    reviewed.sort(key=lambda x: float(_growth_v52_safe_dict(x.get('growth_quality_lifecycle_v52')).get('quality_score', 0.0)), reverse=True)
+    selected = []
+    selected_sigs = set()
+    drafts = []
+    for c in reviewed:
+        sig = _growth_v52_safe_dict(c.get('growth_quality_lifecycle_v52')).get('graph_signature')
+        if sig in selected_sigs or not bool(_growth_v52_safe_dict(c.get('growth_quality_lifecycle_v52')).get('accepted', False)):
+            drafts.append(c)
+            continue
+        selected.append(c)
+        selected_sigs.add(sig)
+        if max_candidates is not None and len(selected) >= int(max_candidates):
+            break
+    # Fill remaining slots with explicit draft candidates only if needed for UI visibility.
+    if max_candidates is not None:
+        for c in drafts:
+            if len(selected) >= int(max_candidates):
+                break
+            selected.append(c)
+    feedback = growth_v52_build_pool_feedback(reviewed, selected, drafts)
+    return {
+        'patch_id': GROWTH_V52_QUALITY_DIVERSITY_PATCH_ID,
+        'reviewed_candidates': reviewed,
+        'selected_candidates': selected,
+        'draft_candidates': drafts,
+        'feedback': feedback,
+        'summary': feedback.get('summary', {}),
+    }
+
+
+def _growth_v52_candidate_feedback(candidate, cls=None):
+    c = _growth_v52_safe_dict(candidate)
+    cls = _growth_v52_safe_dict(cls)
+    reasons = _growth_v52_safe_list(cls.get('reasons'))
+    actions = []
+    operator_hints = []
+    if 'duplicate_graph_signature' in reasons or 'near_duplicate_semantics' in reasons:
+        actions.append('increase_structural_diversity_before_acceptance')
+        operator_hints.extend(['topology_shift', 'observation_shift', 'mediator_insertion'])
+    if 'weak_falsifiability' in reasons:
+        actions.append('add_do_or_ablation_test_to_each_major_edge')
+        operator_hints.extend(['inversion', 'observation_shift'])
+    if 'weak_identifiability' in reasons:
+        actions.append('add_proxy_intervention_and_observation_decomposition')
+        operator_hints.extend(['decomposition', 'mediator_insertion'])
+    if 'weak_experiment_readiness' in reasons:
+        actions.append('convert_mechanism_claims_into_targeted_experiments')
+        operator_hints.extend(['scale_transfer', 'combination'])
+    if 'low_structural_quality' in reasons:
+        actions.append('enrich_graph_with_group_nodes_masks_and_complex_s_edges')
+        operator_hints.extend(['decomposition', 'topology_shift'])
+    return {
+        'patch_id': GROWTH_V52_QUALITY_DIVERSITY_PATCH_ID,
+        'candidate_id': _growth_v52_candidate_id(c),
+        'actions': list(dict.fromkeys(actions)),
+        'operator_hints': list(dict.fromkeys(operator_hints)),
+        'next_status': cls.get('status', 'draft_requires_targeted_improvement'),
+        'quality_score': cls.get('quality_score', 0.0),
+        'quality_and_diversity_are_primary': True,
+        'gpu_required_for_quality': False,
+    }
+
+
+def growth_v52_build_pool_feedback(reviewed_candidates, selected_candidates=None, draft_candidates=None):
+    reviewed = [c for c in _growth_v52_safe_list(reviewed_candidates) if isinstance(c, dict)]
+    selected = [c for c in _growth_v52_safe_list(selected_candidates) if isinstance(c, dict)]
+    drafts = [c for c in _growth_v52_safe_list(draft_candidates) if isinstance(c, dict)]
+    lifecycle = [_growth_v52_safe_dict(c.get('growth_quality_lifecycle_v52')) for c in reviewed]
+    q_scores = [float(x.get('quality_score', 0.0) or 0.0) for x in lifecycle]
+    duplicate_count = sum(1 for x in lifecycle if x.get('duplicate_signature'))
+    near_count = sum(1 for x in lifecycle if x.get('near_duplicate'))
+    weak_fals = sum(1 for x in lifecycle if float(x.get('falsifiability_score', 0.0) or 0.0) < 0.45)
+    weak_ident = sum(1 for x in lifecycle if float(x.get('identifiability_score', 0.0) or 0.0) < 0.45)
+    weak_exp = sum(1 for x in lifecycle if float(x.get('experiment_readiness_score', 0.0) or 0.0) < 0.45)
+    failure_memory_delta = []
+    if duplicate_count or near_count:
+        failure_memory_delta.append({'kind': 'diversity_collapse', 'count': int(duplicate_count + near_count), 'repair': 'prefer topology_shift/observation_shift/mediator_insertion and reject same graph signatures from accepted set'})
+    if weak_fals:
+        failure_memory_delta.append({'kind': 'weak_falsifiability', 'count': int(weak_fals), 'repair': 'add do/intervention/ablation contracts to major edges'})
+    if weak_ident:
+        failure_memory_delta.append({'kind': 'weak_identifiability', 'count': int(weak_ident), 'repair': 'add proxy intervention and observation decomposition for each key edge'})
+    if weak_exp:
+        failure_memory_delta.append({'kind': 'weak_experiment_readiness', 'count': int(weak_exp), 'repair': 'convert claims into targeted experiments before promoting'})
+    operator_priority = []
+    if duplicate_count or near_count:
+        operator_priority.extend(['topology_shift', 'observation_shift', 'mediator_insertion'])
+    if weak_fals:
+        operator_priority.extend(['inversion', 'observation_shift', 'combination'])
+    if weak_ident:
+        operator_priority.extend(['decomposition', 'mediator_insertion', 'scale_transfer'])
+    if weak_exp:
+        operator_priority.extend(['scale_transfer', 'combination'])
+    if not operator_priority:
+        operator_priority.extend(['combination', 'topology_shift', 'decomposition'])
+    operator_priority = list(dict.fromkeys(operator_priority))
+    summary = {
+        'patch_id': GROWTH_V52_QUALITY_DIVERSITY_PATCH_ID,
+        'candidate_count_reviewed': len(reviewed),
+        'candidate_count_selected': len(selected),
+        'draft_candidate_count': len(drafts),
+        'duplicate_signature_count': int(duplicate_count),
+        'near_duplicate_count': int(near_count),
+        'weak_falsifiability_count': int(weak_fals),
+        'weak_identifiability_count': int(weak_ident),
+        'weak_experiment_readiness_count': int(weak_exp),
+        'mean_quality_score': sum(q_scores) / max(1, len(q_scores)),
+        'publishable_candidate_count': 0,
+        'publishable_candidate_count_note': 'kept_zero_until_external_or_experimental_evidence_is_supplied',
+        'quality_and_diversity_are_primary': True,
+        'gpu_required_for_quality': False,
+        'no_task_or_benchmark_name_hardcoding': True,
+    }
+    return {
+        'patch_id': GROWTH_V52_QUALITY_DIVERSITY_PATCH_ID,
+        'summary': summary,
+        'failure_memory_delta': failure_memory_delta,
+        'operator_priority_hint': operator_priority,
+        'meta_pivot_hint': growth_v52_build_meta_pivot_hint(summary),
+        'next_turn_guidance': {
+            'prefer_unique_graph_signatures': True,
+            'reject_duplicate_accepted_candidates': True,
+            'require_falsification_or_proxy_intervention': True,
+            'require_identifiability_observation_decomposition': True,
+            'keep_publishable_zero_without_external_evidence': True,
+        },
+    }
+
+
+def growth_v52_build_meta_pivot_hint(summary):
+    s = _growth_v52_safe_dict(summary)
+    action = 'REFINE'
+    reasons = []
+    if int(s.get('duplicate_signature_count', 0) or 0) + int(s.get('near_duplicate_count', 0) or 0) > 0:
+        action = 'CHANGE_VIEW'
+        reasons.append('candidate_diversity_collapse')
+    if int(s.get('weak_identifiability_count', 0) or 0) > 0:
+        action = 'CHANGE_VIEW' if action == 'REFINE' else action
+        reasons.append('identifiability_weak')
+    if int(s.get('weak_falsifiability_count', 0) or 0) > 0:
+        reasons.append('falsifiability_weak')
+    if int(s.get('weak_experiment_readiness_count', 0) or 0) > 0:
+        reasons.append('experiment_contract_missing')
+    if float(s.get('mean_quality_score', 0.0) or 0.0) < 0.45:
+        action = 'REDEFINE_GOAL' if not reasons else action
+        reasons.append('low_mean_quality')
+    return {
+        'patch_id': GROWTH_V52_QUALITY_DIVERSITY_PATCH_ID,
+        'action': action,
+        'reasons': list(dict.fromkeys(reasons)),
+        'suggested_view': 'quality_diversity_falsifiability_identifiability_first',
+        'suggested_goal': 'produce fewer but structurally distinct, testable, identifiable pre-experiment invention candidates',
+    }
+
+
+def growth_v52_ingest_quality_feedback(result_or_candidates, max_candidates=None):
+    """Public helper: ingest Leap/Causal output and return Growth feedback contract."""
+    if isinstance(result_or_candidates, list):
+        candidates = result_or_candidates
+    else:
+        r = _growth_v52_safe_dict(result_or_candidates)
+        candidates = []
+        for key in ('generated_ideas', 'accepted_candidates', 'decoded_candidates', 'candidates'):
+            candidates.extend(_growth_v52_safe_list(r.get(key)))
+        rep = _growth_v52_safe_dict(r.get('hidden_branching_report_v14'))
+        for key in ('generated_ideas', 'accepted_candidates', 'decoded_candidates', 'candidates'):
+            candidates.extend(_growth_v52_safe_list(rep.get(key)))
+    return growth_v52_review_candidate_pool(candidates, max_candidates=max_candidates)
+
+
+def growth_v52_attach_feedback_to_result(result, max_candidates=None):
+    """Attach quality/diversity feedback to an existing result dict."""
+    if not isinstance(result, dict):
+        return result
+    r = dict(result)
+    review = growth_v52_ingest_quality_feedback(r, max_candidates=max_candidates)
+    selected = _growth_v52_safe_list(review.get('selected_candidates'))
+    if selected:
+        for key in ('generated_ideas', 'accepted_candidates', 'decoded_candidates', 'candidates'):
+            r[key] = selected
+    r['growth_quality_feedback_v52'] = review.get('feedback', {})
+    r['growth_quality_summary_v52'] = review.get('summary', {})
+    # Preserve existing summaries while adding Growth V52 feedback.
+    sm = _growth_v52_safe_dict(r.get('s_matrix_usr_verification_summary'))
+    sm['growth_quality_feedback_patch_id_v52'] = GROWTH_V52_QUALITY_DIVERSITY_PATCH_ID
+    sm['quality_and_diversity_are_primary_v52'] = True
+    sm['gpu_required_for_quality_v52'] = False
+    sm['publishable_candidate_count'] = 0
+    sm['publishable_candidate_count_note_v52'] = 'kept_zero_until_external_or_experimental_evidence_is_supplied'
+    if review.get('summary'):
+        sm['growth_quality_summary_v52'] = review.get('summary')
+    r['s_matrix_usr_verification_summary'] = sm
+    return r
+
+
+# ADD-ONLY wrapping of known evaluation function if present.
+try:
+    _GROWTH_V52_PREV_EVALUATE_LEAP_CANDIDATE_BUNDLE = evaluate_leap_candidate_bundle
+except Exception:
+    _GROWTH_V52_PREV_EVALUATE_LEAP_CANDIDATE_BUNDLE = None
+
+
+def evaluate_leap_candidate_bundle(bundle, min_candidate_count=1, min_interventions=1):
+    base = {}
+    if callable(_GROWTH_V52_PREV_EVALUATE_LEAP_CANDIDATE_BUNDLE):
+        try:
+            base = _GROWTH_V52_PREV_EVALUATE_LEAP_CANDIDATE_BUNDLE(bundle, min_candidate_count=min_candidate_count, min_interventions=min_interventions)
+        except TypeError:
+            base = _GROWTH_V52_PREV_EVALUATE_LEAP_CANDIDATE_BUNDLE(bundle)
+        except Exception as e:
+            base = {'accepted': False, 'reason': 'previous_evaluator_exception_v52', 'error': repr(e)}
+    base = _growth_v52_safe_dict(base)
+    b = _growth_v52_safe_dict(bundle)
+    candidates = _growth_v52_safe_list(b.get('leap_candidates')) or _growth_v52_safe_list(b.get('generated_ideas')) or _growth_v52_safe_list(b.get('accepted_candidates'))
+    review = growth_v52_review_candidate_pool(candidates, max_candidates=None)
+    summary = _growth_v52_safe_dict(review.get('summary'))
+    base['growth_quality_summary_v52'] = summary
+    base['growth_quality_feedback_v52'] = review.get('feedback', {})
+    # Keep the old accepted flag only if V52 quality/lifecycle also passes.
+    if int(summary.get('duplicate_signature_count', 0) or 0) > 0 or int(summary.get('near_duplicate_count', 0) or 0) > 0:
+        base['accepted'] = False
+        base['reason'] = 'growth_v52_diversity_guard_failed'
+    elif int(summary.get('weak_falsifiability_count', 0) or 0) > 0 or int(summary.get('weak_identifiability_count', 0) or 0) > 0:
+        base['accepted'] = False
+        base['reason'] = 'growth_v52_quality_guard_requires_targeted_improvement'
+    base['publishable_candidate_count'] = 0
+    base['publishable_candidate_count_note_v52'] = 'kept_zero_until_external_or_experimental_evidence_is_supplied'
+    base['quality_and_diversity_are_primary_v52'] = True
+    base['gpu_required_for_quality_v52'] = False
+    return base
+
+
+try:
+    _GROWTH_V52_PREV_EVALUATE_INVENTION_RESULT = evaluate_invention_result
+except Exception:
+    _GROWTH_V52_PREV_EVALUATE_INVENTION_RESULT = None
+
+
+def evaluate_invention_result(result, novelty_threshold=0.18, coherence_threshold=0.20, content_validity_threshold=0.55):
+    if callable(_GROWTH_V52_PREV_EVALUATE_INVENTION_RESULT):
+        try:
+            base = _GROWTH_V52_PREV_EVALUATE_INVENTION_RESULT(result, novelty_threshold=novelty_threshold, coherence_threshold=coherence_threshold, content_validity_threshold=content_validity_threshold)
+        except TypeError:
+            try:
+                base = _GROWTH_V52_PREV_EVALUATE_INVENTION_RESULT(result, novelty_threshold=novelty_threshold, coherence_threshold=coherence_threshold)
+            except Exception as e:
+                base = {'accepted': False, 'reason': 'previous_invention_evaluator_exception_v52', 'error': repr(e)}
+        except Exception as e:
+            base = {'accepted': False, 'reason': 'previous_invention_evaluator_exception_v52', 'error': repr(e)}
+    else:
+        base = {}
+    base = _growth_v52_safe_dict(base)
+    r = _growth_v52_safe_dict(result)
+    # Evaluate expanded invention if it contains candidate bundle fields; otherwise evaluate result-level candidates.
+    expanded = _growth_v52_safe_dict(r.get('expanded_invention'))
+    target = expanded if expanded else r
+    review = growth_v52_ingest_quality_feedback(target, max_candidates=None)
+    summary = _growth_v52_safe_dict(review.get('summary'))
+    base['growth_quality_summary_v52'] = summary
+    base['growth_quality_feedback_v52'] = review.get('feedback', {})
+    if summary.get('candidate_count_reviewed', 0):
+        if int(summary.get('duplicate_signature_count', 0) or 0) > 0 or int(summary.get('near_duplicate_count', 0) or 0) > 0:
+            base['accepted'] = False
+            base['reason'] = 'growth_v52_diversity_guard_failed'
+        elif int(summary.get('weak_falsifiability_count', 0) or 0) > 0 or int(summary.get('weak_identifiability_count', 0) or 0) > 0:
+            base['accepted'] = False
+            base['reason'] = 'growth_v52_quality_guard_requires_targeted_improvement'
+    base['publishable_candidate_count'] = 0
+    base['publishable_candidate_count_note_v52'] = 'kept_zero_until_external_or_experimental_evidence_is_supplied'
+    base['quality_and_diversity_are_primary_v52'] = True
+    base['gpu_required_for_quality_v52'] = False
+    return base
+
+
+try:
+    GROWTH_V52_QUALITY_DIVERSITY_EXECUTION_PROOF = {
+        'patch_id': GROWTH_V52_QUALITY_DIVERSITY_PATCH_ID,
+        'public_helpers': [
+            'growth_v52_review_candidate_pool',
+            'growth_v52_build_pool_feedback',
+            'growth_v52_build_meta_pivot_hint',
+            'growth_v52_ingest_quality_feedback',
+            'growth_v52_attach_feedback_to_result',
+        ],
+        'quality_and_diversity_are_primary': True,
+        'gpu_required_for_quality': False,
+        'core_llm_generate_called': False,
+        'no_task_or_benchmark_name_hardcoding': True,
+    }
+except Exception:
+    pass
+
+# ============================================================================
+# END ADD-ONLY PATCH: GROWTH-V52-QUALITY-DIVERSITY-META-FEEDBACK-20260509
+# ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY PATCH: GROWTH-V54-UNIVERSAL-OPERATOR-SEMANTICS-TIME-AXIS-20260510
+# Purpose:
+# - Diagnose V54 universal candidate causal contracts from Leap results.
+# - Do not regenerate or self-repair candidates in V54.
+# - Produce failure_memory / next search-design recommendations for later growth loop.
+# ============================================================================
+
+GROWTH_V54_UNIVERSAL_OPERATOR_SEMANTICS_TIME_AXIS_PATCH_ID = "GROWTH-V54-UNIVERSAL-OPERATOR-SEMANTICS-TIME-AXIS-20260510"
+
+try:
+    import json as _growth_v54_json
+except Exception:
+    _growth_v54_json = None
+
+def _growth_v54_safe_dict(x):
+    return dict(x) if isinstance(x, dict) else {}
+
+def _growth_v54_safe_list(x):
+    if isinstance(x, list): return list(x)
+    if isinstance(x, (tuple,set)): return list(x)
+    return [] if x is None else [x]
+
+def _growth_v54_s(x, limit=4000):
+    try: s='' if x is None else str(x)
+    except Exception: s=''
+    return ' '.join(s.split())[:int(limit)]
+
+def _growth_v54_collect_candidates(result):
+    r=_growth_v54_safe_dict(result); out=[]; seen=set()
+    for key in ['generated_ideas','candidates','decoded_candidates','accepted','rejected','ideas']:
+        for c in _growth_v54_safe_list(r.get(key)):
+            if isinstance(c,dict) and id(c) not in seen:
+                seen.add(id(c)); out.append(c)
+    return out
+
+def _growth_v54_contract(c):
+    return _growth_v54_safe_dict(_growth_v54_safe_dict(c).get('candidate_causal_contract_v54'))
+
+def growth_v54_diagnose_universal_contracts(result):
+    cands=_growth_v54_collect_candidates(result)
+    n=len(cands)
+    contract_count=0; op_count=0; im_count=0; time_count=0; accepted_without=0; generic_accepted=0
+    failure_memory=[]; rows=[]
+    for c in cands:
+        con=_growth_v54_contract(c)
+        legacy=_growth_v54_s(c.get('status') or c.get('accepted') or c.get('publishable_status'),300).lower()
+        st=_growth_v54_s(con.get('accepted_status') or c.get('accepted_status_v54'),200)
+        has_contract=bool(con)
+        if has_contract: contract_count+=1
+        if con.get('operator_semantics_contracts'): op_count+=1
+        if con.get('information_flow_edges_Im'): im_count+=1
+        if con.get('time_evolution_axis') and any(_growth_v54_safe_dict(con.get('time_evolution_axis')).values()): time_count+=1
+        if 'accepted' in legacy and not has_contract: accepted_without+=1; failure_memory.append('accepted_without_v54_contract')
+        risks=_growth_v54_safe_list(con.get('failure_risks'))+_growth_v54_safe_list(con.get('status_reason'))
+        if any('generic_mediator' in _growth_v54_s(r).lower() for r in risks):
+            if 'accepted' in legacy or 'accepted' in st: generic_accepted+=1
+            failure_memory.append('generic_mediator_accepted_or_detected')
+        if not con.get('information_flow_edges_Im'): failure_memory.append('missing_information_flow_identifiability')
+        if not (con.get('time_evolution_axis') and any(_growth_v54_safe_dict(con.get('time_evolution_axis')).values())): failure_memory.append('time_axis_present_but_not_used_for_falsification')
+        rows.append({'candidate_id': con.get('candidate_id') or c.get('candidate_id') or c.get('id'), 'accepted_status_v54': st, 'risk_count': len(risks)})
+    failure_memory=list(dict.fromkeys([x for x in failure_memory if x]))[:24]
+    return {
+        'patch_id': GROWTH_V54_UNIVERSAL_OPERATOR_SEMANTICS_TIME_AXIS_PATCH_ID,
+        'candidate_count': n,
+        'candidate_contract_coverage': contract_count/max(1,n),
+        'operator_semantics_contract_coverage': op_count/max(1,n),
+        'information_flow_edge_coverage': im_count/max(1,n),
+        'time_evolution_axis_coverage': time_count/max(1,n),
+        'accepted_without_contract_count': accepted_without,
+        'generic_mediator_accepted_count': generic_accepted,
+        'failure_memory': failure_memory,
+        'candidate_rows': rows[:50],
+        'no_regeneration_in_v54': True,
+        'no_demo_specific_parameter_extraction': True,
+    }
+
+def growth_v54_diagnose_operator_semantics_distribution(result):
+    cands=_growth_v54_collect_candidates(result); counts={}; weak={}
+    for c in cands:
+        con=_growth_v54_contract(c)
+        for oc in _growth_v54_safe_list(con.get('operator_semantics_contracts')):
+            if not isinstance(oc,dict): continue
+            op=_growth_v54_s(oc.get('operator_name') or 'unknown',120)
+            counts[op]=counts.get(op,0)+1
+            for w in _growth_v54_safe_list(oc.get('weak_failure_modes')):
+                ws=_growth_v54_s(w,160); weak[ws]=weak.get(ws,0)+1
+    return {'patch_id': GROWTH_V54_UNIVERSAL_OPERATOR_SEMANTICS_TIME_AXIS_PATCH_ID, 'operator_counts': counts, 'weak_failure_mode_counts': weak, 'no_regeneration_in_v54': True}
+
+def growth_v54_diagnose_time_axis_coverage(result):
+    cands=_growth_v54_collect_candidates(result); counts={}
+    for c in cands:
+        axis=_growth_v54_safe_dict(_growth_v54_contract(c).get('time_evolution_axis'))
+        for k,v in axis.items():
+            if v: counts[k]=counts.get(k,0)+1
+    return {'patch_id': GROWTH_V54_UNIVERSAL_OPERATOR_SEMANTICS_TIME_AXIS_PATCH_ID, 'time_axis_counts': counts, 'candidate_count': len(cands)}
+
+def growth_v54_diagnose_design_axis_collapse(result):
+    cands=_growth_v54_collect_candidates(result)
+    sigs=[]
+    for c in cands:
+        sig=_growth_v54_s(_growth_v54_contract(c).get('design_axis_signature') or c.get('design_axis_signature_v54'),240)
+        if sig: sigs.append(sig)
+    unique=len(set(sigs)); total=len(sigs)
+    return {'patch_id': GROWTH_V54_UNIVERSAL_OPERATOR_SEMANTICS_TIME_AXIS_PATCH_ID, 'design_axis_unique_count': unique, 'design_axis_total_count': total, 'duplicate_design_axis_count': max(0,total-unique), 'design_axis_distinctness_score': unique/max(1,total)}
+
+def growth_v54_recommend_next_search_design_without_regeneration(summary):
+    s=_growth_v54_safe_dict(summary); rec=[]
+    if s.get('candidate_contract_coverage',0)<0.9: rec.append('increase_candidate_causal_contract_coverage_before_self_growth')
+    if s.get('operator_semantics_contract_coverage',0)<0.9: rec.append('strengthen_operator_semantics_contract_at_dispatch_or_postprocess')
+    if s.get('information_flow_edge_coverage',0)<0.6: rec.append('add_observation_to_latent_information_flow_mapping')
+    if s.get('time_evolution_axis_coverage',0)<0.6: rec.append('use_universal_time_evolution_axis_for_identifiability_or_falsification')
+    if s.get('generic_mediator_accepted_count',0)>0: rec.append('demote_generic_mediator_only_candidates')
+    if not rec: rec.append('ready_for_future_v55_search_design_adaptation_not_candidate_repair')
+    return {'patch_id': GROWTH_V54_UNIVERSAL_OPERATOR_SEMANTICS_TIME_AXIS_PATCH_ID, 'recommendations': rec, 'no_regeneration_in_v54': True}
+
+def growth_v54_diagnose_result(result):
+    base=growth_v54_diagnose_universal_contracts(result)
+    base['operator_semantics_distribution']=growth_v54_diagnose_operator_semantics_distribution(result)
+    base['time_axis_distribution']=growth_v54_diagnose_time_axis_coverage(result)
+    base['design_axis_collapse']=growth_v54_diagnose_design_axis_collapse(result)
+    base['next_search_design_recommendation']=growth_v54_recommend_next_search_design_without_regeneration(base)
+    return base
+
+try:
+    _GROWTH_V54_PREV_EVALUATE_INVENTION_RESULT = evaluate_invention_result
+except Exception:
+    _GROWTH_V54_PREV_EVALUATE_INVENTION_RESULT = None
+
+def evaluate_invention_result(result, *args, **kwargs):
+    if callable(_GROWTH_V54_PREV_EVALUATE_INVENTION_RESULT):
+        out = _GROWTH_V54_PREV_EVALUATE_INVENTION_RESULT(result, *args, **kwargs)
+    else:
+        out = result if isinstance(result, dict) else {'result': result}
+    try:
+        target = out if isinstance(out, dict) else {'value': out}
+        target['growth_v54_universal_contract_diagnosis'] = growth_v54_diagnose_result(result if isinstance(result, dict) else target)
+        return target
+    except Exception:
+        return out
+
+# ============================================================================
+# END ADD-ONLY PATCH: GROWTH-V54-UNIVERSAL-OPERATOR-SEMANTICS-TIME-AXIS-20260510
+# ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY PATCH: GROWTH-V56-SHADOW-SELF-GROWTH-LOG-CONNECTOR-20260511
+# Purpose:
+# - Provide a growth_engine-based shadow self-growth loop for Leap test logs.
+# - No autonomous code modification; only failure classification and next
+#   hypothesis proposal are returned in JSON-compatible form.
+# - Connection confirmation is exposed when called from leap_engine V56.
+# - Universal / demo-independent: no benchmark/task/domain word hardcoding.
+# - Existing code is preserved; this patch is append-only.
+# ============================================================================
+
+GROWTH_V56_SHADOW_SELF_GROWTH_LOG_CONNECTOR_PATCH_ID = "GROWTH-V56-SHADOW-SELF-GROWTH-LOG-CONNECTOR-20260511"
+GROWTH_V56_SHADOW_SCHEMA = "growth_engine_shadow_self_growth_feedback_v56"
+
+
+def _growth_v56_s(x, limit=4000):
+    try:
+        s = "" if x is None else str(x)
+    except Exception:
+        s = ""
+    return " ".join(s.split())[: int(limit)]
+
+
+def _growth_v56_dict(x):
+    return x if isinstance(x, dict) else {}
+
+
+def _growth_v56_list(x):
+    if isinstance(x, list):
+        return x
+    if isinstance(x, (tuple, set)):
+        return list(x)
+    return [] if x is None else [x]
+
+
+def _growth_v56_get_summary(result):
+    r = _growth_v56_dict(result)
+    sm = _growth_v56_dict(r.get("s_matrix_usr_verification_summary"))
+    return {
+        "v55": {
+            "near_duplicate_pair_count": sm.get("v55_near_duplicate_pair_count"),
+            "mean_semantic_jaccard_distance": sm.get("v55_mean_semantic_jaccard_distance"),
+            "generated_artifact_dependency_candidate_count": sm.get("v55_generated_artifact_dependency_candidate_count"),
+            "quality_diversity_discrimination_sufficient": sm.get("v55_quality_diversity_discrimination_sufficient"),
+            "compute_load_assessment": sm.get("v55_compute_load_assessment"),
+            "ops_per_candidate": sm.get("v55_ops_per_candidate"),
+        },
+        "v56": _growth_v56_dict(r.get("growth_source_quota_summary_v56")),
+        "connection": _growth_v56_dict(r.get("growth_engine_connection_check_v56")),
+    }
+
+
+def _growth_v56_failure_classes(result=None, step1_summary=None):
+    r = _growth_v56_dict(result)
+    sm = _growth_v56_dict(r.get("s_matrix_usr_verification_summary"))
+    step = _growth_v56_dict(step1_summary) or _growth_v56_dict(r.get("growth_source_quota_summary_v56"))
+    classes = []
+
+    artifact_count = step.get("artifact_dependency_candidate_count")
+    if artifact_count is None:
+        artifact_count = sm.get("v55_generated_artifact_dependency_candidate_count")
+    try:
+        if int(artifact_count or 0) > 0:
+            classes.append({
+                "class_id": "generated_topology_artifact_primary_source",
+                "severity": "high",
+                "evidence_key": "artifact_dependency_candidate_count",
+                "evidence_value": artifact_count,
+                "hypothesis": "growth generation is still using generated topology artifacts as primary source instead of base/root causal structure",
+                "next_action": "exclude E_TS/N_TS-derived artifacts before candidate construction and keep them only as provenance metadata",
+            })
+    except Exception:
+        pass
+
+    quota = _growth_v56_dict(step.get("root_variant_distribution"))
+    crowded = {k: v for k, v in quota.items() if isinstance(v, int) and v > 1}
+    if crowded:
+        classes.append({
+            "class_id": "root_edge_variant_collapse",
+            "severity": "high",
+            "evidence_key": "root_variant_distribution",
+            "evidence_value": crowded,
+            "hypothesis": "candidate selection collapses to repeated root-edge and topology-variant combinations",
+            "next_action": "enforce one compact representative per root-edge plus variant key before final candidate truncation",
+        })
+
+    near = sm.get("v55_near_duplicate_pair_count")
+    try:
+        if int(near or 0) > 0:
+            classes.append({
+                "class_id": "near_duplicate_candidates_remaining",
+                "severity": "medium",
+                "evidence_key": "v55_near_duplicate_pair_count",
+                "evidence_value": near,
+                "hypothesis": "structural diversity improved only after evaluation, not at generation time",
+                "next_action": "move semantic-structural distance filtering into the pre-compact selection stage",
+            })
+    except Exception:
+        pass
+
+    if sm.get("v55_quality_diversity_discrimination_sufficient") is False:
+        classes.append({
+            "class_id": "compute_load_too_light_for_quality_diversity",
+            "severity": "medium",
+            "evidence_key": "v55_quality_diversity_discrimination_sufficient",
+            "evidence_value": False,
+            "hypothesis": "one-turn workload is sufficient for route smoke test but not enough for quality/diversity discrimination",
+            "next_action": "increase pairwise candidate comparison density and optionally compact candidate count in quality mode",
+        })
+
+    self_loop_count = step.get("unjustified_self_loop_candidate_count")
+    try:
+        if int(self_loop_count or 0) > 0:
+            classes.append({
+                "class_id": "unjustified_self_loop",
+                "severity": "medium",
+                "evidence_key": "unjustified_self_loop_candidate_count",
+                "evidence_value": self_loop_count,
+                "hypothesis": "a self-loop was introduced without explicit delay, recurrence, accumulation, or memory justification",
+                "next_action": "penalize self-loops unless relation/mechanism explicitly encodes temporal recurrence or state accumulation",
+            })
+    except Exception:
+        pass
+
+    if not classes:
+        classes.append({
+            "class_id": "no_failure_class_detected_in_shadow_mode",
+            "severity": "info",
+            "evidence_key": "available_summary",
+            "evidence_value": True,
+            "hypothesis": "no predefined shadow failure condition was triggered",
+            "next_action": "continue logging richer candidate-level diagnostics",
+        })
+    return classes
+
+
+def run_shadow_growth_loop_v56(result=None, step1_summary=None, source="unknown"):
+    result = _growth_v56_dict(result)
+    step1_summary = _growth_v56_dict(step1_summary)
+    failure_classes = _growth_v56_failure_classes(result=result, step1_summary=step1_summary)
+    return {
+        "schema": GROWTH_V56_SHADOW_SCHEMA,
+        "patch_id": GROWTH_V56_SHADOW_SELF_GROWTH_LOG_CONNECTOR_PATCH_ID,
+        "source": source,
+        "connection_confirmed": True,
+        "autonomous_code_modification_enabled": False,
+        "mode": "shadow_metacognition_log_feedback_only",
+        "failure_class_count": len(failure_classes),
+        "failure_classes": failure_classes,
+        "summary_snapshot": _growth_v56_get_summary(result),
+        "next_patch_recommendation": {
+            "recommended_target": "leap_engine.py",
+            "recommended_scope": "pre_compact_candidate_source_filter_and_diversity_quota",
+            "requires_human_review_before_code_change": True,
+        },
+        "no_demo_specific_parameter_extraction": True,
+    }
+
+
+def growth_engine_connection_probe_v56():
+    return {
+        "schema": GROWTH_V56_SHADOW_SCHEMA,
+        "patch_id": GROWTH_V56_SHADOW_SELF_GROWTH_LOG_CONNECTOR_PATCH_ID,
+        "run_shadow_growth_loop_v56_available": callable(globals().get("run_shadow_growth_loop_v56")),
+        "connection_confirmed": True,
+    }
+
+# ============================================================================
+# END ADD-ONLY PATCH: GROWTH-V56-SHADOW-SELF-GROWTH-LOG-CONNECTOR-20260511
+# ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY PATCH: GROWTH-V57-SHADOW-PRESELECTION-FEEDBACK-20260511
+# Purpose:
+# - Extend growth_engine shadow loop to read V57 preselection summaries.
+# - Return failure classes that distinguish diagnostic success from generation
+#   improvement failure.
+# - No autonomous code modification; feedback only.
+# - Existing code is preserved; this patch is append-only.
+# ============================================================================
+
+GROWTH_V57_SHADOW_PRESELECTION_FEEDBACK_PATCH_ID = "GROWTH-V57-SHADOW-PRESELECTION-FEEDBACK-20260511"
+GROWTH_V57_SHADOW_SCHEMA = "growth_engine_shadow_preselection_feedback_v57"
+
+try:
+    _GROWTH_V57_PREV_SHADOW = run_shadow_growth_loop_v56
+except Exception:
+    _GROWTH_V57_PREV_SHADOW = None
+
+
+def _growth_v57_dict(x):
+    return x if isinstance(x, dict) else {}
+
+
+def _growth_v57_failure_classes(result=None, step1_summary=None):
+    r=_growth_v57_dict(result); s=_growth_v57_dict(step1_summary) or _growth_v57_dict(r.get('candidate_preselection_summary_v57'))
+    sm=_growth_v57_dict(r.get('s_matrix_usr_verification_summary'))
+    classes=[]
+    before=s.get('artifact_dependency_candidate_count_before', sm.get('v57_artifact_dependency_candidate_count_before'))
+    after=s.get('artifact_dependency_candidate_count_after', sm.get('v57_artifact_dependency_candidate_count_after'))
+    try:
+        if int(before or 0)>0 and int(after or 0)==0:
+            classes.append({'class_id':'artifact_dependency_removed_from_primary_compact','severity':'positive','evidence_key':'artifact_before_after','evidence_value':{'before':before,'after':after},'hypothesis':'preselection gate removed artifact-dependent candidates from the primary compact set','next_action':'move the same constraint upstream into candidate construction, not only export selection'})
+        elif int(before or 0)>0:
+            classes.append({'class_id':'artifact_dependency_still_in_primary_compact','severity':'high','evidence_key':'artifact_before_after','evidence_value':{'before':before,'after':after},'hypothesis':'artifact-dependent candidates still survive primary compact selection','next_action':'apply artifact exclusion before growth candidate creation and edge expansion'})
+    except Exception:
+        pass
+    cb=s.get('candidate_count_before_preselection'); ca=s.get('candidate_count_after_preselection')
+    try:
+        if int(ca or 0) < min(3, int(cb or 0)):
+            classes.append({'class_id':'candidate_pool_collapses_after_quality_gate','severity':'medium','evidence_key':'candidate_count_before_after','evidence_value':{'before':cb,'after':ca},'hypothesis':'the clean candidate pool is too small after artifact/self-loop/quota gating','next_action':'generate more root-edge and variant-diverse candidates upstream before compact selection'})
+    except Exception:
+        pass
+    if sm.get('v55_quality_diversity_discrimination_sufficient') is False:
+        classes.append({'class_id':'compute_load_still_too_light_for_quality_diversity','severity':'medium','evidence_key':'v55_quality_diversity_discrimination_sufficient','evidence_value':False,'hypothesis':'quality/diversity discrimination still lacks pairwise comparison density','next_action':'increase candidate pairwise comparison density in quality mode'})
+    return classes
+
+
+def run_shadow_growth_loop_v57(result=None, step1_summary=None, source='unknown'):
+    base={}
+    if callable(_GROWTH_V57_PREV_SHADOW):
+        try:
+            base=_GROWTH_V57_PREV_SHADOW(result=result, step1_summary=step1_summary, source=source)
+        except TypeError:
+            base=_GROWTH_V57_PREV_SHADOW(result=result, step1_summary=step1_summary)
+        except Exception as e:
+            base={'previous_shadow_exception':repr(e)}
+    classes=_growth_v57_failure_classes(result=result, step1_summary=step1_summary)
+    return {
+        'schema': GROWTH_V57_SHADOW_SCHEMA,
+        'patch_id': GROWTH_V57_SHADOW_PRESELECTION_FEEDBACK_PATCH_ID,
+        'source': source,
+        'connection_confirmed': True,
+        'autonomous_code_modification_enabled': False,
+        'mode': 'shadow_metacognition_preselection_feedback_only',
+        'failure_class_count': len(classes),
+        'failure_classes': classes,
+        'previous_shadow_v56': base,
+        'next_patch_recommendation': {
+            'recommended_target': 'leap_engine.py',
+            'recommended_scope': 'upstream_candidate_construction_diversity_not_just_compact_export',
+            'requires_human_review_before_code_change': True,
+        },
+        'no_demo_specific_parameter_extraction': True,
+    }
+
+
+def growth_engine_connection_probe_v57():
+    return {'schema':GROWTH_V57_SHADOW_SCHEMA,'patch_id':GROWTH_V57_SHADOW_PRESELECTION_FEEDBACK_PATCH_ID,'run_shadow_growth_loop_v57_available':callable(globals().get('run_shadow_growth_loop_v57')),'connection_confirmed':True}
+
+# ============================================================================
+# END ADD-ONLY PATCH: GROWTH-V57-SHADOW-PRESELECTION-FEEDBACK-20260511
+# ============================================================================
+
+
+
+# ============================================================================
+# ADD-ONLY PATCH: GROWTH-V58-DIAGNOSTIC-METACOGNITION-LEAP-V58-FEEDBACK
+# generated_at_jst: 2026-05-12
+# policy:
+# - ADD-ONLY: no existing code is deleted or modified above this block.
+# - Universal: no benchmark name, task name, or domain-specific target hardcoding.
+# - Growth Engine role for invention tests:
+#   * Do NOT repair or regenerate candidates by default.
+#   * Read Leap/CausalOS diagnostics, especially V58 generation quota metrics.
+#   * Produce compact metacognitive feedback, failure memory, next-generation
+#     quota recommendations, operator-weight hints, S-matrix/mask/USR follow-up.
+#   * Expose loop-count configuration support for app.py without requiring UI
+#     changes in this file.
+# ============================================================================
+
+GROWTH_V58_DIAGNOSTIC_METACOGNITION_PATCH_ID = 'GROWTH-V58-DIAGNOSTIC-METACOGNITION-LEAP-V58-FEEDBACK-20260512'
+GROWTH_V58_SHADOW_SCHEMA = 'growth_engine_diagnostic_metacognition_leap_v58_feedback'
+
+try:
+    _GROWTH_V58_PREV_EVALUATE_INVENTION_RESULT = evaluate_invention_result
+except Exception:
+    _GROWTH_V58_PREV_EVALUATE_INVENTION_RESULT = None
+try:
+    _GROWTH_V58_PREV_SHADOW_LOOP = run_shadow_growth_loop_v57
+except Exception:
+    try:
+        _GROWTH_V58_PREV_SHADOW_LOOP = run_shadow_growth_loop_v56
+    except Exception:
+        _GROWTH_V58_PREV_SHADOW_LOOP = None
+
+
+def _growth_v58_dict(x):
+    return x if isinstance(x, dict) else {}
+
+
+def _growth_v58_list(x):
+    if isinstance(x, list):
+        return x
+    if isinstance(x, tuple):
+        return list(x)
+    return []
+
+
+def _growth_v58_text(x, limit=2000):
+    try:
+        s = '' if x is None else str(x)
+    except Exception:
+        s = repr(x)
+    return ' '.join(s.split())[:max(0, int(limit))]
+
+
+def _growth_v58_float(x, default=0.0):
+    try:
+        return float(x)
+    except Exception:
+        return float(default)
+
+
+def _growth_v58_int(x, default=0):
+    try:
+        return int(x)
+    except Exception:
+        return int(default)
+
+
+def _growth_v58_hash_obj(obj, n=12):
+    try:
+        import json as _json, hashlib as _hashlib
+        raw = _json.dumps(obj, ensure_ascii=False, sort_keys=True, default=str)
+        return _hashlib.sha256(raw.encode('utf-8')).hexdigest()[:int(n)]
+    except Exception:
+        return 'hash_unavailable'
+
+
+def growth_v58_default_loop_config(config=None):
+    """Return normalized self-growth loop configuration.
+
+    This config is intentionally diagnostic by default. Candidate regeneration is
+    a separate, explicit switch because invention-test improvement should first
+    come from candidate construction, causal verification, and scoring.
+    """
+    c = _growth_v58_dict(config)
+    enabled = bool(c.get('enabled', c.get('growth_loop_enabled', True)))
+    loops = _growth_v58_int(c.get('max_growth_loops', c.get('growth_loop_count', 1)), 1)
+    loops = max(0, min(10, loops))
+    mode = _growth_v58_text(c.get('mode') or c.get('growth_loop_mode') or 'diagnostic_only', 80)
+    allowed_modes = {'diagnostic_only', 'adjust_generation_policy', 'full_reflection'}
+    if mode not in allowed_modes:
+        mode = 'diagnostic_only'
+    return {
+        'patch_id': GROWTH_V58_DIAGNOSTIC_METACOGNITION_PATCH_ID,
+        'enabled': enabled,
+        'max_growth_loops': loops,
+        'mode': mode,
+        'allow_candidate_regeneration': bool(c.get('allow_candidate_regeneration', False)),
+        'candidate_regeneration_default': False,
+        'allowed_modes': sorted(allowed_modes),
+        'policy': 'diagnostic_feedback_only_by_default; do not regenerate invention candidates unless explicitly enabled',
+    }
+
+
+def _growth_v58_extract_review_metrics(result=None, step1_summary=None):
+    r = _growth_v58_dict(result)
+    s = _growth_v58_dict(step1_summary)
+    # Prefer compact review metrics emitted by leap_engine V58.
+    rm = _growth_v58_dict(r.get('review_metrics_v58'))
+    if not rm:
+        rm = _growth_v58_dict(s.get('review_metrics_v58'))
+    v58s = _growth_v58_dict(r.get('v58_generation_quota_summary')) or _growth_v58_dict(s.get('v58_generation_quota_summary'))
+    sm = _growth_v58_dict(r.get('s_matrix_usr_verification_summary'))
+    if not rm:
+        sd = _growth_v58_dict(v58s.get('score_distribution_v58'))
+        rm = {
+            'raw_candidate_count': v58s.get('candidate_count_before_v58_selection', sm.get('v58_candidate_count_before_selection')),
+            'compact_candidate_count': v58s.get('candidate_count_after_v58_selection', sm.get('v58_candidate_count_after_selection')),
+            'root_edge_coverage_count': v58s.get('root_edge_coverage_count_v58', sm.get('v58_root_edge_coverage_count')),
+            'topology_variant_coverage_count': v58s.get('topology_variant_coverage_count_v58', sm.get('v58_topology_variant_coverage_count')),
+            'primary_causal_edge_candidate_count': v58s.get('primary_causal_edge_candidate_count_v58', sm.get('v58_primary_causal_edge_candidate_count')),
+            'artifact_dependency_candidate_count': v58s.get('artifact_dependency_candidate_count_v58'),
+            'score_saturation_detected': sd.get('score_saturation_detected', sm.get('v58_score_saturation_detected')),
+            'score_std': sd.get('std', sm.get('v58_score_std')),
+            's_matrix_mean_abs_imag_weight': v58s.get('s_matrix_mean_abs_imag_weight_v58', sm.get('v58_s_matrix_mean_abs_imag_weight')),
+            'mask_violation_count': v58s.get('mask_violation_count_v58'),
+            'usr_equation_candidate_count': v58s.get('usr_equation_candidate_count_v58'),
+        }
+    # Normalize missing numerics conservatively.
+    return {
+        'raw_candidate_count': _growth_v58_int(rm.get('raw_candidate_count'), 0),
+        'compact_candidate_count': _growth_v58_int(rm.get('compact_candidate_count'), 0),
+        'root_edge_coverage_count': _growth_v58_int(rm.get('root_edge_coverage_count'), 0),
+        'topology_variant_coverage_count': _growth_v58_int(rm.get('topology_variant_coverage_count'), 0),
+        'primary_causal_edge_candidate_count': _growth_v58_int(rm.get('primary_causal_edge_candidate_count'), 0),
+        'artifact_dependency_candidate_count': _growth_v58_int(rm.get('artifact_dependency_candidate_count'), 0),
+        'score_saturation_detected': bool(rm.get('score_saturation_detected', False)),
+        'score_std': _growth_v58_float(rm.get('score_std'), 0.0),
+        's_matrix_mean_abs_imag_weight': _growth_v58_float(rm.get('s_matrix_mean_abs_imag_weight'), 0.0),
+        's_matrix_prior_conflict_count': rm.get('s_matrix_prior_conflict_count'),
+        'mask_violation_count': _growth_v58_int(rm.get('mask_violation_count'), 0),
+        'usr_equation_candidate_count': _growth_v58_int(rm.get('usr_equation_candidate_count'), 0),
+        'growth_loop_connection_ok': bool(rm.get('growth_loop_connection_ok', True)),
+        'source_patch_id': _growth_v58_text(rm.get('patch_id') or _growth_v58_dict(r.get('v58_generation_quota_summary')).get('patch_id'), 160),
+    }
+
+
+def _growth_v58_failure_classes_from_metrics(metrics):
+    m = _growth_v58_dict(metrics)
+    raw = _growth_v58_int(m.get('raw_candidate_count'), 0)
+    compact = _growth_v58_int(m.get('compact_candidate_count'), 0)
+    root_cov = _growth_v58_int(m.get('root_edge_coverage_count'), 0)
+    variant_cov = _growth_v58_int(m.get('topology_variant_coverage_count'), 0)
+    primary = _growth_v58_int(m.get('primary_causal_edge_candidate_count'), 0)
+    artifact = _growth_v58_int(m.get('artifact_dependency_candidate_count'), 0)
+    score_std = _growth_v58_float(m.get('score_std'), 0.0)
+    imag = _growth_v58_float(m.get('s_matrix_mean_abs_imag_weight'), 0.0)
+    usr = _growth_v58_int(m.get('usr_equation_candidate_count'), 0)
+    mask_viol = _growth_v58_int(m.get('mask_violation_count'), 0)
+    classes = []
+    if raw <= 0:
+        classes.append({'class_id': 'candidate_pool_missing', 'severity': 'critical', 'evidence': {'raw_candidate_count': raw}, 'hypothesis': 'Leap result did not expose a candidate pool for growth feedback.'})
+    if raw > 0 and compact < min(raw, 4):
+        classes.append({'class_id': 'compact_candidate_count_too_low', 'severity': 'high', 'evidence': {'raw': raw, 'compact': compact}, 'hypothesis': 'Primary compact output may still be too narrow for quality/diversity discrimination.'})
+    if raw > 0 and root_cov < min(3, raw):
+        classes.append({'class_id': 'root_edge_coverage_insufficient', 'severity': 'high', 'evidence': {'root_edge_coverage_count': root_cov, 'raw_candidate_count': raw}, 'hypothesis': 'Generation/construction is not spreading candidates over enough root causal edges.'})
+    if raw > 0 and variant_cov < min(3, raw):
+        classes.append({'class_id': 'topology_variant_coverage_insufficient', 'severity': 'high', 'evidence': {'topology_variant_coverage_count': variant_cov, 'raw_candidate_count': raw}, 'hypothesis': 'Topology shift variants are still collapsed or underrepresented.'})
+    if raw > 0 and primary < max(1, int(0.6 * raw)):
+        classes.append({'class_id': 'primary_causal_edge_insufficient', 'severity': 'high', 'evidence': {'primary_causal_edge_candidate_count': primary, 'raw_candidate_count': raw}, 'hypothesis': 'Candidates may still rely on derived topology artifacts rather than new primary causal relations.'})
+    if artifact > max(0, int(0.3 * max(1, raw))):
+        classes.append({'class_id': 'artifact_dependency_still_high', 'severity': 'medium', 'evidence': {'artifact_dependency_candidate_count': artifact, 'raw_candidate_count': raw}, 'hypothesis': 'Generated topology artifacts still dominate part of the candidate pool.'})
+    if bool(m.get('score_saturation_detected')) or score_std < 0.015:
+        classes.append({'class_id': 'score_discrimination_insufficient', 'severity': 'high', 'evidence': {'score_std': score_std, 'score_saturation_detected': bool(m.get('score_saturation_detected'))}, 'hypothesis': 'Scoring may still be coverage-saturated or unable to rank candidates by substantive quality.'})
+    if imag <= 1e-9:
+        classes.append({'class_id': 's_matrix_imaginary_component_unused', 'severity': 'medium', 'evidence': {'s_matrix_mean_abs_imag_weight': imag}, 'hypothesis': 'Complex S-matrix imaginary part is not yet carrying information-flow or delay semantics.'})
+    if usr <= 0:
+        classes.append({'class_id': 'usr_compressibility_missing', 'severity': 'medium', 'evidence': {'usr_equation_candidate_count': usr}, 'hypothesis': 'Candidate graphs are not yet producing USR equation/compression candidates.'})
+    if mask_viol > 0:
+        classes.append({'class_id': 'causal_mask_violation_detected', 'severity': 'high', 'evidence': {'mask_violation_count': mask_viol}, 'hypothesis': 'Some proposed causal operations violate declared intervene/observe/block mask constraints.'})
+    if not classes:
+        classes.append({'class_id': 'v58_candidate_construction_feedback_positive', 'severity': 'positive', 'evidence': dict(m), 'hypothesis': 'Current candidate construction diagnostics meet minimal Test2-before-Test3 readiness signals.'})
+    return classes
+
+
+def _growth_v58_recommended_quota_update(metrics, failure_classes):
+    m = _growth_v58_dict(metrics)
+    fids = {str(x.get('class_id')) for x in _growth_v58_list(failure_classes) if isinstance(x, dict)}
+    raw = max(1, _growth_v58_int(m.get('raw_candidate_count'), 0))
+    rec = {
+        'patch_id': GROWTH_V58_DIAGNOSTIC_METACOGNITION_PATCH_ID,
+        'quota_update_required': False,
+        'generation_time_quota_preferred': True,
+        'candidate_regeneration_required_now': False,
+        'root_edge_min_coverage': min(max(3, _growth_v58_int(m.get('root_edge_coverage_count'), 0)), max(3, raw)),
+        'topology_variant_min_coverage': min(max(3, _growth_v58_int(m.get('topology_variant_coverage_count'), 0)), max(3, raw)),
+        'primary_causal_edge_min_ratio': 0.60,
+        'artifact_dependency_max_ratio': 0.30,
+        'score_std_min': 0.015,
+        'mean_abs_imag_weight_min': 1e-6,
+        'usr_equation_candidate_min': max(1, int(0.5 * raw)),
+        'notes': [],
+    }
+    if 'root_edge_coverage_insufficient' in fids:
+        rec['quota_update_required'] = True
+        rec['notes'].append('increase or enforce root-edge quota during candidate construction')
+    if 'topology_variant_coverage_insufficient' in fids:
+        rec['quota_update_required'] = True
+        rec['notes'].append('force topology-shift variant diversity before compact selection')
+    if 'primary_causal_edge_insufficient' in fids:
+        rec['quota_update_required'] = True
+        rec['notes'].append('require artifact-free primary source-to-target causal edge per candidate')
+    if 'score_discrimination_insufficient' in fids:
+        rec['quota_update_required'] = True
+        rec['notes'].append('decrease coverage-only score contribution and increase diversity/primary-causal-edge contribution')
+    if not rec['notes']:
+        rec['notes'].append('keep V58 quota policy and proceed to causal_engine S-matrix verifier integration')
+    return rec
+
+
+def _growth_v58_operator_weight_update(metrics, failure_classes):
+    fids = {str(x.get('class_id')) for x in _growth_v58_list(failure_classes) if isinstance(x, dict)}
+    weights = {
+        'topology_shift': 1.0,
+        'decomposition': 1.0,
+        'substitution': 1.0,
+        'scale_transfer': 1.0,
+        'observation_shift': 1.0,
+        'mediator_insertion': 1.0,
+        'combination': 1.0,
+        'inversion': 1.0,
+        'constraint_relaxation': 1.0,
+    }
+    if 'topology_variant_coverage_insufficient' in fids:
+        weights['topology_shift'] += 0.35
+        weights['inversion'] += 0.20
+        weights['observation_shift'] += 0.15
+    if 'primary_causal_edge_insufficient' in fids:
+        weights['substitution'] += 0.20
+        weights['combination'] += 0.20
+        weights['inversion'] += 0.20
+    if 'artifact_dependency_still_high' in fids:
+        weights['mediator_insertion'] = max(0.65, weights['mediator_insertion'] - 0.25)
+        weights['topology_shift'] += 0.20
+    if 's_matrix_imaginary_component_unused' in fids:
+        weights['scale_transfer'] += 0.15
+        weights['observation_shift'] += 0.15
+    return {
+        'patch_id': GROWTH_V58_DIAGNOSTIC_METACOGNITION_PATCH_ID,
+        'operator_weight_update_recommended': True,
+        'weights': weights,
+        'policy': 'weights are generic operator-level hints; no benchmark-specific vocabulary is used',
+    }
+
+
+def _growth_v58_smatrix_mask_usr_followup(metrics, failure_classes):
+    fids = {str(x.get('class_id')) for x in _growth_v58_list(failure_classes) if isinstance(x, dict)}
+    actions = []
+    if 's_matrix_imaginary_component_unused' in fids:
+        actions.append('connect complex S-matrix imaginary component to information-flow/delay verifier in causal_engine')
+    if 'causal_mask_violation_detected' in fids:
+        actions.append('apply causal mask gate before candidate acceptance and expose blocked/observe-only/intervene-allowed counts')
+    if 'usr_compressibility_missing' in fids:
+        actions.append('build USR equation candidates from candidate graph edges and score compressibility')
+    if not actions:
+        actions.append('preserve V58 S-matrix/mask/USR preparation and proceed to causal_engine verifier implementation')
+    return {
+        'patch_id': GROWTH_V58_DIAGNOSTIC_METACOGNITION_PATCH_ID,
+        'recommended_actions': actions,
+        'prior_consistency_check_required': True,
+        'logic_consistency_check_required': True,
+        'usr_is_tool_not_core_policy': True,
+        'causalos_is_core_policy': True,
+    }
+
+
+def growth_v58_build_metacognitive_feedback(result=None, step1_summary=None, loop_config=None, source='unknown'):
+    cfg = growth_v58_default_loop_config(loop_config)
+    metrics = _growth_v58_extract_review_metrics(result=result, step1_summary=step1_summary)
+    classes = _growth_v58_failure_classes_from_metrics(metrics)
+    quota_update = _growth_v58_recommended_quota_update(metrics, classes)
+    operator_update = _growth_v58_operator_weight_update(metrics, classes)
+    smatrix_followup = _growth_v58_smatrix_mask_usr_followup(metrics, classes)
+    severe = [c for c in classes if isinstance(c, dict) and c.get('severity') in {'critical', 'high'}]
+    ready_for_test3 = bool(
+        not severe
+        and metrics.get('raw_candidate_count', 0) > 0
+        and metrics.get('compact_candidate_count', 0) >= min(6, max(1, metrics.get('raw_candidate_count', 0)))
+        and metrics.get('root_edge_coverage_count', 0) >= 3
+        and metrics.get('topology_variant_coverage_count', 0) >= 3
+        and metrics.get('score_std', 0.0) >= 0.015
+        and metrics.get('s_matrix_mean_abs_imag_weight', 0.0) > 0.0
+    )
+    next_action = 'proceed_to_causal_engine_smatrix_verifier_then_test2_rerun'
+    if not ready_for_test3:
+        next_action = 'rerun_test2_after_leap_v58_and_inspect_compact_review_metrics'
+    return {
+        'schema': GROWTH_V58_SHADOW_SCHEMA,
+        'patch_id': GROWTH_V58_DIAGNOSTIC_METACOGNITION_PATCH_ID,
+        'source': source,
+        'connection_confirmed': True,
+        'loop_config': cfg,
+        'loop_count_executed': cfg['max_growth_loops'] if cfg.get('enabled') else 0,
+        'mode': cfg['mode'],
+        'candidate_regeneration_used': False,
+        'candidate_regeneration_allowed': bool(cfg.get('allow_candidate_regeneration')),
+        'autonomous_code_modification_enabled': False,
+        'review_metrics_v58': metrics,
+        'failure_class_count': len(classes),
+        'failure_classes': classes,
+        'failure_memory_update': [
+            {
+                'memory_id': 'GROWTH-V58-' + _growth_v58_hash_obj(c, 8),
+                'class_id': c.get('class_id'),
+                'severity': c.get('severity'),
+                'evidence': c.get('evidence'),
+                'avoid_repetition_by': c.get('hypothesis'),
+            }
+            for c in classes if isinstance(c, dict) and c.get('severity') != 'positive'
+        ],
+        'recommended_next_generation_quota': quota_update,
+        'recommended_operator_weight_update': operator_update,
+        'recommended_smatrix_mask_usr_followup': smatrix_followup,
+        'metacognitive_log_compact_v58': {
+            'raw': metrics.get('raw_candidate_count'),
+            'compact': metrics.get('compact_candidate_count'),
+            'root_cov': metrics.get('root_edge_coverage_count'),
+            'variant_cov': metrics.get('topology_variant_coverage_count'),
+            'primary_edges': metrics.get('primary_causal_edge_candidate_count'),
+            'artifact_dep': metrics.get('artifact_dependency_candidate_count'),
+            'score_std': metrics.get('score_std'),
+            'imag_mean_abs': metrics.get('s_matrix_mean_abs_imag_weight'),
+            'usr_eq': metrics.get('usr_equation_candidate_count'),
+            'mask_viol': metrics.get('mask_violation_count'),
+            'next_action': next_action,
+        },
+        'ready_for_test3': ready_for_test3,
+        'recommended_next_action': next_action,
+        'no_benchmark_or_task_name_hardcoding': True,
+    }
+
+
+def run_shadow_growth_loop_v58(result=None, step1_summary=None, source='unknown', loop_config=None):
+    """Diagnostic-only growth loop for Leap V58 outputs.
+
+    This is the function app.py should call when the user enables growth-loop
+    logging for the invention test. It does not regenerate candidates unless a
+    future caller explicitly implements and opts into that path.
+    """
+    prev_payload = None
+    if callable(_GROWTH_V58_PREV_SHADOW_LOOP):
+        try:
+            prev_payload = _GROWTH_V58_PREV_SHADOW_LOOP(result=result, step1_summary=step1_summary, source=source)
+        except TypeError:
+            try:
+                prev_payload = _GROWTH_V58_PREV_SHADOW_LOOP(result, step1_summary, source)
+            except Exception as e:
+                prev_payload = {'previous_shadow_loop_error': repr(e)}
+        except Exception as e:
+            prev_payload = {'previous_shadow_loop_error': repr(e)}
+    feedback = growth_v58_build_metacognitive_feedback(result=result, step1_summary=step1_summary, loop_config=loop_config, source=source)
+    if isinstance(prev_payload, dict):
+        feedback['previous_shadow_loop_payload'] = prev_payload
+    return feedback
+
+
+def growth_engine_connection_probe_v58():
+    return {
+        'schema': GROWTH_V58_SHADOW_SCHEMA,
+        'patch_id': GROWTH_V58_DIAGNOSTIC_METACOGNITION_PATCH_ID,
+        'run_shadow_growth_loop_v58_available': callable(globals().get('run_shadow_growth_loop_v58')),
+        'growth_v58_build_metacognitive_feedback_available': callable(globals().get('growth_v58_build_metacognitive_feedback')),
+        'loop_config_supported': True,
+        'connection_confirmed': True,
+        'candidate_regeneration_default': False,
+    }
+
+
+def growth_v58_attach_feedback_to_result(result=None, loop_config=None, source='evaluate_invention_result'):
+    r = result if isinstance(result, dict) else {'result': result}
+    try:
+        feedback = run_shadow_growth_loop_v58(result=r, step1_summary=r.get('v58_generation_quota_summary') if isinstance(r, dict) else None, source=source, loop_config=loop_config)
+    except Exception as e:
+        feedback = {
+            'schema': GROWTH_V58_SHADOW_SCHEMA,
+            'patch_id': GROWTH_V58_DIAGNOSTIC_METACOGNITION_PATCH_ID,
+            'connection_confirmed': False,
+            'error': repr(e),
+        }
+    if isinstance(r, dict):
+        r['growth_engine_shadow_loop_v58'] = feedback
+        r.setdefault('review_metrics_v58', _growth_v58_extract_review_metrics(r))
+        sm = r.get('s_matrix_usr_verification_summary')
+        if isinstance(sm, dict):
+            sm['v58_growth_engine_connection_ok'] = bool(feedback.get('connection_confirmed'))
+            sm['v58_growth_loop_count_executed'] = _growth_v58_int(feedback.get('loop_count_executed'), 0)
+            sm['v58_growth_recommended_next_action'] = _growth_v58_text(feedback.get('recommended_next_action'), 400)
+    return r
+
+
+def evaluate_invention_result(result, *args, **kwargs):
+    if callable(_GROWTH_V58_PREV_EVALUATE_INVENTION_RESULT):
+        out = _GROWTH_V58_PREV_EVALUATE_INVENTION_RESULT(result, *args, **kwargs)
+    else:
+        out = result if isinstance(result, dict) else {'result': result}
+    try:
+        loop_config = kwargs.get('growth_loop_config') if isinstance(kwargs, dict) else None
+        return growth_v58_attach_feedback_to_result(out, loop_config=loop_config, source='evaluate_invention_result_v58')
+    except Exception as e:
+        if isinstance(out, dict):
+            out['growth_engine_shadow_loop_v58'] = {
+                'schema': GROWTH_V58_SHADOW_SCHEMA,
+                'patch_id': GROWTH_V58_DIAGNOSTIC_METACOGNITION_PATCH_ID,
+                'connection_confirmed': False,
+                'error': repr(e),
+            }
+        return out
+
+# ============================================================================
+# END ADD-ONLY PATCH: GROWTH-V58-DIAGNOSTIC-METACOGNITION-LEAP-V58-FEEDBACK
+# ============================================================================
+
+# ============================================================================
+# ADD-ONLY PATCH: GROWTH-V65-INVENTION-FEEDBACK-TO-REGENERATION
+# generated_at_jst: 20260516
+# source_file_before_bytes: 874479
+# source_file_before_sha256_8: f2cf84d8
+# purpose:
+# - Add Stage 2 growth feedback for invention-test closed loop.
+# - Convert candidate scoring / causal summaries / compact previous logs into
+#   next-generation directives for leap_engine.py V65.
+# - Return operator weight updates, failure classes, regeneration requirement,
+#   and compact-log-ready summaries.
+# policy:
+# - ADD-ONLY: no existing code is deleted or overwritten.
+# - No benchmark/task-name hardcoding. All decisions derive from candidate fields,
+#   scoring metrics, causal verification summaries, and previous compact logs.
+# - LLM is not the core; this module produces structured growth/meta-cognitive
+#   feedback for CausalOS/Leap closed-loop regeneration.
+# ============================================================================
+
+GROWTH_V65_INVENTION_FEEDBACK_PATCH_ID = 'GROWTH-V65-INVENTION-FEEDBACK-TO-REGENERATION-20260516'
+
+try:
+    import copy as _gv65_copy
+    import hashlib as _gv65_hashlib
+    import json as _gv65_json
+    import math as _gv65_math
+    import re as _gv65_re
+    import time as _gv65_time
+except Exception:  # pragma: no cover
+    _gv65_copy = None
+    _gv65_hashlib = None
+    _gv65_json = None
+    _gv65_math = None
+    _gv65_re = None
+    _gv65_time = None
+
+
+def _gv65_now_ts():
+    try:
+        return float(_gv65_time.time())
+    except Exception:
+        return 0.0
+
+
+def _gv65_safe_dict(x):
+    return dict(x) if isinstance(x, dict) else {}
+
+
+def _gv65_safe_list(x):
+    if x is None:
+        return []
+    if isinstance(x, list):
+        return list(x)
+    if isinstance(x, tuple):
+        return list(x)
+    return [x]
+
+
+def _gv65_text(x, limit=4000):
+    try:
+        s = '' if x is None else str(x)
+    except Exception:
+        s = ''
+    return ' '.join(s.split())[:max(0, int(limit))]
+
+
+def _gv65_hash_obj(obj, n=12):
+    try:
+        raw = _gv65_json.dumps(obj, ensure_ascii=False, sort_keys=True, default=str)
+        return _gv65_hashlib.sha256(raw.encode('utf-8')).hexdigest()[:int(n)]
+    except Exception:
+        return 'hash_unavailable'
+
+
+def _gv65_unique(seq, limit=None):
+    out = []
+    seen = set()
+    for item in _gv65_safe_list(seq):
+        s = _gv65_text(item, 512)
+        if not s:
+            continue
+        k = s.lower()
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append(s)
+        if limit is not None and len(out) >= int(limit):
+            break
+    return out
+
+
+def _gv65_float(x, default=0.0):
+    try:
+        return float(x)
+    except Exception:
+        return float(default)
+
+
+def _gv65_int(x, default=0):
+    try:
+        return int(x)
+    except Exception:
+        return int(default)
+
+
+def _gv65_candidate_id(c, idx=0):
+    c = _gv65_safe_dict(c)
+    cid = _gv65_text(c.get('candidate_id') or c.get('id') or c.get('hid'), 128)
+    if cid:
+        return cid
+    return 'GV65_CAND_{0:03d}_{1}'.format(int(idx), _gv65_hash_obj(c, 8))
+
+
+def _gv65_candidate_text(c):
+    c = _gv65_safe_dict(c)
+    parts = [
+        c.get('candidate_id'),
+        c.get('decoded_hypothesis'),
+        c.get('decoded_mechanism'),
+        c.get('idea_core'),
+        c.get('method_proposal'),
+        c.get('revised_proposal'),
+        c.get('why_non_near'),
+        c.get('reason'),
+        c.get('operator_trace'),
+        c.get('distinguishing_interventions'),
+        c.get('verification_plan'),
+        c.get('causal_edges'),
+        c.get('causal_graph_delta'),
+    ]
+    return _gv65_text(' '.join(_gv65_text(x, 1400) for x in parts), 8000)
+
+
+def _gv65_token_set(text):
+    s = _gv65_text(text, 8000).lower()
+    if not s:
+        return set()
+    if _gv65_re is not None:
+        return set(_gv65_re.findall(r'[A-Za-z0-9_\-]+|[ぁ-んァ-ヶー一-龥]{2,}', s))
+    return set(s.split())
+
+
+def _gv65_jaccard_distance(a, b):
+    sa = _gv65_token_set(a)
+    sb = _gv65_token_set(b)
+    if not sa and not sb:
+        return 0.0
+    if not sa or not sb:
+        return 1.0
+    return 1.0 - (len(sa & sb) / max(1, len(sa | sb)))
+
+
+def _gv65_extract_score(c):
+    c = _gv65_safe_dict(c)
+    for key in ('overall_score', 'score', 'overall', 'final_score'):
+        if key in c:
+            return _gv65_float(c.get(key), 0.0)
+    scores_v58 = _gv65_safe_dict(c.get('scores_v58'))
+    if scores_v58:
+        return _gv65_float(scores_v58.get('overall'), 0.0)
+    return 0.0
+
+
+def _gv65_is_accepted(c):
+    c = _gv65_safe_dict(c)
+    if bool(c.get('accepted', False)):
+        return True
+    status = _gv65_text(c.get('status') or c.get('publishable_status') or c.get('publishable_status_v58'), 256).lower()
+    return ('accepted' in status) or ('pre_accepted' in status)
+
+
+def _gv65_candidate_signature(c):
+    c = _gv65_safe_dict(c)
+    graph_sig = _gv65_safe_dict(c.get('graph_signature_v45'))
+    material = _gv65_safe_dict(graph_sig.get('material'))
+    base = {
+        'operator_trace': _gv65_safe_list(c.get('operator_trace')),
+        'roles': material.get('roles', []),
+        'edge_role_patterns': material.get('edge_role_patterns', []),
+        'hypothesis': _gv65_text(c.get('decoded_hypothesis') or c.get('idea_core') or c.get('method_proposal'), 700),
+        'mechanism': _gv65_text(c.get('decoded_mechanism'), 700),
+        'interventions': _gv65_safe_list(c.get('distinguishing_interventions'))[:8],
+    }
+    return _gv65_hash_obj(base, 16)
+
+
+def _gv65_collect_candidate_metrics(candidates):
+    cands = [dict(c) for c in _gv65_safe_list(candidates) if isinstance(c, dict)]
+    texts = [_gv65_candidate_text(c) for c in cands]
+    pair_distances = []
+    near_pairs = []
+    for i in range(len(cands)):
+        for j in range(i + 1, len(cands)):
+            d = _gv65_jaccard_distance(texts[i], texts[j])
+            pair_distances.append(d)
+            if d < 0.25:
+                near_pairs.append({
+                    'i': i,
+                    'j': j,
+                    'distance': d,
+                    'a': _gv65_candidate_id(cands[i], i),
+                    'b': _gv65_candidate_id(cands[j], j),
+                })
+    scores = [_gv65_extract_score(c) for c in cands]
+    sigs = [_gv65_candidate_signature(c) for c in cands]
+    op_families = set()
+    intervention_families = set()
+    observation_families = set()
+    primary_edge_count = 0
+    mask_hint_count = 0
+    usr_hint_count = 0
+    falsification_count = 0
+    for c in cands:
+        for op in _gv65_safe_list(c.get('operator_trace')):
+            op_txt = _gv65_text(op, 80).lower()
+            if op_txt:
+                op_families.add(op_txt)
+        for item in _gv65_safe_list(c.get('distinguishing_interventions')):
+            txt = _gv65_text(item, 300)
+            if txt:
+                intervention_families.add(_gv65_hash_obj(txt.lower(), 10))
+        for key in ('observables', 'test_metrics', 'verification_experiment'):
+            for item in _gv65_safe_list(c.get(key)):
+                txt = _gv65_text(item, 300)
+                if txt:
+                    observation_families.add(_gv65_hash_obj(txt.lower(), 10))
+        cv = _gv65_safe_dict(c.get('app_v58_causal_verification') or c.get('causal_verification') or c.get('causal_verification_v58'))
+        if _gv65_float(cv.get('overall_causal_verification_score_v58', cv.get('logic_consistency_score', 0.0)), 0.0) >= 0.80:
+            primary_edge_count += _gv65_int(_gv65_safe_dict(cv.get('logic_verification_v58')).get('primary_causal_edge_count'), 0)
+        graph = _gv65_safe_dict(c.get('causal_graph_delta'))
+        for e in _gv65_safe_list(graph.get('edges')) + _gv65_safe_list(c.get('causal_edges')):
+            if isinstance(e, dict):
+                if e.get('is_primary_causal_edge_v58') or e.get('is_primary_causal_edge'):
+                    primary_edge_count += 1
+                if e.get('has_falsification_test'):
+                    falsification_count += 1
+                if e.get('causal_mask_hint_v58') or e.get('mask') or e.get('causal_mask_hint_v65'):
+                    mask_hint_count += 1
+                if e.get('usr_relation_hint_v58') or e.get('usr_hint') or e.get('usr_relation_hint_v65'):
+                    usr_hint_count += 1
+        if c.get('causal_mask_hint_v65') or c.get('causal_mask_hint_v58'):
+            mask_hint_count += 1
+        if c.get('usr_relation_hint_v65') or c.get('usr_relation_hint_v58'):
+            usr_hint_count += 1
+    return {
+        'candidate_count': len(cands),
+        'accepted_count': sum(1 for c in cands if _gv65_is_accepted(c)),
+        'near_duplicate_pair_count': len(near_pairs),
+        'near_duplicate_pairs_sample': near_pairs[:16],
+        'mean_candidate_distance': float(sum(pair_distances) / len(pair_distances)) if pair_distances else (1.0 if len(cands) <= 1 else 0.0),
+        'min_candidate_distance': float(min(pair_distances)) if pair_distances else (1.0 if len(cands) <= 1 else 0.0),
+        'score_range': float(max(scores) - min(scores)) if scores else 0.0,
+        'score_std_proxy': float((sum((s - (sum(scores)/len(scores)))**2 for s in scores) / len(scores)) ** 0.5) if scores else 0.0,
+        'unique_signature_count': len(set(sigs)),
+        'candidate_signatures': sigs[:128],
+        'operator_family_count': len(op_families),
+        'intervention_family_count': len(intervention_families),
+        'observation_family_count': len(observation_families),
+        'primary_edge_count_proxy': primary_edge_count,
+        'falsification_count_proxy': falsification_count,
+        'mask_hint_count_proxy': mask_hint_count,
+        'usr_hint_count_proxy': usr_hint_count,
+    }
+
+
+def _gv65_merge_external_summaries(base_metrics, scoring_summary=None, causal_summary=None, compact_previous=None):
+    out = dict(_gv65_safe_dict(base_metrics))
+    ss = _gv65_safe_dict(scoring_summary)
+    cs = _gv65_safe_dict(causal_summary)
+    cp = _gv65_safe_dict(compact_previous)
+    # Respect explicit caller metrics if provided. This allows leap_engine.py V65
+    # to pass its measured scoring summary without this module recomputing away it.
+    mapping = {
+        'candidate_count': ['candidate_count', 'candidate_count_compact'],
+        'accepted_count': ['accepted_count', 'accepted_candidate_count', 'accepted_candidate_count_after'],
+        'near_duplicate_pair_count': ['near_duplicate_pair_count'],
+        'mean_candidate_distance': ['mean_candidate_distance'],
+        'score_range': ['score_range'],
+        'unique_signature_count': ['unique_signature_count'],
+        'operator_family_count': ['operator_family_count'],
+        'intervention_family_count': ['distinguishing_intervention_family_count', 'intervention_family_count'],
+        'observation_family_count': ['observation_target_proxy_count', 'observation_family_count'],
+    }
+    for target, keys in mapping.items():
+        for source in (ss, cs, cp):
+            for key in keys:
+                if key in source and source.get(key) is not None:
+                    if isinstance(out.get(target), float) or isinstance(source.get(key), float):
+                        out[target] = _gv65_float(source.get(key), out.get(target, 0.0))
+                    else:
+                        out[target] = _gv65_int(source.get(key), out.get(target, 0))
+                    break
+    # Pull nested compact sections generically.
+    for nested_key in ('gpu_tensor_route', 'app_v60_execution_depth_diagnostics', 'invention_closed_loop_v65', 'closed_loop_trace'):
+        nested = _gv65_safe_dict(cp.get(nested_key))
+        if nested:
+            if 'near_duplicate_pair_count' in nested:
+                out['near_duplicate_pair_count'] = _gv65_int(nested.get('near_duplicate_pair_count'), out.get('near_duplicate_pair_count', 0))
+            effect = _gv65_safe_dict(nested.get('effect_summary'))
+            if effect:
+                out.setdefault('previous_effect_summary', effect)
+    return out
+
+
+def _gv65_classify_failures(metrics, scoring_summary=None, causal_summary=None, compact_previous=None):
+    m = _gv65_safe_dict(metrics)
+    ss = _gv65_safe_dict(scoring_summary)
+    cs = _gv65_safe_dict(causal_summary)
+    cp = _gv65_safe_dict(compact_previous)
+    failures = []
+    n = _gv65_int(m.get('candidate_count'), 0)
+    accepted = _gv65_int(m.get('accepted_count'), 0)
+    near = _gv65_int(m.get('near_duplicate_pair_count'), 0)
+    mean_dist = _gv65_float(m.get('mean_candidate_distance'), 0.0)
+    score_range = _gv65_float(m.get('score_range'), 0.0)
+    unique_sigs = _gv65_int(m.get('unique_signature_count'), 0)
+    op_fams = _gv65_int(m.get('operator_family_count'), 0)
+    int_fams = _gv65_int(m.get('intervention_family_count'), 0)
+    obs_fams = _gv65_int(m.get('observation_family_count'), 0)
+    primary_edges = _gv65_int(m.get('primary_edge_count_proxy'), 0)
+    falsification = _gv65_int(m.get('falsification_count_proxy'), 0)
+    mask_hints = _gv65_int(m.get('mask_hint_count_proxy'), 0)
+    usr_hints = _gv65_int(m.get('usr_hint_count_proxy'), 0)
+    if n <= 0:
+        failures.append('no_candidates_generated')
+    if near > 1:
+        failures.append('near_duplicate_candidates')
+    if n > 1 and mean_dist < 0.35:
+        failures.append('low_mean_candidate_distance')
+    if n > 1 and unique_sigs < min(n, 4):
+        failures.append('low_graph_signature_diversity')
+    if n > 0 and accepted < min(3, n):
+        failures.append('low_accepted_candidate_count')
+    if n > 1 and score_range < 0.015:
+        failures.append('score_degeneracy_detected')
+    if op_fams < min(4, max(1, n)):
+        failures.append('operator_semantics_not_divergent')
+    if int_fams < min(3, max(1, n)):
+        failures.append('insufficient_distinguishing_intervention_diversity')
+    if obs_fams < min(3, max(1, n)):
+        failures.append('insufficient_observation_target_diversity')
+    if primary_edges <= 0:
+        failures.append('missing_primary_causal_edge_evidence')
+    if falsification <= 0:
+        failures.append('missing_falsification_test_evidence')
+    if mask_hints <= 0:
+        failures.append('missing_causal_mask_feedback')
+    if usr_hints <= 0:
+        failures.append('missing_usr_feedback')
+    # Explicit upstream reasons always participate but are normalized by unique().
+    failures.extend(_gv65_safe_list(ss.get('quality_failure_reasons')))
+    failures.extend(_gv65_safe_list(ss.get('failure_classes')))
+    failures.extend(_gv65_safe_list(cs.get('failure_classes')))
+    failures.extend(_gv65_safe_list(cp.get('failure_classes')))
+    top = _gv65_safe_dict(cp.get('top_level'))
+    if _gv65_text(top.get('status')).lower() == 'degraded':
+        failures.append('previous_compact_status_degraded')
+    depth = _gv65_safe_dict(cp.get('app_v60_execution_depth_diagnostics'))
+    if depth and not bool(depth.get('nontrivial_execution_evidence', True)):
+        failures.append('insufficient_growth_loop_execution')
+    return _gv65_unique(failures, limit=32)
+
+
+def _gv65_directives_from_failures(failure_classes):
+    failures = set(_gv65_text(x, 256) for x in _gv65_safe_list(failure_classes))
+    directives = []
+    weights = {}
+    quota = {}
+    memory = []
+    def add_weight(op, delta):
+        try:
+            weights[op] = round(float(weights.get(op, 0.0)) + float(delta), 6)
+        except Exception:
+            weights[op] = float(delta)
+    def has(*names):
+        return any(n in failures for n in names)
+    if has('near_duplicate_candidates', 'low_mean_candidate_distance', 'low_graph_signature_diversity'):
+        directives.extend([
+            'penalize_reused_graph_signature',
+            'force_new_root_edge_family',
+            'increase_topology_variant_quota',
+            'avoid_reused_edge_role_patterns',
+        ])
+        add_weight('topology_shift', 0.16)
+        add_weight('scale_transfer', 0.10)
+        add_weight('substitution', 0.08)
+        memory.append('store_reused_candidate_signatures_as_negative_memory')
+        quota.update({'min_topology_variants': 4, 'max_reuse_per_graph_signature': 1})
+    if has('score_degeneracy_detected'):
+        directives.extend([
+            'increase_score_axis_separation',
+            'force_distinguishing_intervention_diversity',
+            'require_score_component_explanation',
+        ])
+        add_weight('observation_shift', 0.14)
+        add_weight('mediator_insertion', 0.08)
+        add_weight('combination', -0.05)
+        quota.update({'min_score_range': 0.03})
+    if has('operator_semantics_not_divergent'):
+        directives.extend([
+            'separate_operator_roles_before_generation',
+            'require_operator_to_change_distinct_design_axis',
+            'reject_operator_name_as_node_semantics',
+        ])
+        add_weight('decomposition', 0.06)
+        add_weight('inversion', 0.10)
+        add_weight('observation_shift', 0.10)
+    if has('insufficient_distinguishing_intervention_diversity'):
+        directives.extend([
+            'force_distinguishing_intervention_diversity',
+            'require_do_or_proxy_intervention_per_candidate',
+            'vary_intervention_target_family_across_candidates',
+        ])
+        add_weight('observation_shift', 0.10)
+        add_weight('inversion', 0.08)
+        quota.update({'min_distinguishing_intervention_families': 4})
+    if has('insufficient_observation_target_diversity'):
+        directives.extend([
+            'force_observation_target_diversity',
+            'shift_observation_to_intermediate_proxy_or_risk_signal',
+            'require_observable_mapping_per_candidate',
+        ])
+        add_weight('observation_shift', 0.16)
+        quota.update({'min_observation_targets': 4})
+    if has('missing_primary_causal_edge_evidence', 'missing_falsification_test_evidence'):
+        directives.extend([
+            'require_new_primary_causal_edge_family',
+            'require_explicit_falsification_plan',
+            'strengthen_causal_requirements_before_generation',
+        ])
+        add_weight('decomposition', 0.08)
+        add_weight('mediator_insertion', 0.08)
+    if has('missing_causal_mask_feedback'):
+        directives.extend([
+            'require_attention_like_causal_mask',
+            'declare_intervene_allowed_observe_only_blocked_per_key_node',
+        ])
+        add_weight('decomposition', 0.04)
+        add_weight('mediator_insertion', 0.06)
+    if has('missing_usr_feedback'):
+        directives.extend([
+            'require_usr_relation_hint_per_primary_edge',
+            'prefer_edges_compressible_as_symbolic_relations',
+        ])
+        add_weight('scale_transfer', 0.04)
+        add_weight('observation_shift', 0.04)
+    if has('insufficient_growth_loop_execution', 'previous_compact_status_degraded', 'no_candidates_generated'):
+        directives.extend([
+            'execute_bounded_regeneration_cycle',
+            'log_cycle_before_after_metrics',
+            'do_not_report_loop_effective_without_candidate_delta',
+        ])
+        add_weight('topology_shift', 0.05)
+        add_weight('substitution', 0.05)
+    if not directives:
+        directives.extend(['quality_gate_passed_keep_current_operator_balance', 'continue_compact_loop_trace_logging'])
+    return {
+        'next_generation_directives': _gv65_unique(directives, limit=32),
+        'operator_weight_updates': weights,
+        'quota_updates': quota,
+        'failure_memory_updates': _gv65_unique(memory, limit=16),
+    }
+
+
+def _gv65_build_growth_gate_trace(candidates, failure_classes, directives):
+    rows = []
+    failures = _gv65_safe_list(failure_classes)
+    dirs = _gv65_safe_list(directives)
+    for idx, c in enumerate([x for x in _gv65_safe_list(candidates) if isinstance(x, dict)][:64]):
+        cid = _gv65_candidate_id(c, idx)
+        row = {
+            'candidate_id': cid,
+            'accepted': _gv65_is_accepted(c),
+            'score': _gv65_extract_score(c),
+            'signature': _gv65_candidate_signature(c),
+            'operator_trace': _gv65_safe_list(c.get('operator_trace'))[:12],
+            'growth_gate_trace': _gv65_safe_list(c.get('growth_gate_trace'))[:12] + [
+                'growth_v65_failures:' + ','.join(failures[:6]) if failures else 'growth_v65_quality_gate_passed',
+                'growth_v65_directives:' + ','.join(dirs[:6]) if dirs else 'growth_v65_no_directive',
+            ],
+        }
+        rows.append(row)
+    return rows
+
+
+def build_invention_growth_feedback_v65(
+    candidates,
+    scoring_summary=None,
+    causal_summary=None,
+    compact_previous=None,
+):
+    """Build structured growth feedback for Leap invention closed-loop regeneration.
+
+    This function is the Stage 2 bridge requested by the V65 plan. It converts
+    candidate-level scoring, causal verification, and prior compact logs into
+    explicit next-generation directives. It is generic and does not branch on
+    any benchmark, task, or domain name.
+    """
+    started = _gv65_now_ts()
+    cands = [dict(c) for c in _gv65_safe_list(candidates) if isinstance(c, dict)]
+    base_metrics = _gv65_collect_candidate_metrics(cands)
+    metrics = _gv65_merge_external_summaries(
+        base_metrics,
+        scoring_summary=scoring_summary,
+        causal_summary=causal_summary,
+        compact_previous=compact_previous,
+    )
+    failure_classes = _gv65_classify_failures(
+        metrics,
+        scoring_summary=scoring_summary,
+        causal_summary=causal_summary,
+        compact_previous=compact_previous,
+    )
+    directive_pack = _gv65_directives_from_failures(failure_classes)
+    regeneration_required = bool(failure_classes) and not (len(failure_classes) == 1 and failure_classes[0] == 'quality_gate_passed')
+    # If only soft missing-hint failures exist but candidates are otherwise diverse,
+    # still request regeneration because the next generation must carry S/mask/USR
+    # constraints forward into the candidate body.
+    loop_effect = {
+        'candidate_count': _gv65_int(metrics.get('candidate_count'), 0),
+        'accepted_count': _gv65_int(metrics.get('accepted_count'), 0),
+        'near_duplicate_pair_count': _gv65_int(metrics.get('near_duplicate_pair_count'), 0),
+        'mean_candidate_distance': _gv65_float(metrics.get('mean_candidate_distance'), 0.0),
+        'score_degeneracy': bool(_gv65_float(metrics.get('score_range'), 0.0) < 0.015 and _gv65_int(metrics.get('candidate_count'), 0) > 1),
+        'unique_signature_count': _gv65_int(metrics.get('unique_signature_count'), 0),
+        'operator_family_count': _gv65_int(metrics.get('operator_family_count'), 0),
+        'observation_family_count': _gv65_int(metrics.get('observation_family_count'), 0),
+        'intervention_family_count': _gv65_int(metrics.get('intervention_family_count'), 0),
+    }
+    growth_gate_trace = _gv65_build_growth_gate_trace(cands, failure_classes, directive_pack.get('next_generation_directives'))
+    feedback = {
+        'patch_id': GROWTH_V65_INVENTION_FEEDBACK_PATCH_ID,
+        'loop_effect': loop_effect,
+        'failure_classes': failure_classes,
+        'next_generation_directives': directive_pack.get('next_generation_directives', []),
+        'operator_weight_updates': directive_pack.get('operator_weight_updates', {}),
+        'quota_updates': directive_pack.get('quota_updates', {}),
+        'failure_memory_updates': directive_pack.get('failure_memory_updates', []),
+        'regeneration_required': regeneration_required,
+        'reason': 'quality_or_traceability_gap_requires_regeneration' if regeneration_required else 'quality_gate_passed',
+        'growth_gate_trace': growth_gate_trace,
+        'compact_summary': {
+            'patch_id': GROWTH_V65_INVENTION_FEEDBACK_PATCH_ID,
+            'candidate_count': loop_effect.get('candidate_count'),
+            'accepted_count': loop_effect.get('accepted_count'),
+            'near_duplicate_pair_count': loop_effect.get('near_duplicate_pair_count'),
+            'mean_candidate_distance': loop_effect.get('mean_candidate_distance'),
+            'failure_class_count': len(failure_classes),
+            'directive_count': len(directive_pack.get('next_generation_directives', [])),
+            'regeneration_required': regeneration_required,
+        },
+        'pre_generation_feedback_packet': {
+            'growth_feedback_v65': True,
+            'apply_to_pre_generation_plan': True,
+            'operator_weight_updates': directive_pack.get('operator_weight_updates', {}),
+            'regeneration_directives': directive_pack.get('next_generation_directives', []),
+            'quota_updates': directive_pack.get('quota_updates', {}),
+            'negative_memory_signatures': [r.get('signature') for r in growth_gate_trace if r.get('signature')][:64],
+        },
+        'no_benchmark_or_task_name_hardcoding': True,
+        'elapsed_sec': max(0.0, _gv65_now_ts() - started),
+    }
+    return feedback
+
+
+def summarize_invention_growth_feedback_v65(feedback):
+    """Return a compact feedback-only summary suitable for app compact logs."""
+    fb = _gv65_safe_dict(feedback)
+    loop = _gv65_safe_dict(fb.get('loop_effect'))
+    return {
+        'patch_id': fb.get('patch_id', GROWTH_V65_INVENTION_FEEDBACK_PATCH_ID),
+        'regeneration_required': bool(fb.get('regeneration_required', False)),
+        'reason': fb.get('reason', ''),
+        'failure_classes': _gv65_safe_list(fb.get('failure_classes'))[:16],
+        'next_generation_directives': _gv65_safe_list(fb.get('next_generation_directives'))[:16],
+        'operator_weight_updates': _gv65_safe_dict(fb.get('operator_weight_updates')),
+        'quota_updates': _gv65_safe_dict(fb.get('quota_updates')),
+        'loop_effect': {
+            'candidate_count': loop.get('candidate_count', 0),
+            'accepted_count': loop.get('accepted_count', 0),
+            'near_duplicate_pair_count': loop.get('near_duplicate_pair_count', 0),
+            'mean_candidate_distance': loop.get('mean_candidate_distance', 0.0),
+            'score_degeneracy': bool(loop.get('score_degeneracy', False)),
+        },
+    }
+
+
+def apply_invention_growth_feedback_to_context_v65(context=None, growth_feedback=None):
+    """Create a new context carrying growth feedback into the next generation.
+
+    Existing context is copied. No fields are deleted. This helper exists so
+    app.py/leap_engine.py can pass the V65 feedback forward without coupling to
+    growth_engine internals.
+    """
+    ctx = _gv65_safe_dict(context)
+    fb = _gv65_safe_dict(growth_feedback)
+    out = dict(ctx)
+    out['growth_feedback_v65'] = fb
+    out['previous_feedback_v65'] = fb
+    out['operator_weight_updates_v65'] = _gv65_safe_dict(fb.get('operator_weight_updates'))
+    out['regeneration_directives_v65'] = _gv65_safe_list(fb.get('next_generation_directives'))
+    out['quota_updates_v65'] = _gv65_safe_dict(fb.get('quota_updates'))
+    out['negative_memory_signatures_v65'] = _gv65_safe_list(_gv65_safe_dict(fb.get('pre_generation_feedback_packet')).get('negative_memory_signatures'))
+    return out
+
+
+try:
+    GROWTH_V65_INVENTION_FEEDBACK_EXECUTION_PROOF = {
+        'patch_id': GROWTH_V65_INVENTION_FEEDBACK_PATCH_ID,
+        'functions': [
+            'build_invention_growth_feedback_v65',
+            'summarize_invention_growth_feedback_v65',
+            'apply_invention_growth_feedback_to_context_v65',
+        ],
+        'policy': 'ADD_ONLY_no_task_name_hardcoding',
+    }
+except Exception:
+    pass
+
+# ============================================================================
+# END ADD-ONLY PATCH: GROWTH-V65-INVENTION-FEEDBACK-TO-REGENERATION
+# ============================================================================
+
+
+
+# ============================================================================
+# ADD-ONLY PATCH: GROWTH-V70-CLOSED-LOOP-GROUNDING-DEPTH
+# generated_at_jst: 2026-05-18
+# Purpose: feedback-ready growth records for grounded invention quality.
+# LLM output is treated as untrusted text; schema compliance is not assumed.
+# ============================================================================
+GROWTH_V70_CLOSED_LOOP_GROUNDING_DEPTH_PATCH_ID = 'GROWTH-V70-CLOSED-LOOP-GROUNDING-DEPTH-20260518'
+
+def _gv70_dict(x): return dict(x) if isinstance(x, dict) else {}
+def _gv70_list(x):
+    if x is None: return []
+    if isinstance(x, list): return x
+    if isinstance(x, tuple): return list(x)
+    return [x]
+def _gv70_s(x, limit=4000):
+    try: s = '' if x is None else str(x)
+    except Exception: s = repr(x)
+    return ' '.join(s.split())[:max(0,int(limit))]
+
+def growth_v70_build_metacognitive_feedback(result=None, context=None):
+    r=_gv70_dict(result); ctx=_gv70_dict(context)
+    cands=_gv70_list(r.get('decoded_candidates') or r.get('accepted_candidates') or r.get('leap_candidates'))
+    grounding=[]
+    for c in cands:
+        if isinstance(c, dict):
+            try: grounding.append(float(_gv70_dict(c.get('grounding_v70')).get('grounding_score',0.0) or 0.0))
+            except Exception: pass
+    tensor=_gv70_dict(r.get('s_matrix_tensor_v70'))
+    mean_grounding=sum(grounding)/float(max(1,len(grounding)))
+    stagnation = bool(cands and mean_grounding < 0.20)
+    feedback={
+        'patch_id': GROWTH_V70_CLOSED_LOOP_GROUNDING_DEPTH_PATCH_ID,
+        'candidate_count': len(cands),
+        'mean_grounding_score': mean_grounding,
+        's_tensor_nodes': len(_gv70_list(tensor.get('nodes'))),
+        's_tensor_mask_density': tensor.get('mask_density',0.0),
+        'stagnation_detected': stagnation,
+        'goal_hierarchy': {
+            'long_term_goal': _gv70_s(_gv70_dict(ctx.get('goal_hierarchy')).get('long_term_goal') or 'discover robust causal laws and invention principles', 500),
+            'current_subgoal': 'increase grounded, diverse, testable invention candidates',
+            'plan_stack': _gv70_list(ctx.get('plan_stack')) + ['extract grounding nodes','expand candidate graph','retensorize S matrix','regenerate with mask guidance'],
+        },
+        'abstraction_state': {'principle_count': len(_gv70_list(r.get('discovered_principles'))), 'active_abstraction': 'grounded causal graph -> complex S tensor -> regeneration prior'},
+        'memory_delta': {'append_only': True, 'lesson': 'Low grounding or low mask density should trigger deeper graph expansion and stronger observation/control binding.'},
+        'recommended_next_actions': ['increase_candidate_graph_depth','increase_branch_cap','increase_s_tensor_passes','request_usr_support_for_numeric_bindings','prefer_candidates_with_observable_and_controllable_grounding'],
+        'llm_schema_compliance_assumed': False,
+    }
+    return feedback
+
+try:
+    _GROWTH_V70_PREV_EVALUATE_INVENTION_RESULT = evaluate_invention_result
+except Exception:
+    _GROWTH_V70_PREV_EVALUATE_INVENTION_RESULT = None
+
+def evaluate_invention_result(result, *args, **kwargs):
+    base = _GROWTH_V70_PREV_EVALUATE_INVENTION_RESULT(result, *args, **kwargs) if callable(_GROWTH_V70_PREV_EVALUATE_INVENTION_RESULT) else {}
+    base = _gv70_dict(base)
+    fb = growth_v70_build_metacognitive_feedback(result=result, context=_gv70_dict(result).get('context'))
+    base['growth_feedback_v70'] = fb
+    if fb.get('candidate_count',0) > 0 and fb.get('mean_grounding_score',0.0) <= 0.0:
+        base['accepted'] = False
+        base['reason'] = 'grounding_missing_v70'
+    base.setdefault('warnings', [])
+    if isinstance(base.get('warnings'), list) and fb.get('stagnation_detected'):
+        base['warnings'].append('v70_stagnation_low_grounding')
+    return base
+
+try:
+    _GROWTH_V70_PREV_ENSURE_INVENTION_AGENT_SCHEMA = ensure_invention_agent_schema
+except Exception:
+    _GROWTH_V70_PREV_ENSURE_INVENTION_AGENT_SCHEMA = None
+
+def ensure_invention_agent_schema(obj, goal='', constraints=None):
+    out = _GROWTH_V70_PREV_ENSURE_INVENTION_AGENT_SCHEMA(obj, goal=goal, constraints=constraints) if callable(_GROWTH_V70_PREV_ENSURE_INVENTION_AGENT_SCHEMA) else _gv70_dict(obj)
+    out = _gv70_dict(out)
+    out.setdefault('grounding_v70', {'enabled': True, 'llm_schema_compliance_assumed': False})
+    out.setdefault('goal_hierarchy', {'long_term_goal': 'discover robust causal laws and invention principles', 'current_subgoal': 'increase grounded invention quality', 'plan_stack': []})
+    out.setdefault('abstraction_state', {'active_abstraction': 'candidate graph / S tensor / mask'})
+    out.setdefault('memory_delta', {'append_only': True})
+    out.setdefault('execution_depth_diagnostics_v70', {'candidate_graph_depth': 0, 's_tensor_passes': 0, 'llm_aux_rounds': 0})
+    return out
+# ============================================================================
+# END ADD-ONLY PATCH: GROWTH-V70-CLOSED-LOOP-GROUNDING-DEPTH
+# ============================================================================

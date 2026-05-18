@@ -12972,9 +12972,9 @@ def _leapv4_render_visible_sidebar_ui():
         observables = st.text_input('観測可能量', value=str(st.session_state.get('leapv4_observables', '')), key='leapv4_observables')
         controllables = st.text_input('操作可能量', value=str(st.session_state.get('leapv4_controllables', '')), key='leapv4_controllables')
         constraints_text = st.text_area('制約・前提', value=str(st.session_state.get('leapv4_constraints', '')), height=70, key='leapv4_constraints')
-        all_ops = ['substitution','combination','decomposition','inversion','mediator_insertion','constraint_relaxation','observation_shift','scale_transfer','Substitute','Combine','Adapt','Modify','PutToOtherUse','Eliminate','Reverse']
-        operators = st.multiselect('演算子', all_ops, default=st.session_state.get('leapv4_ops', ['decomposition','mediator_insertion','substitution','inversion','constraint_relaxation']), key='leapv4_ops')
-        seq_text = st.text_area('演算順序', value=str(st.session_state.get('leapv4_seq', 'decomposition > mediator_insertion > substitution; inversion > constraint_relaxation')), height=70, key='leapv4_seq')
+        all_ops = ['substitution','combination','decomposition','topology_shift','inversion','mediator_insertion','constraint_relaxation','observation_shift','scale_transfer','Substitute','Combine','Adapt','Modify','PutToOtherUse','Eliminate','Reverse']
+        operators = st.multiselect('演算子', all_ops, default=st.session_state.get('leapv4_ops', ['decomposition','topology_shift','mediator_insertion','substitution','inversion','constraint_relaxation']), key='leapv4_ops')
+        seq_text = st.text_area('演算順序', value=str(st.session_state.get('leapv4_seq', 'decomposition > topology_shift > mediator_insertion > substitution; inversion > constraint_relaxation')), height=70, key='leapv4_seq')
         seed = st.number_input('seed', 0, 999999, int(st.session_state.get('leapv4_seed', 42)), key='leapv4_seed')
         max_turns = st.slider('max_turns', 1, 32, int(st.session_state.get('leapv4_max_turns', 8)), key='leapv4_max_turns')
         max_candidates = st.slider('max_candidates', 1, 24, int(st.session_state.get('leapv4_max_candidates', 8)), key='leapv4_max_candidates')
@@ -12989,7 +12989,7 @@ def _leapv4_render_visible_sidebar_ui():
         'observables': _leapv4_csv(observables),
         'controllables': _leapv4_csv(controllables),
         'constraints': [x.strip() for x in str(constraints_text or '').splitlines() if x.strip()],
-        'operators': operators,
+        'operators': _app_v44_ordered_ops_from_sequence(operators, _leapv4_op_sequence(seq_text)),
         'operator_sequence': _leapv4_op_sequence(seq_text),
         'seed': int(seed),
         'max_turns': int(max_turns),
@@ -13058,6 +13058,48 @@ def _leapv8_float_list(x, default):
         try: out.append(float(p))
         except Exception: pass
     return out or list(default)
+
+
+# ============================================================================
+# ADD-ONLY PATCH: APP-V44 Graph Structure Ideation uses normal operator controls
+# Purpose:
+# - topology_shift is treated as a normal ideation operator alongside decomposition,
+#   mediator_insertion, substitution, etc.
+# - ON/OFF is the existing operator multiselect.
+# - Execution order is the existing 演算順序 text area.
+# - No task/benchmark-name hardcoding.
+# ============================================================================
+APP_V44_GRAPH_STRUCTURE_IDEATION_RIGHT_PANEL_PATCH_ID = 'APP-LEAP-GRAPH-STRUCTURE-IDEATION-RIGHT-PANEL-V44-20260508_135114'
+
+
+def _app_v44_operator_alias(op):
+    s = str(op or '').strip()
+    aliases = {
+        'structural_ideation': 'topology_shift',
+        'causal_topology_shift': 'topology_shift',
+        'graph_structure_ideation': 'topology_shift',
+        'Graph Structure Ideation': 'topology_shift',
+    }
+    return aliases.get(s, s)
+
+
+def _app_v44_ordered_ops_from_sequence(selected_ops, operator_sequence):
+    selected = []
+    for op in (selected_ops or []):
+        a = _app_v44_operator_alias(op)
+        if a and a not in selected:
+            selected.append(a)
+    ordered = []
+    for group in (operator_sequence or []):
+        group_ops = group if isinstance(group, (list, tuple)) else [group]
+        for op in group_ops:
+            a = _app_v44_operator_alias(op)
+            if a in selected and a not in ordered:
+                ordered.append(a)
+    for op in selected:
+        if op not in ordered:
+            ordered.append(op)
+    return ordered
 
 def _leapv8_op_sequence(x):
     seq=[]
@@ -13160,9 +13202,9 @@ def _leapv8_render_main_ui():
         with a: observables=st.text_input('観測可能量（カンマ区切り）', value=str(st.session_state.get('leapv8_observables','')), key='leapv8_observables')
         with b: controllables=st.text_input('操作可能量（カンマ区切り）', value=str(st.session_state.get('leapv8_controllables','')), key='leapv8_controllables')
         constraints_text=st.text_area('制約・前提（1行1項目）', value=str(st.session_state.get('leapv8_constraints','')), height=80, key='leapv8_constraints')
-        all_ops=['substitution','combination','decomposition','inversion','mediator_insertion','constraint_relaxation','observation_shift','scale_transfer','Substitute','Combine','Adapt','Modify','PutToOtherUse','Eliminate','Reverse']
-        operators=st.multiselect('アイデア創出の演算子', all_ops, default=st.session_state.get('leapv8_ops',['decomposition','mediator_insertion','substitution','inversion','constraint_relaxation','observation_shift','scale_transfer','combination']), key='leapv8_ops')
-        seq_text=st.text_area('演算順序', value=str(st.session_state.get('leapv8_seq','decomposition > mediator_insertion > substitution; inversion > constraint_relaxation; observation_shift > scale_transfer > combination')), height=80, key='leapv8_seq')
+        all_ops=['substitution','combination','decomposition','topology_shift','inversion','mediator_insertion','constraint_relaxation','observation_shift','scale_transfer','Substitute','Combine','Adapt','Modify','PutToOtherUse','Eliminate','Reverse']
+        operators=st.multiselect('アイデア創出の演算子', all_ops, default=st.session_state.get('leapv8_ops',['decomposition','topology_shift','mediator_insertion','substitution','inversion','constraint_relaxation','observation_shift','scale_transfer','combination']), key='leapv8_ops')
+        seq_text=st.text_area('演算順序', value=str(st.session_state.get('leapv8_seq','decomposition > topology_shift > mediator_insertion > substitution; inversion > constraint_relaxation; observation_shift > scale_transfer > combination')), height=80, key='leapv8_seq')
         c1,c2,c3,c4=st.columns(4)
         with c1: seed=st.number_input('seed',0,999999,int(st.session_state.get('leapv8_seed',42)),key='leapv8_seed')
         with c2: max_turns=st.slider('max_turns',1,32,int(st.session_state.get('leapv8_max_turns',8)),key='leapv8_max_turns')
@@ -13643,6 +13685,496 @@ def _leapv8_run(cfg):
         return _PREV_APP_V14P_RUN(cfg)
     return {'status':'failed','reason':'no_leap_route','decoded_candidates':[],'accepted_candidates':[]}
 
+
+# ============================================================================
+# ADD-ONLY: APP-LEAP-GPU-DIAG-COMPACT-V47B-20260509
+# purpose:
+# - Provide compact feedback log and visible GPU diagnostic summary in the app.
+# - Place compact log download next to the existing full debug log button.
+# - Read both v46 and v47 GPU diagnostic keys for compatibility.
+# - Generic implementation: no task/benchmark hardcoding.
+# ============================================================================
+
+def _app47b_dict(x):
+    return x if isinstance(x, dict) else {}
+
+
+def _app47b_list(x):
+    if x is None:
+        return []
+    if isinstance(x, list):
+        return x
+    if isinstance(x, tuple):
+        return list(x)
+    return []
+
+
+def _app47b_short_hash(obj, n=12):
+    try:
+        import json as _json
+        payload = _json.dumps(obj, ensure_ascii=False, sort_keys=True, default=str)
+    except Exception:
+        payload = str(obj)
+    try:
+        import hashlib as _hashlib
+        return _hashlib.sha256(payload.encode('utf-8')).hexdigest()[:n]
+    except Exception:
+        return 'nohash'
+
+
+def _app47b_pick(d, keys):
+    d = _app47b_dict(d)
+    out = {}
+    for k in keys:
+        if k in d:
+            out[k] = d.get(k)
+    return out
+
+
+def _app47b_collect_candidates(root, rep):
+    root = _app47b_dict(root); rep = _app47b_dict(rep)
+    out = []
+    for pool in (root.get('generated_ideas'), root.get('decoded_candidates'), root.get('accepted_candidates'), rep.get('generated_ideas'), rep.get('decoded_candidates')):
+        for c in _app47b_list(pool):
+            if isinstance(c, dict):
+                out.append(c)
+    return out
+
+
+def _app47b_candidate_compact(c, idx=0):
+    c = _app47b_dict(c); co = _app47b_dict(c.get('candidate_object'))
+    gpu = _app47b_dict(c.get('gpu_tensor_evaluation_v47') or c.get('gpu_tensor_evaluation_latest') or c.get('gpu_tensor_evaluation_v46'))
+    topo = _app47b_dict(c.get('topology_shift_graph_transform_v45') or co.get('topology_shift_graph_transform_v45'))
+    sview = _app47b_dict(c.get('s_matrix_graph_view_v43') or co.get('s_matrix_graph_view_v43'))
+    return {
+        'index': idx,
+        'candidate_id': c.get('candidate_id') or co.get('candidate_id'),
+        'status': c.get('status'),
+        'operator_trace': c.get('operator_trace') or co.get('operator_trace'),
+        'publishable_status': c.get('publishable_status') or co.get('publishable_status'),
+        'graph_signature_v45': c.get('graph_signature_v45') or co.get('graph_signature_v45'),
+        'topology_shift_graph_transform_v45': topo,
+        'gpu_tensor_evaluation': gpu,
+        'gpu_review_flags': {
+            'device_used': gpu.get('device_used'),
+            'graph_tensorized': gpu.get('graph_tensorized'),
+            's_matrix_tensorized': gpu.get('s_matrix_tensorized'),
+            'diagnostic_functional_v47': gpu.get('diagnostic_functional_v47'),
+            'proxy_ratio': _app47b_dict(gpu.get('graph_metrics')).get('proxy_intervention_ratio'),
+            'observation_decomposition_ratio': _app47b_dict(gpu.get('graph_metrics')).get('observation_decomposition_ratio'),
+            'falsifiable_edge_ratio': _app47b_dict(gpu.get('graph_metrics')).get('falsifiable_edge_ratio'),
+            'near_duplicate': gpu.get('near_duplicate'),
+        },
+        'rich_graph_metadata_counts_v47': gpu.get('rich_graph_metadata_counts_v47'),
+        's_matrix_graph_view_counts': {
+            'present': bool(sview),
+            'nodes': len(_app47b_list(sview.get('nodes'))),
+            'edges': len(_app47b_list(sview.get('edges'))),
+            'usr_equation_edges': len(_app47b_list(sview.get('usr_equation_edges'))),
+        },
+        'edge_falsification_coverage_v45': c.get('edge_falsification_coverage_v45') or co.get('edge_falsification_coverage_v45'),
+        'identifiability_report': c.get('identifiability_report') or co.get('identifiability_report'),
+        'scores_v43': c.get('scores_v43') or co.get('scores_v43'),
+        'growth_hints_v46': c.get('growth_hints_v46') or co.get('growth_hints_v46'),
+    }
+
+
+def _app47b_build_compact_feedback_payload(debug_payload):
+    debug_payload = _app47b_dict(debug_payload)
+    root = _app47b_dict(debug_payload.get('result') or debug_payload)
+    rep = _app47b_dict(debug_payload.get('hidden_branching_report_v14') or root.get('hidden_branching_report_v14'))
+    candidates = _app47b_collect_candidates(root, rep)
+    compact_candidates = [_app47b_candidate_compact(c, i) for i, c in enumerate(candidates)]
+    route_gpu = _app47b_dict(root.get('gpu_tensor_route_v47') or root.get('gpu_tensor_route_latest') or root.get('gpu_tensor_route_v46'))
+    compact = {
+        'compact_export_schema': 'leap_feedback_gpu_diagnostic_compact_v47b',
+        'patch_id': 'APP-LEAP-GPU-DIAG-COMPACT-V47B-20260509',
+        'top_level': _app47b_pick(root, ['status','mode','route','official_route','primary_result_route','reason','query']),
+        'operation_controls': root.get('operation_controls'),
+        'gpu_tensor_route': route_gpu,
+        'operator_dispatch_diagnostics_v45': root.get('operator_dispatch_diagnostics_v45'),
+        'topology_shift_graph_transform_summary_v45': root.get('topology_shift_graph_transform_summary_v45'),
+        's_matrix_usr_verification_summary': root.get('s_matrix_usr_verification_summary'),
+        'candidate_count_compact': len(compact_candidates),
+        'candidates': compact_candidates,
+        'review_summary': {
+            'gpu_route_functional': route_gpu.get('diagnostic_functional_v47'),
+            'device_used': route_gpu.get('device_used'),
+            'candidate_count_tensorized': route_gpu.get('candidate_count_tensorized'),
+            'edge_count_tensorized': route_gpu.get('edge_count_tensorized'),
+            's_matrix_tensorized_count': route_gpu.get('s_matrix_tensorized_count'),
+            'abc_coverage_mean': route_gpu.get('abc_coverage_mean'),
+            'near_duplicate_pair_count': route_gpu.get('near_duplicate_pair_count'),
+            'mean_candidate_distance': route_gpu.get('mean_candidate_distance'),
+        },
+    }
+    compact['compact_hash'] = _app47b_short_hash(compact, 12)
+    return compact
+
+
+def _app47b_json_bytes(obj):
+    try:
+        import json as _json
+        return _json.dumps(obj, ensure_ascii=False, indent=2, default=str).encode('utf-8')
+    except Exception:
+        return str(obj).encode('utf-8')
+
+
+def _app47b_filename(compact, data):
+    try:
+        from datetime import datetime as _dt
+        ts = _dt.now().strftime('%Y%m%d_%H%M%S')
+    except Exception:
+        ts = 'notime'
+    try:
+        nbytes = len(data)
+    except Exception:
+        nbytes = 0
+    return 'leap_compact_gpu_feedback_{ts}_{nbytes}bytes_{h}.json'.format(ts=ts, nbytes=nbytes, h=_app47b_dict(compact).get('compact_hash') or 'nohash')
+
+
+def _app47b_render_gpu_diagnostic_summary(root):
+    root = _app47b_dict(root)
+    gpu = _app47b_dict(root.get('gpu_tensor_route_v47') or root.get('gpu_tensor_route_latest') or root.get('gpu_tensor_route_v46'))
+    if not gpu:
+        return None
+    try:
+        with st.expander('GPU diagnostic summary / GPU診断サマリ', expanded=False):
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric('device', str(gpu.get('device_used') or 'none'))
+            c2.metric('tensorized candidates', int(gpu.get('candidate_count_tensorized') or 0))
+            c3.metric('tensorized edges', int(gpu.get('edge_count_tensorized') or 0))
+            c4.metric('tensor ops', int(gpu.get('tensor_ops_count') or 0))
+            st.json(_app47b_pick(gpu, ['patch_id','diagnostic_functional_v47','gpu_route_selected','torch_import_ok','cuda_available','s_matrix_tensorized_count','abc_coverage_mean','near_duplicate_pair_count','mean_candidate_distance','elapsed_sec_v47','skip_reason','exception']))
+    except Exception:
+        pass
+    return None
+
+# ============================================================================
+# END ADD-ONLY: APP-LEAP-GPU-DIAG-COMPACT-V47B-20260509
+# ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY ACTIVE PATCH: APP-V50-EARLY-ACTIVE-COMPACT-AND-RUN-ROUTE-FIX-20260509
+# inserted before _leapv8_render_result so it is active before the Streamlit
+# download_button payload is constructed.
+# fixes:
+# - Previous V49 was appended after the UI render/download code, so the compact
+#   JSON was already built by the older V47B function.
+# - _leapv8_run selected run_leap_engine before run_leap_search; run_leap_engine
+#   can bypass the final run_leap_search V49 wrapper. This patch prefers
+#   run_leap_search explicitly.
+# - Compact export deduplicates by candidate_id first and reports V50 schema.
+# - Generic; no benchmark/task/problem-name hardcoding.
+# ============================================================================
+APP_V50_ACTIVE_PATCH_ID = 'APP-V50-EARLY-ACTIVE-COMPACT-AND-RUN-ROUTE-FIX-20260509'
+APP_V50_EXPECTED_LEAP_GPU_PATCH_ID = 'LEAP-V47-GPU-DIAGNOSTIC-RICH-GRAPH-FIX-20260509'
+APP_V50_EXPECTED_LEAP_ROUTE_GUARD = 'LEAP-V49-FORCE-V47-ROUTE-AND-CANDIDATE-MIRROR-SYNC-20260509'
+
+
+def _app50_dict(x):
+    return x if isinstance(x, dict) else {}
+
+
+def _app50_list(x):
+    if x is None:
+        return []
+    if isinstance(x, list):
+        return x
+    if isinstance(x, tuple):
+        return list(x)
+    return []
+
+
+def _app50_text(x, limit=3000):
+    try:
+        s = '' if x is None else str(x)
+    except Exception:
+        try:
+            s = repr(x)
+        except Exception:
+            s = ''
+    s = ' '.join(s.split())
+    return s[:int(limit)] if limit and len(s) > int(limit) else s
+
+
+def _app50_hash(obj, n=12):
+    try:
+        import json as _json, hashlib as _hashlib
+        raw = _json.dumps(obj, ensure_ascii=False, sort_keys=True, default=str)
+        return _hashlib.sha256(raw.encode('utf-8')).hexdigest()[:int(n)]
+    except Exception:
+        return 'nohash'
+
+
+def _app50_pick(d, keys):
+    d = _app50_dict(d)
+    return {k: d.get(k) for k in keys if k in d}
+
+
+def _app50_route(root):
+    root = _app50_dict(root)
+    return _app50_dict(root.get('gpu_tensor_route_v47') or root.get('gpu_tensor_route_latest') or root.get('gpu_tensor_route') or root.get('gpu_tensor_route_v46'))
+
+
+def _app50_guard(root):
+    root = _app50_dict(root)
+    for k in ('gpu_diagnostic_route_guard_v50','gpu_diagnostic_route_guard_v49','gpu_diagnostic_route_guard_v48'):
+        if isinstance(root.get(k), dict):
+            return root.get(k)
+    for pk in ('debug', 'debug_full_result', 'result'):
+        d = _app50_dict(root.get(pk))
+        for k in ('gpu_diagnostic_route_guard_v50','gpu_diagnostic_route_guard_v49','gpu_diagnostic_route_guard_v48'):
+            if isinstance(d.get(k), dict):
+                return d.get(k)
+    return {}
+
+
+def _app50_candidate_id(c):
+    c = _app50_dict(c); co = _app50_dict(c.get('candidate_object'))
+    return _app50_text(c.get('candidate_id') or co.get('candidate_id') or c.get('id') or '', 160)
+
+
+def _app50_signature(c):
+    c = _app50_dict(c); co = _app50_dict(c.get('candidate_object'))
+    gs = c.get('graph_signature_v45') or co.get('graph_signature_v45') or c.get('graph_signature_v43') or co.get('graph_signature_v43')
+    if isinstance(gs, dict):
+        return _app50_text(gs.get('signature') or gs.get('graph_signature') or gs.get('hash') or '', 160)
+    return _app50_text(gs or '', 160)
+
+
+def _app50_gpu_eval(c):
+    c = _app50_dict(c); co = _app50_dict(c.get('candidate_object'))
+    return _app50_dict(
+        c.get('gpu_tensor_evaluation_v47') or co.get('gpu_tensor_evaluation_v47') or
+        c.get('gpu_tensor_evaluation_latest') or co.get('gpu_tensor_evaluation_latest') or
+        c.get('gpu_tensor_evaluation') or co.get('gpu_tensor_evaluation') or
+        c.get('gpu_tensor_evaluation_v46') or co.get('gpu_tensor_evaluation_v46')
+    )
+
+
+def _app50_candidate_score(c):
+    ge = _app50_gpu_eval(c)
+    s = 0
+    if ge:
+        s += 1000
+        if ge.get('patch_id') == APP_V50_EXPECTED_LEAP_GPU_PATCH_ID:
+            s += 10000
+        if ge.get('diagnostic_functional_v47'):
+            s += 1000
+        if ge.get('graph_tensorized'):
+            s += 100
+        if ge.get('s_matrix_tensorized'):
+            s += 100
+    if _app50_signature(c):
+        s += 10
+    return s
+
+
+def _app50_candidate_pools(root, rep):
+    roots=[]
+    for x in (root, rep, _app50_dict(root).get('debug'), _app50_dict(root).get('debug_full_result'), _app50_dict(root).get('result')):
+        if isinstance(x, dict):
+            roots.append(x)
+    pools=[]
+    for r in roots:
+        for k in ('generated_ideas','decoded_candidates','accepted_candidates','candidates'):
+            if isinstance(r.get(k), list):
+                pools.append(r.get(k))
+    return pools
+
+
+def _app50_collect_candidates(root, rep):
+    best={}; order=[]; raw=0
+    for pool in _app50_candidate_pools(root, rep):
+        for c in _app50_list(pool):
+            if not isinstance(c, dict):
+                continue
+            raw += 1
+            cid = _app50_candidate_id(c)
+            key = ('candidate_id', cid) if cid else ('graph_signature', _app50_signature(c) or _app50_hash(c,16))
+            if key not in best:
+                best[key] = c; order.append(key)
+            elif _app50_candidate_score(c) > _app50_candidate_score(best[key]):
+                best[key] = c
+    return [best[k] for k in order], raw
+
+
+def _app50_candidate_compact(c, idx=0):
+    c=_app50_dict(c); co=_app50_dict(c.get('candidate_object'))
+    ge=_app50_gpu_eval(c)
+    gm=_app50_dict(ge.get('graph_metrics'))
+    sview=_app50_dict(c.get('s_matrix_graph_view_v43') or co.get('s_matrix_graph_view_v43'))
+    return {
+        'index': idx,
+        'candidate_id': _app50_candidate_id(c),
+        'status': c.get('status') or co.get('status'),
+        'operator_trace': c.get('operator_trace') or co.get('operator_trace'),
+        'publishable_status': c.get('publishable_status') or co.get('publishable_status'),
+        'graph_signature_v45': c.get('graph_signature_v45') or co.get('graph_signature_v45'),
+        'topology_shift_graph_transform_v45': c.get('topology_shift_graph_transform_v45') or co.get('topology_shift_graph_transform_v45'),
+        'gpu_tensor_evaluation': ge,
+        'gpu_review_flags': {
+            'patch_id': ge.get('patch_id'),
+            'device_used': ge.get('device_used'),
+            'graph_tensorized': ge.get('graph_tensorized'),
+            's_matrix_tensorized': ge.get('s_matrix_tensorized'),
+            'diagnostic_functional_v47': ge.get('diagnostic_functional_v47'),
+            'proxy_ratio': gm.get('proxy_intervention_ratio'),
+            'observation_decomposition_ratio': gm.get('observation_decomposition_ratio'),
+            'falsifiable_edge_ratio': gm.get('falsifiable_edge_ratio'),
+            'near_duplicate': ge.get('near_duplicate'),
+        },
+        'rich_graph_metadata_counts_v47': ge.get('rich_graph_metadata_counts_v47'),
+        's_matrix_graph_view_counts': {
+            'present': bool(sview),
+            'nodes': len(_app50_list(sview.get('nodes'))),
+            'edges': len(_app50_list(sview.get('edges'))),
+            'usr_equation_edges': len(_app50_list(sview.get('usr_equation_edges'))),
+        },
+        'edge_falsification_coverage_v45': c.get('edge_falsification_coverage_v45') or co.get('edge_falsification_coverage_v45'),
+        'identifiability_report': c.get('identifiability_report') or co.get('identifiability_report'),
+        'scores_v43': c.get('scores_v43') or co.get('scores_v43'),
+        'growth_hints_v46': c.get('growth_hints_v46') or co.get('growth_hints_v46'),
+    }
+
+
+def _app50_enforce_latest_result(root):
+    if not isinstance(root, dict):
+        return root
+    route = _app50_route(root)
+    guard = _app50_guard(root)
+    root['app_v50_active_route_fix'] = {
+        'patch_id': APP_V50_ACTIVE_PATCH_ID,
+        'run_selection_policy': 'prefer_leap_engine.run_leap_search_over_run_leap_engine',
+        'compact_builder_position': 'before_render_download_payload_construction',
+        'observed_gpu_patch_id': route.get('patch_id'),
+        'observed_route_guard_patch_id': guard.get('patch_id'),
+        'expected_gpu_patch_id': APP_V50_EXPECTED_LEAP_GPU_PATCH_ID,
+        'expected_route_guard_patch_id': APP_V50_EXPECTED_LEAP_ROUTE_GUARD,
+        'no_task_or_benchmark_name_hardcoding': True,
+    }
+    return root
+
+
+try:
+    _APP50_PREV_LEAPV8_RUN = _leapv8_run
+except Exception:
+    _APP50_PREV_LEAPV8_RUN = None
+
+
+def _leapv8_run(cfg):
+    cfg = _app50_dict(cfg)
+    try:
+        import leap_engine as le
+        run = getattr(le, 'run_leap_search', None) or getattr(le, 'run_leap_engine', None)
+        if callable(run):
+            status_obj = None
+            try:
+                status_obj = st.status('Leap Engine v50: run_leap_search route running...', expanded=True)
+                status_obj.write('1/3 prefer run_leap_search so final GPU/route wrappers are active')
+            except Exception:
+                status_obj = None
+            context = {**cfg, 'ui_patch': APP_V50_ACTIVE_PATCH_ID, 'prefer_run_leap_search': True}
+            res = run(prompt=cfg.get('prompt'), query=cfg.get('prompt'), seed=cfg.get('seed'), max_turns=cfg.get('max_turns'), max_candidates=cfg.get('max_candidates'), operators=cfg.get('operators'), operator_sequence=cfg.get('operator_sequence'), context=context, constraints=cfg.get('constraints'), feedback=cfg.get('feedback'))
+            rd = _app50_enforce_latest_result(_app50_dict(res))
+            rd.setdefault('official_route','leap_engine.run_leap_search::APP_V50_PREFERRED')
+            rd.setdefault('route','hidden_branching_v14_run_leap_search_preferred_v50')
+            rd['operation_controls'] = {k: cfg.get(k) for k in ['operators','operator_sequence','disturbance_magnitude','theta_schedule','operated_layer_count','operated_layer_meaning','seed','max_turns','max_candidates']}
+            rd.setdefault('route_attempts', []).insert(0, {'route':'leap_engine.run_leap_search','available':True,'selected':True,'patch_id':APP_V50_ACTIVE_PATCH_ID})
+            try:
+                if status_obj is not None:
+                    status_obj.update(label='Leap Engine v50: run_leap_search completed', state='complete', expanded=False)
+            except Exception:
+                pass
+            return rd
+    except Exception as e:
+        try:
+            st.warning('APP V50 preferred run_leap_search route failed; falling back. error=' + _app50_text(e, 800))
+        except Exception:
+            pass
+    if callable(_APP50_PREV_LEAPV8_RUN):
+        return _app50_enforce_latest_result(_APP50_PREV_LEAPV8_RUN(cfg))
+    return {'status':'failed','reason':'no_leap_route_app_v50','decoded_candidates':[]}
+
+
+def _app47b_collect_candidates(root, rep):
+    cs, _raw = _app50_collect_candidates(root, rep)
+    return cs
+
+
+def _app47b_candidate_compact(c, idx=0):
+    return _app50_candidate_compact(c, idx)
+
+
+def _app47b_build_compact_feedback_payload(debug_payload):
+    debug_payload = _app50_dict(debug_payload)
+    root = _app50_enforce_latest_result(_app50_dict(debug_payload.get('result') or debug_payload))
+    rep = _app50_dict(debug_payload.get('hidden_branching_report_v14') or root.get('hidden_branching_report_v14'))
+    candidates, raw_count = _app50_collect_candidates(root, rep)
+    compact_candidates = [_app50_candidate_compact(c, i) for i, c in enumerate(candidates)]
+    route = _app50_route(root)
+    guard = _app50_guard(root)
+    gpu_count = sum(1 for c in compact_candidates if bool(c.get('gpu_tensor_evaluation')))
+    v47_count = sum(1 for c in compact_candidates if _app50_dict(c.get('gpu_tensor_evaluation')).get('patch_id') == APP_V50_EXPECTED_LEAP_GPU_PATCH_ID)
+    compact = {
+        'compact_export_schema': 'leap_feedback_gpu_route_guard_compact_v50',
+        'patch_id': APP_V50_ACTIVE_PATCH_ID,
+        'top_level': _app50_pick(root, ['status','mode','route','official_route','primary_result_route','reason','query']),
+        'operation_controls': root.get('operation_controls'),
+        'app_v50_active_route_fix': root.get('app_v50_active_route_fix'),
+        'gpu_diagnostic_route_guard': guard,
+        'gpu_diagnostic_route_guard_v49': _app50_dict(root.get('gpu_diagnostic_route_guard_v49')),
+        'gpu_tensor_route': route,
+        'gpu_tensor_route_latest': _app50_dict(root.get('gpu_tensor_route_latest')),
+        'gpu_tensor_route_v47': _app50_dict(root.get('gpu_tensor_route_v47')),
+        'operator_dispatch_diagnostics_v45': root.get('operator_dispatch_diagnostics_v45'),
+        'topology_shift_graph_transform_summary_v45': root.get('topology_shift_graph_transform_summary_v45'),
+        's_matrix_usr_verification_summary': root.get('s_matrix_usr_verification_summary'),
+        'candidate_count_raw_before_dedupe': raw_count,
+        'candidate_count_compact': len(compact_candidates),
+        'candidate_count_with_gpu_eval': gpu_count,
+        'candidate_count_with_v47_gpu_eval': v47_count,
+        'candidate_count_without_gpu_eval': len(compact_candidates) - gpu_count,
+        'candidates': compact_candidates,
+        'review_summary': {
+            'expected_gpu_patch_id': APP_V50_EXPECTED_LEAP_GPU_PATCH_ID,
+            'expected_leap_route_guard_patch_id': APP_V50_EXPECTED_LEAP_ROUTE_GUARD,
+            'actual_gpu_patch_id': route.get('patch_id') or guard.get('actual_gpu_patch_id'),
+            'actual_route_guard_patch_id': guard.get('patch_id'),
+            'v47_route_active': (route.get('patch_id') == APP_V50_EXPECTED_LEAP_GPU_PATCH_ID) or bool(guard.get('v47_route_active')),
+            'run_selection_policy': 'run_leap_search_preferred_v50',
+            'candidate_dedupe_policy': 'candidate_id_first_then_graph_signature',
+            'raw_candidate_references_before_dedupe': raw_count,
+            'device_used': route.get('device_used'),
+            'candidate_count_tensorized': route.get('candidate_count_tensorized'),
+            'tensor_ops_count': route.get('tensor_ops_count'),
+        },
+    }
+    compact['compact_hash'] = _app50_hash(compact, 12)
+    return compact
+
+
+def _app47b_render_gpu_diagnostic_summary(root):
+    root = _app50_dict(root)
+    route = _app50_route(root)
+    guard = _app50_guard(root)
+    try:
+        with st.expander('GPU route guard summary / GPU経路ガード診断 v50', expanded=((route.get('patch_id') != APP_V50_EXPECTED_LEAP_GPU_PATCH_ID) and not guard.get('v47_route_active'))):
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric('route patch', str(route.get('patch_id') or 'none')[:32])
+            c2.metric('v47 active', str((route.get('patch_id') == APP_V50_EXPECTED_LEAP_GPU_PATCH_ID) or bool(guard.get('v47_route_active'))))
+            c3.metric('device', str(route.get('device_used') or 'none'))
+            c4.metric('tensor ops', int(route.get('tensor_ops_count') or 0))
+            st.json({'app_patch_id':APP_V50_ACTIVE_PATCH_ID, 'route':route, 'guard':guard, 'app_v50_active_route_fix':root.get('app_v50_active_route_fix')})
+    except Exception:
+        pass
+    return None
+# ============================================================================
+# END ADD-ONLY ACTIVE PATCH: APP-V50-EARLY-ACTIVE-COMPACT-AND-RUN-ROUTE-FIX-20260509
+# ============================================================================
+
 def _leapv8_render_result(result, cfg=None):
     r=_app14p_dict(result); rep=_app14p_report(r)
     try:
@@ -13695,7 +14227,30 @@ def _leapv8_render_result(result, cfg=None):
                     st.code(_app14p_text(md.get('mermaid'),6000), language='mermaid')
         # Full debug is download only. Do not st.json full nested payload; it freezes Streamlit.
         debug_payload={'result':r, 'hidden_branching_report_v14':rep}
-        st.download_button('Download Debug JSON / full result', data=_app14p_full_json_bytes(debug_payload), file_name='leap_engine_v14_debug_full_result.json', mime='application/json')
+        _app47b_render_gpu_diagnostic_summary(r)
+        # APP-LEAP-GPU-DIAG-COMPACT-V47B: original one-line full-log button retained as comment.
+        # st.download_button('Download Debug JSON / full result', data=_app14p_full_json_bytes(debug_payload), file_name='leap_engine_v14_debug_full_result.json', mime='application/json')
+        full_debug_bytes_v47b = _app14p_full_json_bytes(debug_payload)
+        compact_debug_payload_v47b = _app47b_build_compact_feedback_payload(debug_payload)
+        compact_debug_bytes_v47b = _app47b_json_bytes(compact_debug_payload_v47b)
+        full_col_v47b, compact_col_v47b = st.columns(2)
+        with full_col_v47b:
+            st.download_button(
+                'Download Debug JSON / full result',
+                data=full_debug_bytes_v47b,
+                file_name='leap_engine_v14_debug_full_result.json',
+                mime='application/json',
+                key='leap_full_debug_download_v47b',
+            )
+        with compact_col_v47b:
+            st.download_button(
+                'フィードバック用コンパクトGPUログを保存',
+                data=compact_debug_bytes_v47b,
+                file_name=_app47b_filename(compact_debug_payload_v47b, compact_debug_bytes_v47b),
+                mime='application/json',
+                help='FullログからGPU診断/topology_shift/S行列/graph/識別性/scoreなどレビューに必要な部分だけを保存します。',
+                key='leap_compact_gpu_feedback_download_v47b_' + str(compact_debug_payload_v47b.get('compact_hash', 'nohash')),
+            )
     except Exception as e:
         st.error('Leap result render failed: '+_app14p_text(e,500))
     return None
@@ -14074,6 +14629,695 @@ except Exception:
 ## ============================================================================
 ## END ADD-ONLY PATCH APP-LATEST-ONLY-REMOTE-RUNTIME-V15I-BEFORE-RENDER-20260503
 ## ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY PATCH: APP-V60-PRE-RENDER-ACTIVE-EXECUTION-AND-COMPACT-SHIM
+# generated: 2026-05-13 JST
+# purpose:
+# - Install active Leap run route and compact-feedback helpers BEFORE the final
+#   _leapv8_render_main_ui() call. Previous V59/V50 helpers existed after the
+#   render call, so a clicked button could still use stale/shallow execution.
+# - Prefer leap_engine.run_leap_search, attach non-trivial execution diagnostics,
+#   and keep compact feedback export available at render time.
+# - Generic; no benchmark/task-name hardcoding; existing code deleted = false.
+# ============================================================================
+APP_V60_PRE_RENDER_ACTIVE_PATCH_ID = 'APP-V60-PRE-RENDER-ACTIVE-EXECUTION-AND-COMPACT-SHIM-20260513'
+try:
+    _APP_V60_PREV_LEAPV8_RUN = _leapv8_run
+except Exception:
+    _APP_V60_PREV_LEAPV8_RUN = None
+
+def _app_v60_d(x): return x if isinstance(x, dict) else {}
+def _app_v60_l(x): return x if isinstance(x, list) else (list(x) if isinstance(x, tuple) else [])
+def _app_v60_t(x, limit=2000):
+    try: s='' if x is None else str(x)
+    except Exception: s=repr(x)
+    return ' '.join(s.split())[:max(0,int(limit))]
+def _app_v60_now():
+    try:
+        import time as _time
+        return float(_time.time())
+    except Exception: return 0.0
+def _app_v60_hash(obj, n=12):
+    try:
+        import json as _json, hashlib as _hashlib
+        return _hashlib.sha256(_json.dumps(obj, ensure_ascii=False, sort_keys=True, default=str).encode('utf-8')).hexdigest()[:int(n)]
+    except Exception: return 'nohash'
+def _app_v60_json_bytes(obj):
+    try:
+        import json as _json
+        return _json.dumps(obj, ensure_ascii=False, indent=2, default=str).encode('utf-8')
+    except Exception: return str(obj).encode('utf-8')
+
+def _app_v60_runtime_available():
+    try:
+        if callable(globals().get('_runtime_backend_available_v49')) and bool(_runtime_backend_available_v49()):
+            return True
+    except Exception: pass
+    try: return bool(str(_transformers_runtime_url() or '').strip())
+    except Exception: return False
+
+def _app_v60_runtime_json_fn(prompt_text, schema_obj=None, max_new_tokens=None):
+    schema = schema_obj or {'type':'object','additionalProperties':True}
+    return _transformers_runtime_generate_json(
+        prompt_text=str(prompt_text or ''), schema_obj=schema,
+        max_new_tokens=int(max_new_tokens or st.session_state.get('max_new_tokens_loop', 2048) or 2048)
+    )
+
+def _app_v60_report(root):
+    r=_app_v60_d(root)
+    for k in ('hidden_branching_report_v14','hidden_branching_report_v13','hidden_branching_report'):
+        if isinstance(r.get(k), dict) and r.get(k): return r.get(k)
+    return {}
+def _app_v60_route(root):
+    r=_app_v60_d(root)
+    return _app_v60_d(r.get('gpu_tensor_route_v47') or r.get('gpu_tensor_route_latest') or r.get('gpu_tensor_route_v46') or r.get('gpu_tensor_route'))
+def _app_v60_candidate_id(c):
+    c=_app_v60_d(c); co=_app_v60_d(c.get('candidate_object'))
+    return _app_v60_t(c.get('candidate_id') or co.get('candidate_id') or c.get('id') or c.get('turn_id') or '', 180)
+def _app_v60_collect_candidates(root, rep=None):
+    roots=[_app_v60_d(root), _app_v60_d(rep or _app_v60_report(root))]
+    for extra in ('result','debug','debug_full_result'):
+        if isinstance(_app_v60_d(root).get(extra), dict): roots.append(_app_v60_d(_app_v60_d(root).get(extra)))
+    best={}; order=[]; raw=0
+    for obj in roots:
+        for k in ('v58_selected_candidates','generated_ideas','decoded_candidates','accepted_candidates','candidates','candidate_lifecycle_table'):
+            for c in _app_v60_l(obj.get(k)):
+                if not isinstance(c, dict): continue
+                raw += 1
+                cid=_app_v60_candidate_id(c)
+                key=('candidate_id', cid) if cid else ('hash', _app_v60_hash(c,16))
+                if key not in best:
+                    best[key]=c; order.append(key)
+    return [best[k] for k in order], raw
+
+def _app_v60_depth(result):
+    r=_app_v60_d(result); rep=_app_v60_report(r); cand, raw=_app_v60_collect_candidates(r, rep)
+    m=_app_v60_d(rep.get('execution_metrics') or r.get('execution_metrics'))
+    turns=int(m.get('turns_executed_total') or m.get('turns_executed') or 0)
+    branches=int(m.get('branches_executed') or 0)
+    ideas=int(m.get('ideas_generated') or len(cand))
+    elapsed=float(r.get('app_v60_run_elapsed_sec',0.0) or 0.0)
+    warnings=[]
+    if elapsed and elapsed < 1.0: warnings.append('execution_returned_under_1_sec_check_connection_or_short_circuit')
+    if turns <= 0: warnings.append('turns_executed_total_missing_or_zero')
+    if ideas <= 0: warnings.append('candidate_generation_missing')
+    if not _app_v60_route(r): warnings.append('gpu_or_tensor_route_summary_missing')
+    return {'patch_id':APP_V60_PRE_RENDER_ACTIVE_PATCH_ID,'elapsed_sec':elapsed,'turns_executed_total':turns,'branches_executed':branches,'ideas_generated':ideas,'candidate_count_deduped':len(cand),'candidate_references_raw':raw,'warnings':warnings,'nontrivial_execution_evidence':bool((turns>0 or branches>0) and ideas>0)}
+
+def _app_v60_post(result, cfg=None, t0=None):
+    r=_app_v60_d(result).copy() or {'status':'failed','reason':'empty_result'}
+    if t0 is not None: r['app_v60_run_elapsed_sec']=max(0.0, _app_v60_now()-float(t0))
+    r.setdefault('operation_controls', {k:_app_v60_d(cfg).get(k) for k in ('operators','operator_sequence','seed','max_turns','max_candidates','disturbance_magnitude','theta_schedule','operated_layer_count','operated_layer_meaning')})
+    r['app_v60_pre_render_active']={'patch_id':APP_V60_PRE_RENDER_ACTIVE_PATCH_ID,'installed_before_final_render':True,'run_route_policy':'prefer leap_engine.run_leap_search','compact_helpers_installed_before_render':True,'no_task_or_benchmark_name_hardcoding':True}
+    r['app_v60_execution_depth_diagnostics']=_app_v60_depth(r)
+    if r['app_v60_execution_depth_diagnostics'].get('warnings'):
+        r['warnings']=list(dict.fromkeys(_app_v60_l(r.get('warnings'))+r['app_v60_execution_depth_diagnostics']['warnings']))
+    return r
+
+def _app_v60_call_signature_safe(fn, kwargs):
+    try:
+        import inspect as _inspect
+        sig=_inspect.signature(fn)
+        if any(p.kind == p.VAR_KEYWORD for p in sig.parameters.values()):
+            return fn(**kwargs)
+        return fn(**{k:v for k,v in kwargs.items() if k in sig.parameters})
+    except TypeError:
+        return fn(kwargs.get('prompt') or kwargs.get('query'), seed=kwargs.get('seed'), max_turns=kwargs.get('max_turns'))
+
+def _leapv8_run(cfg):
+    cfg=_app_v60_d(cfg).copy(); ctx=_app_v60_d(cfg.get('context')).copy()
+    ctx.update({'app_v60_pre_render_active_patch_id':APP_V60_PRE_RENDER_ACTIVE_PATCH_ID,'prefer_run_leap_search':True,'deep_execution_required':True,'require_nontrivial_search_evidence':True,'disable_text_fallback_candidate_success':True,'hidden_branching_report_enabled':True,'causal_reasoning_required':True,'growth_engine_connection_required':True,'compact_feedback_required':True,'no_task_or_benchmark_name_hardcoding':True})
+    if _app_v60_runtime_available():
+        ctx.setdefault('llm_json_fn', _app_v60_runtime_json_fn); ctx.setdefault('runtime_llm_json_fn', _app_v60_runtime_json_fn)
+        cfg.setdefault('llm_json_fn', _app_v60_runtime_json_fn); cfg.setdefault('runtime_llm_json_fn', _app_v60_runtime_json_fn)
+    cfg['context']=ctx
+    t0=_app_v60_now()
+    try:
+        import leap_engine as _le
+        run=getattr(_le,'run_leap_search',None) or getattr(_le,'run_leap_engine',None)
+        if callable(run):
+            try:
+                status_obj=st.status('Leap Engine v60: active pre-render run_leap_search route...', expanded=True)
+                status_obj.write('pre-render route patch active; stale post-render patches are bypassed')
+            except Exception: status_obj=None
+            result=_app_v60_call_signature_safe(run, {'prompt':cfg.get('prompt'),'query':cfg.get('prompt'),'seed':cfg.get('seed'),'max_turns':cfg.get('max_turns'),'max_candidates':cfg.get('max_candidates'),'operators':cfg.get('operators'),'operator_sequence':cfg.get('operator_sequence'),'context':ctx,'constraints':cfg.get('constraints'),'feedback':cfg.get('feedback'),'llm_json_fn':cfg.get('llm_json_fn'),'runtime_llm_json_fn':cfg.get('runtime_llm_json_fn')})
+            rd=_app_v60_post(result, cfg=cfg, t0=t0)
+            rd.setdefault('official_route','leap_engine.run_leap_search::APP_V60_PRE_RENDER_ACTIVE')
+            rd.setdefault('route','hidden_branching_v14_run_leap_search_pre_render_v60')
+            rd.setdefault('route_attempts',[])
+            if isinstance(rd.get('route_attempts'), list): rd['route_attempts'].insert(0, {'route':'leap_engine.run_leap_search','available':True,'selected':True,'patch_id':APP_V60_PRE_RENDER_ACTIVE_PATCH_ID})
+            try:
+                if status_obj is not None: status_obj.update(label='Leap Engine v60: completed', state='complete', expanded=False)
+            except Exception: pass
+            return rd
+    except Exception as e:
+        try: st.warning('APP V60 preferred Leap route failed; falling back. error='+_app_v60_t(e,800))
+        except Exception: pass
+    if callable(_APP_V60_PREV_LEAPV8_RUN): return _app_v60_post(_APP_V60_PREV_LEAPV8_RUN(cfg), cfg=cfg, t0=t0)
+    return _app_v60_post({'status':'failed','reason':'no_leap_route_app_v60'}, cfg=cfg, t0=t0)
+
+# Pre-render compact-feedback shim. These names are used by earlier renderers.
+def _app47b_json_bytes(obj): return _app_v60_json_bytes(obj)
+def _app47b_filename(compact, data):
+    try:
+        from datetime import datetime as _dt
+        ts=_dt.now().strftime('%Y%m%d_%H%M%S')
+    except Exception: ts='notime'
+    return 'leap_compact_feedback__{}__{}bytes__{}.json'.format(ts, len(data) if data is not None else 0, _app_v60_d(compact).get('compact_hash') or 'nohash')
+def _app47b_build_compact_feedback_payload(debug_payload):
+    root=_app_v60_d(_app_v60_d(debug_payload).get('result') or debug_payload); rep=_app_v60_d(_app_v60_d(debug_payload).get('hidden_branching_report_v14') or _app_v60_report(root))
+    cand, raw=_app_v60_collect_candidates(root, rep); route=_app_v60_route(root)
+    rows=[]
+    for i,c in enumerate(cand):
+        c=_app_v60_d(c); co=_app_v60_d(c.get('candidate_object')); gpu=_app_v60_d(c.get('gpu_tensor_evaluation_v47') or co.get('gpu_tensor_evaluation_v47') or c.get('gpu_tensor_evaluation_latest') or c.get('gpu_tensor_evaluation') or c.get('gpu_tensor_evaluation_v46'))
+        rows.append({'index':i,'candidate_id':_app_v60_candidate_id(c),'status':c.get('status') or co.get('status'),'operator_trace':c.get('operator_trace') or co.get('operator_trace'),'overall_score':c.get('overall_score') or c.get('overall_score_v58') or c.get('score'),'publishable_status':c.get('publishable_status') or co.get('publishable_status'),'graph_signature_v45':c.get('graph_signature_v45') or co.get('graph_signature_v45'),'gpu_tensor_evaluation':gpu,'score_components_v58':c.get('score_components_v58'),'scores_v58':c.get('scores_v58'),'app_v58_causal_verification':c.get('app_v58_causal_verification')})
+    compact={'compact_export_schema':'leap_feedback_pre_render_active_compact_v60','patch_id':APP_V60_PRE_RENDER_ACTIVE_PATCH_ID,'top_level':{k:root.get(k) for k in ('status','mode','route','official_route','primary_result_route','reason','query') if k in root},'operation_controls':root.get('operation_controls'),'app_v60_execution_depth_diagnostics':root.get('app_v60_execution_depth_diagnostics'),'gpu_tensor_route':route,'candidate_count_raw_before_dedupe':raw,'candidate_count_compact':len(rows),'candidates':rows,'warnings':_app_v60_l(root.get('warnings'))}
+    compact['compact_hash']=_app_v60_hash(compact,12)
+    return compact
+def _app47b_render_gpu_diagnostic_summary(root):
+    r=_app_v60_d(root); route=_app_v60_route(r); depth=_app_v60_d(r.get('app_v60_execution_depth_diagnostics'))
+    try:
+        with st.expander('Execution / GPU / compact-log diagnostics v60', expanded=bool(depth.get('warnings'))):
+            c1,c2,c3,c4=st.columns(4); c1.metric('elapsed_sec', round(float(depth.get('elapsed_sec',0.0) or 0.0),3)); c2.metric('turns', int(depth.get('turns_executed_total',0) or 0)); c3.metric('ideas', int(depth.get('ideas_generated',0) or 0)); c4.metric('device', str(route.get('device_used') or route.get('device') or 'none'))
+            st.json({'patch_id':APP_V60_PRE_RENDER_ACTIVE_PATCH_ID,'execution_depth':depth,'gpu_tensor_route':route,'warnings':_app_v60_l(r.get('warnings'))})
+    except Exception: pass
+try:
+    st.session_state['app_v60_pre_render_active_execution_patch']={'patch_id':APP_V60_PRE_RENDER_ACTIVE_PATCH_ID,'installed_before_final_render':True,'overrides':[' _leapv8_run','_app47b_build_compact_feedback_payload','_app47b_render_gpu_diagnostic_summary']}
+except Exception: pass
+# ============================================================================
+# END ADD-ONLY PATCH: APP-V60-PRE-RENDER-ACTIVE-EXECUTION-AND-COMPACT-SHIM
+# ============================================================================
+
+
+
+# ============================================================================
+# ADD-ONLY PATCH: APP-V65C-LATEST-LEAPV8-DIRECT-CONTROLS-AND-ROUTE-BEFORE-RENDER
+# generated_at_jst: 20260516
+# source_file_before_bytes: 1038654
+# source_file_before_sha256_8: f6e3470a
+# purpose:
+# - Fix V65 integration point: the visible panel is _leapv8_render_main_ui(),
+#   i.e. "Leap Engine 発明テスト（Latest: V15C LLM Wire Proof / V14 Primary）".
+# - Put V65 loop controls directly inside that existing panel, without adding a
+#   separate expander.
+# - Force the button route in that panel through leap_engine.run_invention_closed_loop_v65.
+# - Install before the final _leapv8_render_main_ui() call so the UI and button
+#   actually use the patched route during the same Streamlit run.
+# policy:
+# - ADD-ONLY: no existing code is deleted.
+# - No benchmark/task-name hardcoding. Controls and route are generic.
+# ============================================================================
+APP_V65C_LATEST_LEAPV8_PATCH_ID = 'APP-V65C-LATEST-LEAPV8-DIRECT-CONTROLS-AND-ROUTE-BEFORE-RENDER-20260516'
+
+try:
+    import importlib as _app_v65c_importlib
+    import json as _app_v65c_json
+    import hashlib as _app_v65c_hashlib
+    import time as _app_v65c_time
+except Exception:
+    _app_v65c_importlib = None
+    _app_v65c_json = None
+    _app_v65c_hashlib = None
+    _app_v65c_time = None
+
+try:
+    _APP_V65C_PREV_LEAPV8_RUN = _leapv8_run
+except Exception:
+    _APP_V65C_PREV_LEAPV8_RUN = None
+try:
+    _APP_V65C_PREV_LEAPV8_RENDER_MAIN_UI = _leapv8_render_main_ui
+except Exception:
+    _APP_V65C_PREV_LEAPV8_RENDER_MAIN_UI = None
+try:
+    _APP_V65C_PREV_APP47B_COMPACT = _app47b_build_compact_feedback_payload
+except Exception:
+    _APP_V65C_PREV_APP47B_COMPACT = None
+
+
+def _app_v65c_d(x):
+    try:
+        return dict(x) if isinstance(x, dict) else {}
+    except Exception:
+        return {}
+
+
+def _app_v65c_l(x):
+    if x is None:
+        return []
+    if isinstance(x, list):
+        return list(x)
+    if isinstance(x, tuple):
+        return list(x)
+    return [x]
+
+
+def _app_v65c_int(x, default=0):
+    try:
+        return int(x)
+    except Exception:
+        return int(default)
+
+
+def _app_v65c_float(x, default=0.0):
+    try:
+        return float(x)
+    except Exception:
+        return float(default)
+
+
+def _app_v65c_hash(obj, n=12):
+    try:
+        raw = _app_v65c_json.dumps(obj, ensure_ascii=False, sort_keys=True, default=str)
+        return _app_v65c_hashlib.sha256(raw.encode('utf-8')).hexdigest()[:int(n)]
+    except Exception:
+        return 'hash_unavailable'
+
+
+def _app_v65c_import(module_name):
+    try:
+        if _app_v65c_importlib is None:
+            return None
+        return _app_v65c_importlib.import_module(module_name)
+    except Exception:
+        return None
+
+
+def _app_v65c_session_default(key, value):
+    try:
+        if 'st' in globals() and hasattr(st, 'session_state') and key not in st.session_state:
+            st.session_state[key] = value
+    except Exception:
+        pass
+
+
+def _app_v65c_init_defaults():
+    _app_v65c_session_default('app_v65_closed_loop_enabled', True)
+    _app_v65c_session_default('app_v65_growth_cycles', 2)
+    _app_v65c_session_default('app_v65_max_candidates', 8)
+    _app_v65c_session_default('app_v65_latest_route_proof_visible', True)
+
+
+def _app_v65c_collect_candidates(result):
+    root=_app_v65c_d(result)
+    out=[]; seen=set()
+    for key in ('decoded_candidates','accepted_candidates','candidates','candidate_rows_v65','candidate_rows','public_candidates_v64','public_candidates_v63'):
+        for c in _app_v65c_l(root.get(key)):
+            if not isinstance(c, dict):
+                continue
+            cid=c.get('candidate_id') or c.get('id') or _app_v65c_hash(c,10)
+            if cid in seen:
+                continue
+            seen.add(cid); cc=dict(c); cc.setdefault('candidate_id', cid); out.append(cc)
+    best=root.get('best_candidate')
+    if isinstance(best, dict):
+        cid=best.get('candidate_id') or best.get('id') or _app_v65c_hash(best,10)
+        if cid not in seen:
+            bb=dict(best); bb.setdefault('candidate_id', cid); out.append(bb)
+    return out
+
+
+def _app_v65c_make_fallback_trace(reason, cycles_requested):
+    return {
+        'patch_id': APP_V65C_LATEST_LEAPV8_PATCH_ID,
+        'enabled': False,
+        'cycles_requested': int(cycles_requested or 0),
+        'cycles_executed': 0,
+        'regeneration_executed': False,
+        'regeneration_count': 0,
+        'loop_effective': False,
+        'stop_reason': reason,
+        'effect_summary': {},
+        'nontrivial_execution_evidence': False,
+    }
+
+
+def _app_v65c_normalize_v65_result(result, cfg=None, used_v65_route=False, fallback_used=False, reason=''):
+    cfg=_app_v65c_d(cfg); root=_app_v65c_d(result).copy()
+    cycles=_app_v65c_int(cfg.get('app_v65_growth_cycles') or cfg.get('max_growth_cycles') or 2, 2)
+    trace=_app_v65c_d(root.get('invention_closed_loop_v65') or root.get('closed_loop_trace_v65') or root.get('closed_loop_trace'))
+    if not trace:
+        trace=_app_v65c_make_fallback_trace(reason or root.get('reason') or 'v65_trace_missing', cycles)
+    trace.setdefault('patch_id', APP_V65C_LATEST_LEAPV8_PATCH_ID)
+    trace.setdefault('cycles_requested', cycles)
+    trace.setdefault('cycles_executed', 0)
+    trace.setdefault('regeneration_count', 0)
+    trace.setdefault('regeneration_executed', bool(trace.get('regeneration_count')))
+    trace.setdefault('loop_effective', False)
+    trace.setdefault('nontrivial_execution_evidence', bool(trace.get('cycles_executed')))
+    root['invention_closed_loop_v65']=trace
+    root['closed_loop_trace_v65']=trace
+    root['mode']='invention_closed_loop_v65' if used_v65_route else root.get('mode','invention_closed_loop_v65_fallback_unavailable')
+    if used_v65_route:
+        root['route']='leap_engine.run_invention_closed_loop_v65'
+        root['official_route']='leap_engine.run_invention_closed_loop_v65'
+        root['primary_result_route']='leap_engine.run_invention_closed_loop_v65'
+    else:
+        root.setdefault('official_route', root.get('route') or 'v65_unavailable_fallback')
+    root.setdefault('query', cfg.get('prompt') or root.get('query') or '')
+    root.setdefault('status', 'ok' if trace.get('cycles_executed') else 'degraded')
+    root.setdefault('reason', trace.get('stop_reason') or reason)
+    candidates=_app_v65c_collect_candidates(root)
+    compact=_app_v65c_d(root.get('compact_feedback_v65'))
+    compact.setdefault('compact_export_schema','leap_feedback_invention_closed_loop_v65_latest_panel_compact')
+    compact.setdefault('patch_id', APP_V65C_LATEST_LEAPV8_PATCH_ID)
+    compact['top_level']={
+        'status': root.get('status'),
+        'mode': root.get('mode'),
+        'route': root.get('route'),
+        'official_route': root.get('official_route'),
+        'primary_result_route': root.get('primary_result_route'),
+        'reason': root.get('reason'),
+        'query': root.get('query'),
+    }
+    compact['invention_closed_loop_v65']=trace
+    compact['closed_loop_trace']=trace
+    compact['pre_generation_plan']=root.get('pre_generation_plan_v65') or compact.get('pre_generation_plan') or {}
+    compact['growth_feedback']=root.get('growth_feedback_v65') or compact.get('growth_feedback') or {}
+    compact['s_matrix_feedback_summary']=root.get('s_matrix_feedback_summary_v65') or compact.get('s_matrix_feedback_summary') or {}
+    compact['candidate_rows']=root.get('candidate_rows_v65') or compact.get('candidate_rows') or candidates
+    compact['app_v65_execution_depth_diagnostics']={
+        'patch_id': APP_V65C_LATEST_LEAPV8_PATCH_ID,
+        'turns_executed_total': _app_v65c_int(trace.get('cycles_executed'),0),
+        'branches_executed': _app_v65c_int(trace.get('regeneration_count'),0),
+        'cycles_executed': _app_v65c_int(trace.get('cycles_executed'),0),
+        'regeneration_count': _app_v65c_int(trace.get('regeneration_count'),0),
+        'loop_effective': bool(trace.get('loop_effective')),
+        'nontrivial_execution_evidence': bool(trace.get('nontrivial_execution_evidence')),
+        'official_route': 'leap_engine.run_invention_closed_loop_v65' if used_v65_route else root.get('official_route'),
+        'used_v65_route': bool(used_v65_route),
+        'fallback_used': bool(fallback_used),
+    }
+    compact['compact_hash_v65']=_app_v65c_hash(compact,12)
+    root['compact_feedback_v65']=compact
+    root['app_v65_execution_depth_diagnostics']=compact['app_v65_execution_depth_diagnostics']
+    root['app_v65c_latest_panel_route_proof']={
+        'patch_id': APP_V65C_LATEST_LEAPV8_PATCH_ID,
+        'installed_before_final_render': True,
+        'visible_panel': 'Leap Engine 発明テスト（Latest: V15C LLM Wire Proof / V14 Primary）',
+        'controls_inside_latest_panel_without_extra_expander': True,
+        'used_v65_route': bool(used_v65_route),
+        'fallback_used': bool(fallback_used),
+        'cycles_requested_from_gui': cycles,
+        'max_candidates_from_gui': _app_v65c_int(cfg.get('app_v65_max_candidates') or cfg.get('max_candidates'),8),
+    }
+    return root
+
+
+def _leapv8_run(cfg):
+    cfg=_app_v65c_d(cfg)
+    _app_v65c_init_defaults()
+    use_v65=bool(cfg.get('app_v65_closed_loop_enabled', True))
+    cycles=max(1, min(8, _app_v65c_int(cfg.get('app_v65_growth_cycles') or cfg.get('max_growth_cycles') or 2,2)))
+    max_candidates=max(1, min(64, _app_v65c_int(cfg.get('app_v65_max_candidates') or cfg.get('max_candidates') or 8,8)))
+    if use_v65:
+        mod=_app_v65c_import('leap_engine')
+        fn=getattr(mod,'run_invention_closed_loop_v65',None) if mod is not None else None
+        if callable(fn):
+            try:
+                res=fn(
+                    query=cfg.get('prompt'),
+                    operator_sequence=cfg.get('operator_sequence') or cfg.get('operators'),
+                    max_candidates=max_candidates,
+                    max_growth_cycles=cycles,
+                    seed=_app_v65c_int(cfg.get('seed'),123),
+                    context={
+                        'observables': cfg.get('observables'),
+                        'controllables': cfg.get('controllables'),
+                        'constraints': cfg.get('constraints'),
+                        'feedback': cfg.get('feedback'),
+                        'app_v65c_latest_panel': True,
+                        'app_v65c_route_patch_id': APP_V65C_LATEST_LEAPV8_PATCH_ID,
+                    },
+                )
+                return _app_v65c_normalize_v65_result(res, cfg=cfg, used_v65_route=True, fallback_used=False, reason='v65_closed_loop_route_executed_from_latest_panel')
+            except Exception as e:
+                fallback_reason='v65_closed_loop_route_exception:' + str(e)[:300]
+        else:
+            fallback_reason='leap_engine.run_invention_closed_loop_v65_not_available_in_latest_panel'
+    else:
+        fallback_reason='app_v65_closed_loop_disabled_by_latest_panel_control'
+    if callable(_APP_V65C_PREV_LEAPV8_RUN):
+        try:
+            fb=_APP_V65C_PREV_LEAPV8_RUN(cfg)
+            fb=_app_v65c_normalize_v65_result(fb, cfg=cfg, used_v65_route=False, fallback_used=True, reason=fallback_reason)
+            fb['app_v65c_latest_panel_route_proof']['fallback_reason']=fallback_reason
+            return fb
+        except Exception as e2:
+            return _app_v65c_normalize_v65_result({'status':'degraded','reason':fallback_reason,'fallback_error':str(e2)[:300],'query':cfg.get('prompt')}, cfg=cfg, used_v65_route=False, fallback_used=False, reason=fallback_reason)
+    return _app_v65c_normalize_v65_result({'status':'degraded','reason':fallback_reason,'query':cfg.get('prompt')}, cfg=cfg, used_v65_route=False, fallback_used=False, reason=fallback_reason)
+
+
+def _app47b_build_compact_feedback_payload(debug_payload):
+    legacy={}
+    if callable(_APP_V65C_PREV_APP47B_COMPACT):
+        try:
+            legacy=_APP_V65C_PREV_APP47B_COMPACT(debug_payload)
+        except Exception:
+            legacy={}
+    payload=legacy if isinstance(legacy, dict) else {'legacy_payload':legacy}
+    root=_app_v65c_d(_app_v65c_d(debug_payload).get('result') or debug_payload)
+    if root.get('compact_feedback_v65'):
+        v65=_app_v65c_d(root.get('compact_feedback_v65'))
+        payload.update(v65)
+        payload['compact_export_schema_v65']='leap_feedback_invention_closed_loop_v65_latest_panel_compact_overlay'
+        payload['patch_id_v65_app']=APP_V65C_LATEST_LEAPV8_PATCH_ID
+        payload['invention_closed_loop_v65']=v65.get('invention_closed_loop_v65') or root.get('invention_closed_loop_v65')
+        payload['app_v65_execution_depth_diagnostics']=v65.get('app_v65_execution_depth_diagnostics') or root.get('app_v65_execution_depth_diagnostics')
+        payload['compact_hash_v65']=_app_v65c_hash(payload,12)
+    return payload
+
+
+def _leapv8_render_main_ui():
+    _app_v65c_init_defaults()
+    st.markdown('---')
+    with st.expander('Leap Engine 発明テスト（Latest: V15C LLM Wire Proof / V14 Primary）', expanded=True):
+        st.caption('Latest専用表示です。V65Cで閉ループ制御をこのパネル内に直接統合しています。')
+        prompt=st.text_area('発明・仮説生成したい課題', value=str(st.session_state.get('leapv8_prompt', st.session_state.get('lpim_chat_input',''))), height=140, key='leapv8_prompt')
+        a,b=st.columns(2)
+        with a: observables=st.text_input('観測可能量（カンマ区切り）', value=str(st.session_state.get('leapv8_observables','')), key='leapv8_observables')
+        with b: controllables=st.text_input('操作可能量（カンマ区切り）', value=str(st.session_state.get('leapv8_controllables','')), key='leapv8_controllables')
+        constraints_text=st.text_area('制約・前提（1行1項目）', value=str(st.session_state.get('leapv8_constraints','')), height=80, key='leapv8_constraints')
+        all_ops=['substitution','combination','decomposition','topology_shift','inversion','mediator_insertion','constraint_relaxation','observation_shift','scale_transfer','Substitute','Combine','Adapt','Modify','PutToOtherUse','Eliminate','Reverse']
+        operators=st.multiselect('アイデア創出の演算子', all_ops, default=st.session_state.get('leapv8_ops',['decomposition','topology_shift','mediator_insertion','substitution','inversion','constraint_relaxation','observation_shift','scale_transfer','combination']), key='leapv8_ops')
+        seq_text=st.text_area('演算順序', value=str(st.session_state.get('leapv8_seq','decomposition > topology_shift > mediator_insertion > substitution; inversion > constraint_relaxation; observation_shift > scale_transfer > combination')), height=80, key='leapv8_seq')
+        c1,c2,c3,c4=st.columns(4)
+        with c1: seed=st.number_input('seed',0,999999,int(st.session_state.get('leapv8_seed',42)),key='leapv8_seed')
+        with c2: max_turns=st.slider('max_turns',1,32,int(st.session_state.get('leapv8_max_turns',8)),key='leapv8_max_turns')
+        with c3: max_candidates=st.slider('max_candidates',1,24,int(st.session_state.get('leapv8_max_candidates',8)),key='leapv8_max_candidates')
+        with c4: layer_count=st.slider('操作する層の数',1,16,int(st.session_state.get('leapv8_layer_count',3)),key='leapv8_layer_count')
+        # V65C controls: direct placement in the visible Latest panel; no separate expander.
+        st.markdown('**V65 closed-loop controls**')
+        v65a,v65b,v65c=st.columns(3)
+        with v65a:
+            app_v65_closed_loop_enabled=st.checkbox('V65閉ループを有効化', value=bool(st.session_state.get('app_v65_closed_loop_enabled', True)), key='app_v65_closed_loop_enabled')
+        with v65b:
+            app_v65_growth_cycles=st.number_input('閉ループ最大サイクル数', min_value=1, max_value=8, value=int(st.session_state.get('app_v65_growth_cycles', 2)), step=1, key='app_v65_growth_cycles')
+        with v65c:
+            app_v65_max_candidates=st.number_input('V65最大候補数', min_value=1, max_value=64, value=int(st.session_state.get('app_v65_max_candidates', int(max_candidates))), step=1, key='app_v65_max_candidates')
+        st.caption('V65 route: leap_engine.run_invention_closed_loop_v65 / 生成前制御→採点→自己成長→S行列反映→再生成')
+        d,e=st.columns(2)
+        with d: layer_meaning=st.selectbox('操作する層の意味合い',['early: 語彙/局所特徴','middle: 構造/因果/抽象化','late: 目的/計画/説明','mixed: 複数層を横断'],index=1,key='leapv8_layer_meaning')
+        with e: disturbance=st.slider('乱れの大きさ / rotation magnitude',0.0,0.50,float(st.session_state.get('leapv8_disturbance',0.12)),0.01,key='leapv8_disturbance')
+        theta_text=st.text_input('theta schedule（カンマ区切り）', value=str(st.session_state.get('leapv8_theta','0.03,0.07,0.12,0.18')), key='leapv8_theta')
+        feedback=st.text_area('プログラム修正用フィードバック（任意）', value=str(st.session_state.get('leapv8_feedback','')), height=70, key='leapv8_feedback')
+        st.caption('検出(Validator)はLLM、修復(Repair)はルールベース。しきい値や再生成回数はテストで最適化する前提のためGUIで調整可能にしています。')
+        v1,v2,v3=st.columns(3)
+        with v1: validator_q_min=st.slider('validator q_min（品質しきい値）', 0.0, 1.0, float(st.session_state.get('leapv8_validator_q_min', 0.35)), 0.01, key='leapv8_validator_q_min')
+        with v2: validator_regen=st.slider('validator regen（再生成回数/候補）', 0, 6, int(st.session_state.get('leapv8_validator_regen', 2)), 1, key='leapv8_validator_regen')
+        with v3: validator_max_tokens=st.slider('validator max_tokens', 64, 1024, int(st.session_state.get('leapv8_validator_max_tokens', 256)), 16, key='leapv8_validator_max_tokens')
+        st.caption('探索幅(2)のチューニング：段階拡張(staged)でまず狭く探索し、必要に応じて候補数・分岐を増やします。')
+        m1,m2=st.columns(2)
+        with m1: explore_mode=st.selectbox('探索幅モード', ['fixed','staged'], index=1 if str(st.session_state.get('leapv8_explore_mode','staged'))=='staged' else 0, key='leapv8_explore_mode')
+        with m2: explore_stage_max=st.slider('段階拡張の最大ステージ',0,4,int(st.session_state.get('leapv8_explore_stage_max',2)),1,key='leapv8_explore_stage_max')
+        x1,x2,x3=st.columns(3)
+        with x1: explore_cap=st.slider('探索候補数の上限 cap（実効値）',1,24,int(st.session_state.get('leapv8_explore_cap',8)),1,key='leapv8_explore_cap')
+        with x2: explore_branch_cap=st.slider('分岐数の上限 cap（operator sequence）',1,8,int(st.session_state.get('leapv8_explore_branch_cap',2)),1,key='leapv8_explore_branch_cap')
+        with x3: explore_shuffle=st.checkbox('ステージ拡張時に演算子順をシャッフル生成', value=bool(st.session_state.get('leapv8_explore_shuffle', True)), key='leapv8_explore_shuffle')
+        cfg={'prompt':prompt,'observables':_leapv8_csv(observables),'controllables':_leapv8_csv(controllables),'constraints':[x.strip() for x in str(constraints_text or '').splitlines() if x.strip()],'operators':operators,'operator_sequence':_leapv8_op_sequence(seq_text),'seed':int(seed),'max_turns':int(max_turns),'max_candidates':int(max_candidates),'operated_layer_count':int(layer_count),'operated_layer_meaning':layer_meaning,'disturbance_magnitude':float(disturbance),'theta_schedule':_leapv8_float_list(theta_text,[float(disturbance)]),'feedback':feedback,'validator_q_min':float(validator_q_min),'validator_regen':int(validator_regen),'validator_max_tokens':int(validator_max_tokens),'explore_mode':str(explore_mode),'explore_stage_max':int(explore_stage_max),'explore_cap':int(explore_cap),'explore_branch_cap':int(explore_branch_cap),'explore_shuffle':bool(explore_shuffle),'app_v65_closed_loop_enabled':bool(app_v65_closed_loop_enabled),'app_v65_growth_cycles':int(app_v65_growth_cycles),'app_v65_max_candidates':int(app_v65_max_candidates),'max_growth_cycles':int(app_v65_growth_cycles),'app_v65c_patch_id':APP_V65C_LATEST_LEAPV8_PATCH_ID}
+        with st.expander('設定プレビュー', expanded=False): st.json({k:v for k,v in cfg.items() if k!='prompt'})
+        if st.button('Run Leap Engine 発明テスト', type='primary', key='leapv8_run_button'):
+            if not str(prompt or '').strip():
+                st.warning('課題が空です。')
+            else:
+                with st.spinner('Leap Engine 発明テストを実行中...'):
+                    res=_leapv8_run(cfg); st.session_state.leapv8_last_config=cfg; st.session_state.leapv8_last_result=res; st.session_state.lpim_last_result=res
+        if st.session_state.get('leapv8_last_result') is not None:
+            _leapv8_render_result(st.session_state.get('leapv8_last_result'), st.session_state.get('leapv8_last_config', cfg))
+
+try:
+    st.session_state['app_v65c_latest_leapv8_patch']={'patch_id':APP_V65C_LATEST_LEAPV8_PATCH_ID,'installed_before_final_render':True,'controls_inside_latest_panel_without_extra_expander':True,'route':'leap_engine.run_invention_closed_loop_v65'}
+except Exception:
+    pass
+# ============================================================================
+# END ADD-ONLY PATCH: APP-V65C-LATEST-LEAPV8-DIRECT-CONTROLS-AND-ROUTE-BEFORE-RENDER
+# ============================================================================
+
+
+
+# ============================================================================
+# ADD-ONLY PATCH: APP-V66-FLAT-OPSEQ-AND-V66-COMPACT-BEFORE-RENDER-20260516
+# generated_at_jst: 20260516
+# source_file_before_bytes: 1060103
+# source_file_before_sha256_8: e0b25e43
+# purpose:
+# - Keep the V65 GUI loop-count controls that now appear correctly.
+# - Fix app-side operator_sequence payload so leap_engine does not receive a
+#   list containing one stringified Python list.
+# - Preserve V66 leap_engine diversity-repair compact fields in downloads.
+# - Install before final _leapv8_render_main_ui() call.
+# policy:
+# - ADD-ONLY. No benchmark/task-name hardcoding.
+# ============================================================================
+APP_V66_FLAT_OPSEQ_PATCH_ID='APP-V66-FLAT-OPSEQ-AND-V66-COMPACT-BEFORE-RENDER-20260516'
+
+try:
+    import ast as _app_v66_ast
+    import json as _app_v66_json
+    import hashlib as _app_v66_hashlib
+except Exception:
+    _app_v66_ast=None; _app_v66_json=None; _app_v66_hashlib=None
+
+try:
+    _APP_V66_PREV_LEAPV8_RUN=_leapv8_run
+except Exception:
+    _APP_V66_PREV_LEAPV8_RUN=None
+try:
+    _APP_V66_PREV_APP47B_COMPACT=_app47b_build_compact_feedback_payload
+except Exception:
+    _APP_V66_PREV_APP47B_COMPACT=None
+try:
+    _APP_V66_PREV_APPV58_COMPACT=app_v58_build_compact_feedback_payload
+except Exception:
+    _APP_V66_PREV_APPV58_COMPACT=None
+
+
+def _app_v66_d(x):
+    try:
+        return dict(x) if isinstance(x, dict) else {}
+    except Exception:
+        return {}
+
+
+def _app_v66_l(x):
+    if x is None: return []
+    if isinstance(x, list): return list(x)
+    if isinstance(x, tuple): return list(x)
+    return [x]
+
+
+def _app_v66_text(x, limit=1000):
+    try: s='' if x is None else str(x)
+    except Exception: s=''
+    return ' '.join(s.split())[:max(0,int(limit))]
+
+
+def _app_v66_hash(obj, n=12):
+    try:
+        raw=_app_v66_json.dumps(obj, ensure_ascii=False, sort_keys=True, default=str)
+        return _app_v66_hashlib.sha256(raw.encode('utf-8')).hexdigest()[:int(n)]
+    except Exception:
+        return 'hash_unavailable'
+
+
+def _app_v66_flatten_operator_sequence(obj):
+    out=[]
+    def rec(v):
+        if v is None: return
+        if isinstance(v,(list,tuple)):
+            for item in v: rec(item)
+            return
+        s=_app_v66_text(v,1000)
+        if not s: return
+        if _app_v66_ast is not None and ((s.startswith('[') and s.endswith(']')) or (s.startswith('(') and s.endswith(')'))):
+            try:
+                parsed=_app_v66_ast.literal_eval(s)
+                rec(parsed); return
+            except Exception:
+                pass
+        if any(sep in s for sep in ['>','→',';',',','|']):
+            tmp=s.replace('→','>').replace(';','>').replace(',','>').replace('|','>')
+            for part in tmp.split('>'): rec(part.strip())
+            return
+        out.append(s)
+    rec(obj)
+    seen=set(); flat=[]
+    for op in out:
+        k=op.lower()
+        if k in seen: continue
+        seen.add(k); flat.append(op)
+    return flat or ['decomposition','topology_shift','mediator_insertion','substitution','observation_shift','scale_transfer','combination','inversion']
+
+
+def _app_v66_normalize_cfg(cfg):
+    cfg=_app_v66_d(cfg).copy()
+    raw=cfg.get('operator_sequence') or cfg.get('operators')
+    flat=_app_v66_flatten_operator_sequence(raw)
+    cfg['operator_sequence']=flat
+    cfg['operator_sequence_normalized_v66']=flat
+    cfg['app_v66_flat_operator_sequence_patch_id']=APP_V66_FLAT_OPSEQ_PATCH_ID
+    # Keep max_growth_cycles mirrored from GUI value.
+    if 'app_v65_growth_cycles' in cfg:
+        cfg['max_growth_cycles']=int(cfg.get('app_v65_growth_cycles') or cfg.get('max_growth_cycles') or 2)
+    return cfg
+
+
+def _leapv8_run(cfg):
+    cfg=_app_v66_normalize_cfg(cfg)
+    if callable(_APP_V66_PREV_LEAPV8_RUN):
+        res=_APP_V66_PREV_LEAPV8_RUN(cfg)
+    else:
+        res={'status':'degraded','reason':'previous__leapv8_run_missing_app_v66','query':cfg.get('prompt')}
+    rd=_app_v66_d(res).copy()
+    rd['app_v66_flat_operator_sequence']={'patch_id':APP_V66_FLAT_OPSEQ_PATCH_ID,'operator_sequence_normalized_v66':cfg.get('operator_sequence_normalized_v66'),'no_stringified_list_operator':all(not (str(x).startswith('[') and str(x).endswith(']')) for x in _app_v66_l(cfg.get('operator_sequence_normalized_v66'))),'installed_before_final_render':True}
+    oc=_app_v66_d(rd.get('operation_controls'))
+    oc['operator_sequence_normalized_v66']=cfg.get('operator_sequence_normalized_v66')
+    oc['operator_sequence']=cfg.get('operator_sequence_normalized_v66')
+    rd['operation_controls']=oc
+    return rd
+
+
+def _app_v66_overlay_compact(payload, debug_payload):
+    payload=_app_v66_d(payload).copy()
+    root=_app_v66_d(_app_v66_d(debug_payload).get('result') or debug_payload)
+    for k in ('app_v66_diversity_repair','app_v66_flat_operator_sequence','invention_closed_loop_v65','closed_loop_trace','growth_feedback','s_matrix_feedback_summary'):
+        if k in root:
+            payload[k]=root.get(k)
+    if root.get('operation_controls'):
+        payload['operation_controls']=root.get('operation_controls')
+    if root.get('candidate_rows'):
+        payload['candidate_rows']=root.get('candidate_rows')
+    if root.get('top_level'):
+        payload['top_level']=root.get('top_level')
+    payload['compact_export_schema_v66']='leap_feedback_v66_app_flat_opseq_diversity_repair_overlay'
+    payload['patch_id_v66_app']=APP_V66_FLAT_OPSEQ_PATCH_ID
+    payload['compact_hash_v66_app']=_app_v66_hash(payload,12)
+    return payload
+
+
+def _app47b_build_compact_feedback_payload(debug_payload):
+    base={}
+    if callable(_APP_V66_PREV_APP47B_COMPACT):
+        try: base=_APP_V66_PREV_APP47B_COMPACT(debug_payload)
+        except Exception: base={}
+    return _app_v66_overlay_compact(base, debug_payload)
+
+
+def app_v58_build_compact_feedback_payload(result):
+    base={}
+    if callable(_APP_V66_PREV_APPV58_COMPACT):
+        try: base=_APP_V66_PREV_APPV58_COMPACT(result)
+        except Exception: base={}
+    return _app_v66_overlay_compact(base, result)
+
+try:
+    st.session_state['app_v66_flat_opseq_patch']={'patch_id':APP_V66_FLAT_OPSEQ_PATCH_ID,'installed_before_final_render':True,'purpose':'flat operator_sequence and preserve V66 compact fields'}
+except Exception:
+    pass
+# ============================================================================
+# END ADD-ONLY PATCH: APP-V66-FLAT-OPSEQ-AND-V66-COMPACT-BEFORE-RENDER-20260516
+# ============================================================================
 
 try:
     # This is intentionally executed at the very end of app.py so that button
@@ -16981,4 +18225,3629 @@ except Exception:
 
 # ============================================================================
 # END ADD-ONLY PATCH: APP-V43-SMATRIX-USR-UI
+# ============================================================================
+
+
+
+# APP-V44 session coherence: if a previous run left structural_ideation in session state,
+# map it to topology_shift so old state does not re-create a separate UI mode.
+try:
+    for _app_v44_key in ('leapv4_ops', 'leapv8_ops', 'ideation_operator_sequence'):
+        _app_v44_vals = st.session_state.get(_app_v44_key)
+        if isinstance(_app_v44_vals, list):
+            st.session_state[_app_v44_key] = _app_v44_ordered_ops_from_sequence(_app_v44_vals, [_app_v44_vals])
+except Exception:
+    pass
+
+# ============================================================
+# A: Structural Ideation UI Control
+# ADD-ONLY
+# ============================================================
+import streamlit as st
+
+if 'enable_structural_ideation' not in st.session_state:
+    st.session_state.enable_structural_ideation = False
+
+if False:  # APP-V44: moved Graph Structure Ideation into the normal right-panel operator list; legacy standalone sidebar UI preserved but disabled.
+    with st.sidebar.expander('Ideation Operators', expanded=False):
+        st.session_state.enable_structural_ideation = st.checkbox(
+            'A: Graph Structure Ideation (Topology Shift)',
+            value=st.session_state.enable_structural_ideation,
+            help='Generate invention ideas by causal graph structure transfer, not trace rotation.',
+        )
+
+
+# ============================================================
+# A: Ideation Operator Pipeline UI (Order-Aware)
+# ADD-ONLY
+# ============================================================
+
+if 'ideation_operator_sequence' not in st.session_state:
+    st.session_state.ideation_operator_sequence = ['structural_ideation']
+
+if False:  # APP-V44: standalone Ideation Pipeline UI disabled; normal operator multiselect + order text area are the source of truth.
+    with st.sidebar.expander('Ideation Operator Pipeline', expanded=False):
+        ops = st.multiselect(
+            'Select ideation operators (execution order = listed order)',
+            options=[
+                'structural_ideation',      # A: causal_topology_shift
+                'trace_variation',          # existing
+                'parameter_variation',      # existing / future
+            ],
+            default=st.session_state.ideation_operator_sequence,
+            help='Ideation operators are executed sequentially in this order.'
+        )
+        st.session_state.ideation_operator_sequence = ops
+
+
+# ============================================================
+# A: Register topology_shift in right-panel operator list
+# ADD-ONLY
+# ============================================================
+try:
+    if 'AVAILABLE_OPERATORS' in globals() and 'topology_shift' not in AVAILABLE_OPERATORS:
+        AVAILABLE_OPERATORS.append('topology_shift')
+    if 'OPERATOR_LABELS' in globals():
+        OPERATOR_LABELS.setdefault('topology_shift', '構造転移（Topology Shift）')
+except Exception:
+    pass
+
+
+# ============================================================
+# A: Register topology_shift into RIGHT panel operator list
+# ADD-ONLY (no left-panel UI)
+# ============================================================
+try:
+    if 'AVAILABLE_OPERATORS' in globals():
+        if 'topology_shift' not in AVAILABLE_OPERATORS:
+            AVAILABLE_OPERATORS.append('topology_shift')
+    if 'OPERATOR_LABELS' in globals():
+        OPERATOR_LABELS.setdefault('topology_shift', '構造転移（Graph Structure Ideation）')
+except Exception:
+    pass
+
+
+# ================= ADD-ONLY =================
+# Register topology_shift for RIGHT panel operator list (universal)
+# ===========================================
+try:
+    if 'OPERATOR_LABELS' in globals():
+        OPERATOR_LABELS.setdefault('topology_shift', '構造転移（Graph Structure Ideation）')
+except Exception:
+    pass
+
+
+# ============================================================================
+# ADD-ONLY PATCH: APP-V61-GENERATED-IDEAS-SMATRIX-GRAPHVIEW-EXPORT
+# generated_at_jst: 20260509_102800
+# purpose:
+# - Pick up S-matrix / graph view from generated_ideas[*].s_matrix_graph_view_v43
+#   and display it in the GUI.
+# - Export S-matrix / graph view payloads as downloadable files.
+# - Distinguish "no generation" from "internal generation exists but GUI is not
+#   connected to the generated S-matrix/graph-view payload".
+# - No benchmark/task-name hardcoding. ADD-ONLY; existing code is preserved.
+# ============================================================================
+APP_V61_GENERATED_IDEAS_SMATRIX_GRAPHVIEW_EXPORT_PATCH_ID = 'APP-V61-GENERATED-IDEAS-SMATRIX-GRAPHVIEW-EXPORT-20260509_102800'
+
+try:
+    _APP_V61_PREV_APP_V43_IS_CANDIDATE_DICT = _app_v43_is_candidate_dict
+except Exception:
+    _APP_V61_PREV_APP_V43_IS_CANDIDATE_DICT = None
+try:
+    _APP_V61_PREV_APP_V43_EXTRACT_CANDIDATES = app_v43_extract_candidates_from_result
+except Exception:
+    _APP_V61_PREV_APP_V43_EXTRACT_CANDIDATES = None
+try:
+    _APP_V61_PREV_APP_V43_RENDER_SMATRIX_USR_UI = app_v43_render_smatrix_usr_ui
+except Exception:
+    _APP_V61_PREV_APP_V43_RENDER_SMATRIX_USR_UI = None
+try:
+    _APP_V61_PREV_LEAPV8_RENDER_RESULT = _leapv8_render_result
+except Exception:
+    _APP_V61_PREV_LEAPV8_RENDER_RESULT = None
+
+
+def _app_v61_safe_dict(x):
+    return x if isinstance(x, dict) else {}
+
+
+def _app_v61_safe_list(x):
+    if x is None:
+        return []
+    if isinstance(x, list):
+        return x
+    if isinstance(x, tuple):
+        return list(x)
+    return [x]
+
+
+def _app_v61_text(x, limit=2000):
+    try:
+        s = '' if x is None else str(x)
+    except Exception:
+        s = repr(x)
+    return ' '.join(s.split())[:max(0, int(limit))]
+
+
+def _app_v61_hash_obj(obj, n=12):
+    try:
+        import json as _json, hashlib as _hashlib
+        raw = _json.dumps(obj, ensure_ascii=False, sort_keys=True, default=str)
+        return _hashlib.sha256(raw.encode('utf-8')).hexdigest()[:int(n)]
+    except Exception:
+        return 'hash_unavailable'
+
+
+def _app_v61_json_bytes(payload):
+    try:
+        import json as _json
+        return _json.dumps(payload, ensure_ascii=False, indent=2, default=str).encode('utf-8')
+    except Exception:
+        return repr(payload).encode('utf-8')
+
+
+def _app_v61_candidate_id(candidate, idx=0):
+    c = _app_v61_safe_dict(candidate)
+    co = _app_v61_safe_dict(c.get('candidate_object')) or c
+    return _app_v61_text(c.get('candidate_id') or co.get('candidate_id') or c.get('id') or c.get('turn_id') or ('candidate_%03d' % (int(idx) + 1)), 160)
+
+
+def _app_v43_is_candidate_dict(d):
+    if callable(_APP_V61_PREV_APP_V43_IS_CANDIDATE_DICT):
+        try:
+            if _APP_V61_PREV_APP_V43_IS_CANDIDATE_DICT(d):
+                return True
+        except Exception:
+            pass
+    if not isinstance(d, dict):
+        return False
+    # V61: graph-view/S-matrix-only generated_ideas must still be treated as
+    # candidates so the GUI does not report "生成なし" when internal generation exists.
+    v61_candidate_keys = {
+        's_matrix_graph_view_v43', 's_matrix_record', 's_matrix_verification',
+        'usr_support', 'graph_signature_v45', 'graph_signature_v43',
+        'topology_shift_graph_transform_v45', 'edge_falsification_coverage_v45',
+    }
+    return bool(v61_candidate_keys.intersection(set(d.keys())))
+
+
+def _app_v61_extract_generated_ideas(result):
+    r = _app_v61_safe_dict(result)
+    ideas = r.get('generated_ideas')
+    if isinstance(ideas, list):
+        return [x for x in ideas if isinstance(x, dict)]
+    # Some routes place full result under debug_full_result or nested payloads.
+    nested = []
+    for key in ('debug_full_result', 'full_result', 'result', 'raw_result'):
+        v = r.get(key)
+        if isinstance(v, dict) and isinstance(v.get('generated_ideas'), list):
+            nested.extend([x for x in v.get('generated_ideas') if isinstance(x, dict)])
+    return nested
+
+
+def _app_v61_graph_view_from_candidate(candidate):
+    c = _app_v61_safe_dict(candidate)
+    co = _app_v61_safe_dict(c.get('candidate_object')) or c
+    for holder in (c, co):
+        gv = holder.get('s_matrix_graph_view_v43')
+        if isinstance(gv, dict) and (gv.get('nodes') or gv.get('edges') or gv.get('group_nodes')):
+            return gv, 's_matrix_graph_view_v43'
+    # Fallback: build a view from s_matrix_record so UI can distinguish
+    # "graph view missing" from "S-matrix exists".
+    rec = _app_v61_safe_dict(c.get('s_matrix_record')) or _app_v61_safe_dict(co.get('s_matrix_record'))
+    if rec and (rec.get('complex_s_edges') or rec.get('nodes') or rec.get('group_nodes')):
+        return {
+            'nodes': rec.get('nodes', []),
+            'group_nodes': rec.get('group_nodes', []),
+            'edges': rec.get('complex_s_edges', []),
+            'attention_mask': rec.get('attention_mask', {}),
+            'graph_signature': rec.get('graph_signature'),
+            'source': 's_matrix_record_fallback_v61',
+        }, 's_matrix_record_fallback'
+    return {}, 'missing'
+
+
+def _app_v61_extract_smatrix_graph_exports(result):
+    ideas = _app_v61_extract_generated_ideas(result)
+    exports = []
+    for idx, cand in enumerate(ideas):
+        cid = _app_v61_candidate_id(cand, idx)
+        gv, source = _app_v61_graph_view_from_candidate(cand)
+        rec = _app_v61_safe_dict(cand.get('s_matrix_record')) or _app_v61_safe_dict(_app_v61_safe_dict(cand.get('candidate_object')).get('s_matrix_record'))
+        ver = _app_v61_safe_dict(cand.get('s_matrix_verification')) or _app_v61_safe_dict(_app_v61_safe_dict(cand.get('candidate_object')).get('s_matrix_verification'))
+        usr = _app_v61_safe_dict(cand.get('usr_support')) or _app_v61_safe_dict(_app_v61_safe_dict(cand.get('candidate_object')).get('usr_support'))
+        exports.append({
+            'candidate_id': cid,
+            'candidate_index': idx,
+            'graph_view_source': source,
+            'graph_view_present': bool(gv and (gv.get('nodes') or gv.get('edges') or gv.get('group_nodes'))),
+            's_matrix_record_present': bool(rec),
+            's_matrix_verification_present': bool(ver),
+            'usr_support_present': bool(usr),
+            'graph_signature': _app_v61_safe_dict(cand.get('graph_signature_v45')).get('signature') or _app_v61_safe_dict(cand.get('graph_signature_v43')).get('signature') or rec.get('graph_signature'),
+            's_matrix_graph_view_v43': gv,
+            's_matrix_record': rec,
+            's_matrix_verification': ver,
+            'usr_support': usr,
+        })
+    return exports
+
+
+def _app_v61_generation_gui_connection_status(result):
+    ideas = _app_v61_extract_generated_ideas(result)
+    exports = _app_v61_extract_smatrix_graph_exports(result)
+    graph_count = sum(1 for x in exports if x.get('graph_view_present'))
+    smatrix_count = sum(1 for x in exports if x.get('s_matrix_record_present'))
+    if not ideas:
+        return {
+            'status': 'no_internal_generation_detected',
+            'label': '内部生成なし',
+            'severity': 'info',
+            'generated_ideas_count': 0,
+            'graph_view_count': 0,
+            's_matrix_record_count': 0,
+        }
+    if graph_count:
+        return {
+            'status': 'internal_generation_and_gui_connected',
+            'label': '内部生成あり / GUI接続済み',
+            'severity': 'success',
+            'generated_ideas_count': len(ideas),
+            'graph_view_count': graph_count,
+            's_matrix_record_count': smatrix_count,
+        }
+    if smatrix_count:
+        return {
+            'status': 'internal_generation_smatrix_exists_graph_view_unconnected',
+            'label': '内部生成あり / S行列あり / GraphView未接続',
+            'severity': 'warning',
+            'generated_ideas_count': len(ideas),
+            'graph_view_count': graph_count,
+            's_matrix_record_count': smatrix_count,
+        }
+    return {
+        'status': 'internal_generation_exists_gui_unconnected',
+        'label': '内部生成あり / GUI未接続',
+        'severity': 'warning',
+        'generated_ideas_count': len(ideas),
+        'graph_view_count': graph_count,
+        's_matrix_record_count': smatrix_count,
+    }
+
+
+def app_v43_extract_candidates_from_result(result, max_items=160):
+    out = []
+    seen = set()
+    if callable(_APP_V61_PREV_APP_V43_EXTRACT_CANDIDATES):
+        try:
+            out.extend(_APP_V61_PREV_APP_V43_EXTRACT_CANDIDATES(result, max_items=max_items))
+        except Exception:
+            pass
+    # V61: explicitly add generated_ideas[*] even if they only contain graph view / S-matrix fields.
+    for idx, cand in enumerate(_app_v61_extract_generated_ideas(result)):
+        if not isinstance(cand, dict):
+            continue
+        cid = _app_v61_candidate_id(cand, idx)
+        key = cid + '::generated_ideas::' + _app_v61_hash_obj(cand, 12)
+        if key in seen:
+            continue
+        # Avoid exact duplicate of existing path/id where possible.
+        duplicate = False
+        for item in out:
+            if isinstance(item, dict) and item.get('candidate') is cand:
+                duplicate = True
+                break
+        if duplicate:
+            continue
+        seen.add(key)
+        status = _app_v61_text(cand.get('publishable_status') or cand.get('candidate_quality_status') or cand.get('status') or '', 100)
+        gv, source = _app_v61_graph_view_from_candidate(cand)
+        label = cid + ' | generated_ideas[{0}] | graph={1}'.format(idx, source)
+        if status:
+            label += ' | ' + status
+        out.append({'path': 'root.generated_ideas[' + str(idx) + ']', 'candidate': cand, 'candidate_id': cid, 'label': label[:260], 'hash': _app_v61_hash_obj({'idx': idx, 'id': cid, 'source': source}, 12)})
+    return out[:int(max_items)]
+
+
+def _app_v61_render_one_graph_export(export_item, collapse_groups=True, expanded=False):
+    cid = _app_v61_text(export_item.get('candidate_id'), 160)
+    gv = _app_v61_safe_dict(export_item.get('s_matrix_graph_view_v43'))
+    with st.expander('GraphView/S行列: ' + cid + ' [' + _app_v61_text(export_item.get('graph_view_source'), 80) + ']', expanded=expanded):
+        cols = st.columns(4)
+        cols[0].metric('nodes', str(len(_app_v61_safe_list(gv.get('nodes')))))
+        cols[1].metric('group_nodes', str(len(_app_v61_safe_list(gv.get('group_nodes')))))
+        cols[2].metric('edges', str(len(_app_v61_safe_list(gv.get('edges')))))
+        cols[3].metric('S-matrix', 'YES' if export_item.get('s_matrix_record_present') else 'NO')
+        if export_item.get('graph_signature'):
+            st.caption('graph_signature: `' + _app_v61_text(export_item.get('graph_signature'), 120) + '`')
+        # Reuse existing graph renderer shape through a temporary candidate wrapper.
+        graph = {}
+        try:
+            if callable(globals().get('app_v43_build_display_graph_from_smatrix')):
+                graph = app_v43_build_display_graph_from_smatrix({'s_matrix_graph_view_v43': gv, 's_matrix_record': export_item.get('s_matrix_record')}, collapse_groups=collapse_groups)
+        except Exception:
+            graph = {}
+        if graph.get('nodes') or graph.get('edges'):
+            if callable(globals().get('_appv15g_dot_from_graph')):
+                try:
+                    st.graphviz_chart(_appv15g_dot_from_graph(graph), use_container_width=True)
+                except Exception as e:
+                    st.warning('Graphviz表示に失敗: ' + _app_v61_text(e, 300))
+                    st.json(graph)
+            else:
+                st.json(graph)
+        else:
+            st.warning('内部生成あり / GUI未接続: graph view payload は見つかりましたが、既存Graphviz形状への変換結果が空です。')
+            st.json(gv)
+        file_stem = 'smatrix_graph_view_' + _app_v61_hash_obj({'candidate_id': cid, 'payload': export_item}, 10)
+        st.download_button(
+            label='この候補の S行列/GraphView JSON を保存',
+            data=_app_v61_json_bytes(export_item),
+            file_name=file_stem + '.json',
+            mime='application/json',
+            key='app_v61_download_one_' + file_stem,
+        )
+
+
+def app_v61_render_generated_ideas_smatrix_graph_export(result=None, expanded=False):
+    """Render generated_ideas[*].s_matrix_graph_view_v43 and export payloads."""
+    if not isinstance(result, dict):
+        return []
+    status = _app_v61_generation_gui_connection_status(result)
+    exports = _app_v61_extract_smatrix_graph_exports(result)
+    # Store status for other debug panels; do not overwrite original result fields.
+    try:
+        result['app_v61_smatrix_graph_gui_status'] = status
+    except Exception:
+        pass
+    if status.get('status') == 'no_internal_generation_detected':
+        # Keep startup clean. Only display when a result object actually exists and user asked for a panel.
+        return []
+    st.markdown('### S行列 / GraphView export（generated_ideas 接続 V61）')
+    cols = st.columns(4)
+    cols[0].metric('generated_ideas', str(status.get('generated_ideas_count', 0)))
+    cols[1].metric('graph views', str(status.get('graph_view_count', 0)))
+    cols[2].metric('S-matrix records', str(status.get('s_matrix_record_count', 0)))
+    cols[3].metric('GUI接続', status.get('label', 'unknown'))
+    if status.get('severity') == 'success':
+        st.success(status.get('label'))
+    elif status.get('severity') == 'warning':
+        st.warning(status.get('label') + '：生成なしではなく、内部生成結果のGUI接続/graph-view生成にギャップがあります。')
+    else:
+        st.info(status.get('label'))
+    export_payload = {
+        'patch_id': APP_V61_GENERATED_IDEAS_SMATRIX_GRAPHVIEW_EXPORT_PATCH_ID,
+        'gui_connection_status': status,
+        'exports': exports,
+    }
+    st.download_button(
+        label='全候補の S行列/GraphView export JSON を保存',
+        data=_app_v61_json_bytes(export_payload),
+        file_name='generated_ideas_smatrix_graph_view_export_' + _app_v61_hash_obj(export_payload, 10) + '.json',
+        mime='application/json',
+        key='app_v61_download_all_' + _app_v61_hash_obj(export_payload, 8),
+    )
+    with st.expander('Export payload JSON', expanded=False):
+        st.json(export_payload)
+    collapse = st.checkbox('GraphView group nodeで折り畳む（V61 export panel）', value=True, key='app_v61_export_graph_collapse')
+    for i, item in enumerate(exports[:30]):
+        _app_v61_render_one_graph_export(item, collapse_groups=collapse, expanded=(expanded and i == 0))
+    return exports
+
+
+def app_v43_render_smatrix_usr_ui(result=None):
+    prev = []
+    if callable(_APP_V61_PREV_APP_V43_RENDER_SMATRIX_USR_UI):
+        try:
+            prev = _APP_V61_PREV_APP_V43_RENDER_SMATRIX_USR_UI(result)
+        except Exception as e:
+            try:
+                st.error('V43 S行列/USR UI wrapper failed before V61 export: ' + _app_v61_text(e, 500))
+            except Exception:
+                pass
+    try:
+        app_v61_render_generated_ideas_smatrix_graph_export(result, expanded=False)
+    except Exception as e:
+        try:
+            st.error('V61 generated_ideas S行列/GraphView export 表示に失敗: ' + _app_v61_text(e, 500))
+        except Exception:
+            pass
+    return prev
+
+
+def _leapv8_render_result(result, cfg=None):
+    prev = None
+    if callable(_APP_V61_PREV_LEAPV8_RENDER_RESULT):
+        try:
+            prev = _APP_V61_PREV_LEAPV8_RENDER_RESULT(result, cfg)
+        except TypeError:
+            prev = _APP_V61_PREV_LEAPV8_RENDER_RESULT(result)
+        except Exception as e:
+            try:
+                st.error('Previous Leap renderer failed in APP V61 wrapper: ' + _app_v61_text(e, 500))
+            except Exception:
+                pass
+    try:
+        # Idempotent display/export panel. Even if the previous wrapper did not call
+        # app_v43_render_smatrix_usr_ui, this ensures generated_ideas graph views are visible.
+        app_v61_render_generated_ideas_smatrix_graph_export(result, expanded=False)
+    except Exception as e:
+        try:
+            st.error('APP V61 generated_ideas GraphView export failed: ' + _app_v61_text(e, 500))
+        except Exception:
+            pass
+    return prev
+
+# ============================================================================
+# END ADD-ONLY PATCH: APP-V61-GENERATED-IDEAS-SMATRIX-GRAPHVIEW-EXPORT
+# ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY PATCH: APP-V61B-IDEMPOTENT-GRAPHVIEW-EXPORT-RENDER
+# generated_at_jst: 20260509_103500
+# purpose:
+# - Prevent duplicate rendering of the V61 generated_ideas S-matrix/GraphView
+#   export panel when both the V43 renderer wrapper and _leapv8_render_result
+#   wrapper are invoked in the same Streamlit rerun.
+# ============================================================================
+APP_V61B_IDEMPOTENT_GRAPHVIEW_EXPORT_RENDER_PATCH_ID = 'APP-V61B-IDEMPOTENT-GRAPHVIEW-EXPORT-RENDER-20260509_103500'
+
+try:
+    _APP_V61B_PREV_RENDER_GENERATED_IDEAS_EXPORT = app_v61_render_generated_ideas_smatrix_graph_export
+except Exception:
+    _APP_V61B_PREV_RENDER_GENERATED_IDEAS_EXPORT = None
+
+
+def app_v61_render_generated_ideas_smatrix_graph_export(result=None, expanded=False):
+    if not isinstance(result, dict):
+        return []
+    try:
+        exports_preview = _app_v61_extract_smatrix_graph_exports(result)
+        status_preview = _app_v61_generation_gui_connection_status(result)
+    except Exception:
+        exports_preview = []
+        status_preview = {}
+    # Store status even when the panel is skipped as duplicate.
+    try:
+        result['app_v61_smatrix_graph_gui_status'] = status_preview
+    except Exception:
+        pass
+    render_key = 'app_v61_graphview_export_rendered_' + _app_v61_hash_obj({'ids':[x.get('candidate_id') for x in exports_preview], 'status':status_preview}, 12)
+    try:
+        already = bool(st.session_state.get(render_key))
+    except Exception:
+        already = bool(result.get('_app_v61_graphview_export_rendered_once'))
+    if already:
+        return exports_preview
+    try:
+        st.session_state[render_key] = True
+    except Exception:
+        result['_app_v61_graphview_export_rendered_once'] = True
+    if callable(_APP_V61B_PREV_RENDER_GENERATED_IDEAS_EXPORT):
+        return _APP_V61B_PREV_RENDER_GENERATED_IDEAS_EXPORT(result, expanded=expanded)
+    return exports_preview
+
+# ============================================================================
+# END ADD-ONLY PATCH: APP-V61B-IDEMPOTENT-GRAPHVIEW-EXPORT-RENDER
+# ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY PATCH: APP-LEAP-V48-GPU-ROUTE-GUARD-VIEW-20260509
+# generated_at_jst: 20260509
+# purpose:
+# - Align app-side feedback logging/rendering with leap_engine.py V48 route guard.
+# - Read gpu_diagnostic_route_guard_v48 and gpu_tensor_route_latest/v47/v46.
+# - Override compact GPU feedback builder with candidate de-duplication and route
+#   guard proof fields, without deleting existing V47B app code.
+# - Keep generic behavior: no benchmark/task/problem-name hardcoding.
+# ============================================================================
+
+APP_LEAP_V48_GPU_ROUTE_GUARD_VIEW_PATCH_ID = 'APP-LEAP-V48-GPU-ROUTE-GUARD-VIEW-20260509'
+APP_LEAP_V48_EXPECTED_GPU_PATCH_ID = 'LEAP-V47-GPU-DIAGNOSTIC-RICH-GRAPH-FIX-20260509'
+
+
+def _app48_dict(x):
+    return x if isinstance(x, dict) else {}
+
+
+def _app48_list(x):
+    if x is None:
+        return []
+    if isinstance(x, list):
+        return x
+    if isinstance(x, tuple):
+        return list(x)
+    return []
+
+
+def _app48_text(x, limit=512):
+    try:
+        s = '' if x is None else str(x)
+    except Exception:
+        try:
+            s = repr(x)
+        except Exception:
+            s = ''
+    return s[:int(limit)] if limit and len(s) > int(limit) else s
+
+
+def _app48_hash(obj, n=12):
+    try:
+        import json as _json
+        raw = _json.dumps(obj, ensure_ascii=False, sort_keys=True, default=str)
+    except Exception:
+        raw = str(obj)
+    try:
+        import hashlib as _hashlib
+        return _hashlib.sha256(raw.encode('utf-8')).hexdigest()[:int(n)]
+    except Exception:
+        return 'nohash'
+
+
+def _app48_pick(d, keys):
+    d = _app48_dict(d)
+    out = {}
+    for k in keys:
+        try:
+            if k in d:
+                out[k] = d.get(k)
+        except Exception:
+            pass
+    return out
+
+
+def _app48_gpu_route(root):
+    root = _app48_dict(root)
+    return _app48_dict(root.get('gpu_tensor_route_v47') or root.get('gpu_tensor_route_latest') or root.get('gpu_tensor_route_v46') or root.get('gpu_tensor_route'))
+
+
+def _app48_route_guard(root):
+    root = _app48_dict(root)
+    guard = root.get('gpu_diagnostic_route_guard_v48')
+    if isinstance(guard, dict):
+        return guard
+    route = _app48_gpu_route(root)
+    rg = route.get('route_guard_v48')
+    if isinstance(rg, dict):
+        return rg
+    dbg = _app48_dict(root.get('debug'))
+    guard = dbg.get('gpu_diagnostic_route_guard_v48')
+    if isinstance(guard, dict):
+        return guard
+    dfr = _app48_dict(root.get('debug_full_result'))
+    guard = dfr.get('gpu_diagnostic_route_guard_v48')
+    return guard if isinstance(guard, dict) else {}
+
+
+def _app48_candidate_id(c):
+    c = _app48_dict(c); co = _app48_dict(c.get('candidate_object'))
+    return _app48_text(c.get('candidate_id') or co.get('candidate_id') or c.get('id') or '', 160)
+
+
+def _app48_graph_signature(c):
+    c = _app48_dict(c); co = _app48_dict(c.get('candidate_object'))
+    gs = c.get('graph_signature_v45') or co.get('graph_signature_v45') or c.get('graph_signature_v43') or co.get('graph_signature_v43')
+    if isinstance(gs, dict):
+        return _app48_text(gs.get('signature') or gs.get('graph_signature') or gs.get('hash') or '', 160)
+    return _app48_text(gs or '', 160)
+
+
+def _app48_candidate_key(c):
+    cid = _app48_candidate_id(c)
+    sig = _app48_graph_signature(c)
+    if cid and sig:
+        return ('id_sig', cid, sig)
+    if cid:
+        return ('id', cid)
+    if sig:
+        return ('sig', sig)
+    try:
+        return ('hash', _app48_hash(c, 16))
+    except Exception:
+        return ('object', str(id(c)))
+
+
+def _app48_gpu_eval(c):
+    c = _app48_dict(c); co = _app48_dict(c.get('candidate_object'))
+    return _app48_dict(c.get('gpu_tensor_evaluation_v47') or c.get('gpu_tensor_evaluation_latest') or c.get('gpu_tensor_evaluation_v46') or co.get('gpu_tensor_evaluation_v47') or co.get('gpu_tensor_evaluation_latest') or co.get('gpu_tensor_evaluation_v46'))
+
+
+def _app48_candidate_prefer_score(c):
+    """Prefer candidates with GPU eval and richer graph/signature metadata during dedupe."""
+    c = _app48_dict(c)
+    score = 0
+    if _app48_gpu_eval(c): score += 1000
+    if _app48_graph_signature(c): score += 100
+    if c.get('s_matrix_graph_view_v43') or _app48_dict(c.get('candidate_object')).get('s_matrix_graph_view_v43'): score += 30
+    if c.get('identifiability_report') or _app48_dict(c.get('candidate_object')).get('identifiability_report'): score += 20
+    if c.get('edge_falsification_coverage_v45') or _app48_dict(c.get('candidate_object')).get('edge_falsification_coverage_v45'): score += 20
+    return score
+
+
+def _app48_collect_candidates_dedup(root, rep):
+    root = _app48_dict(root); rep = _app48_dict(rep)
+    pools = [
+        root.get('generated_ideas'), root.get('decoded_candidates'), root.get('accepted_candidates'), root.get('candidates'),
+        rep.get('generated_ideas'), rep.get('decoded_candidates'), rep.get('accepted_candidates'), rep.get('candidates'),
+    ]
+    # Also inspect debug/debug_full_result shallow mirrors, if present.
+    for parent in (_app48_dict(root.get('debug')), _app48_dict(root.get('debug_full_result'))):
+        for key in ('generated_ideas', 'decoded_candidates', 'accepted_candidates', 'candidates'):
+            pools.append(parent.get(key))
+    best = {}
+    order = []
+    raw_count = 0
+    for pool in pools:
+        for c in _app48_list(pool):
+            if not isinstance(c, dict):
+                continue
+            raw_count += 1
+            key = _app48_candidate_key(c)
+            if key not in best:
+                best[key] = c
+                order.append(key)
+            else:
+                if _app48_candidate_prefer_score(c) > _app48_candidate_prefer_score(best[key]):
+                    best[key] = c
+    out = [best[k] for k in order]
+    return out, raw_count
+
+
+# Override V47B helper name intentionally (ADD-ONLY override, no deletion): old renderer calls this name at runtime.
+def _app47b_collect_candidates(root, rep):
+    candidates, _raw_count = _app48_collect_candidates_dedup(root, rep)
+    return candidates
+
+
+def _app48_candidate_compact(c, idx=0):
+    c = _app48_dict(c); co = _app48_dict(c.get('candidate_object'))
+    gpu = _app48_gpu_eval(c)
+    topo = _app48_dict(c.get('topology_shift_graph_transform_v45') or co.get('topology_shift_graph_transform_v45'))
+    sview = _app48_dict(c.get('s_matrix_graph_view_v43') or co.get('s_matrix_graph_view_v43'))
+    graph_metrics = _app48_dict(gpu.get('graph_metrics'))
+    return {
+        'index': idx,
+        'candidate_id': _app48_candidate_id(c),
+        'status': c.get('status'),
+        'operator_trace': c.get('operator_trace') or co.get('operator_trace'),
+        'publishable_status': c.get('publishable_status') or co.get('publishable_status'),
+        'graph_signature_v45': c.get('graph_signature_v45') or co.get('graph_signature_v45'),
+        'topology_shift_graph_transform_v45': topo,
+        'gpu_tensor_evaluation': gpu,
+        'gpu_review_flags': {
+            'device_used': gpu.get('device_used'),
+            'graph_tensorized': gpu.get('graph_tensorized'),
+            's_matrix_tensorized': gpu.get('s_matrix_tensorized'),
+            'diagnostic_functional_v47': gpu.get('diagnostic_functional_v47'),
+            'proxy_ratio': graph_metrics.get('proxy_intervention_ratio'),
+            'observation_decomposition_ratio': graph_metrics.get('observation_decomposition_ratio'),
+            'falsifiable_edge_ratio': graph_metrics.get('falsifiable_edge_ratio'),
+            'near_duplicate': gpu.get('near_duplicate'),
+        },
+        'rich_graph_metadata_counts_v47': gpu.get('rich_graph_metadata_counts_v47'),
+        's_matrix_graph_view_counts': {
+            'present': bool(sview),
+            'nodes': len(_app48_list(sview.get('nodes'))),
+            'edges': len(_app48_list(sview.get('edges'))),
+            'usr_equation_edges': len(_app48_list(sview.get('usr_equation_edges'))),
+        },
+        'edge_falsification_coverage_v45': c.get('edge_falsification_coverage_v45') or co.get('edge_falsification_coverage_v45'),
+        'identifiability_report': c.get('identifiability_report') or co.get('identifiability_report'),
+        'scores_v43': c.get('scores_v43') or co.get('scores_v43'),
+        'growth_hints_v46': c.get('growth_hints_v46') or co.get('growth_hints_v46'),
+    }
+
+
+# Override V47B compact candidate name intentionally.
+def _app47b_candidate_compact(c, idx=0):
+    return _app48_candidate_compact(c, idx=idx)
+
+
+# Override V47B compact feedback builder intentionally. Existing render button calls this name.
+def _app47b_build_compact_feedback_payload(debug_payload):
+    debug_payload = _app48_dict(debug_payload)
+    root = _app48_dict(debug_payload.get('result') or debug_payload)
+    rep = _app48_dict(debug_payload.get('hidden_branching_report_v14') or root.get('hidden_branching_report_v14'))
+    candidates, raw_count = _app48_collect_candidates_dedup(root, rep)
+    compact_candidates = [_app48_candidate_compact(c, i) for i, c in enumerate(candidates)]
+    route_gpu = _app48_gpu_route(root)
+    guard = _app48_route_guard(root)
+    gpu_evaluated_count = sum(1 for c in compact_candidates if bool(c.get('gpu_tensor_evaluation')))
+    compact = {
+        'compact_export_schema': 'leap_feedback_gpu_route_guard_compact_v48',
+        'patch_id': APP_LEAP_V48_GPU_ROUTE_GUARD_VIEW_PATCH_ID,
+        'source_app_patch_compat': 'APP-LEAP-GPU-DIAG-COMPACT-V47B-20260509',
+        'generic_policy': {
+            'task_or_benchmark_hardcoding': False,
+            'dedupe_key': 'candidate_id + graph_signature fallback',
+            'full_payload_included': False,
+        },
+        'top_level': _app48_pick(root, ['status','mode','route','official_route','primary_result_route','reason','query']),
+        'operation_controls': root.get('operation_controls'),
+        'gpu_diagnostic_route_guard_v48': guard,
+        'gpu_tensor_route': route_gpu,
+        'gpu_tensor_route_latest': _app48_dict(root.get('gpu_tensor_route_latest')),
+        'gpu_tensor_route_v47': _app48_dict(root.get('gpu_tensor_route_v47')),
+        'operator_dispatch_diagnostics_v45': root.get('operator_dispatch_diagnostics_v45'),
+        'topology_shift_graph_transform_summary_v45': root.get('topology_shift_graph_transform_summary_v45'),
+        's_matrix_usr_verification_summary': root.get('s_matrix_usr_verification_summary'),
+        'candidate_count_raw_before_dedupe': raw_count,
+        'candidate_count_compact': len(compact_candidates),
+        'candidate_count_with_gpu_eval': gpu_evaluated_count,
+        'candidate_count_without_gpu_eval': len(compact_candidates) - gpu_evaluated_count,
+        'candidates': compact_candidates,
+        'review_summary': {
+            'expected_gpu_patch_id': APP_LEAP_V48_EXPECTED_GPU_PATCH_ID,
+            'actual_gpu_patch_id': guard.get('actual_gpu_patch_id') or route_gpu.get('patch_id'),
+            'v47_route_active': guard.get('v47_route_active'),
+            'v47_route_functional': guard.get('v47_route_functional'),
+            'forced_postprocess_attempted': guard.get('forced_postprocess_attempted'),
+            'force_exception': guard.get('force_exception'),
+            'device_used': route_gpu.get('device_used'),
+            'candidate_count_tensorized': route_gpu.get('candidate_count_tensorized'),
+            'edge_count_tensorized': route_gpu.get('edge_count_tensorized'),
+            's_matrix_tensorized_count': route_gpu.get('s_matrix_tensorized_count'),
+            'abc_coverage_mean': route_gpu.get('abc_coverage_mean'),
+            'near_duplicate_pair_count': route_gpu.get('near_duplicate_pair_count'),
+            'mean_candidate_distance': route_gpu.get('mean_candidate_distance'),
+            'deduped_compact_candidates': len(compact_candidates),
+            'gpu_evaluated_compact_candidates': gpu_evaluated_count,
+        },
+    }
+    compact['compact_hash'] = _app48_hash(compact, 12)
+    return compact
+
+
+# Override V47B GPU diagnostic renderer intentionally. Existing result renderer calls this name.
+def _app47b_render_gpu_diagnostic_summary(root):
+    root = _app48_dict(root)
+    gpu = _app48_gpu_route(root)
+    guard = _app48_route_guard(root)
+    if not gpu and not guard:
+        return None
+    try:
+        route_active = bool(guard.get('v47_route_active')) if guard else (_app48_text(gpu.get('patch_id')) == APP_LEAP_V48_EXPECTED_GPU_PATCH_ID)
+        route_functional = bool(guard.get('v47_route_functional')) if guard else False
+        expanded = not (route_active and route_functional)
+        with st.expander('GPU route guard summary / GPU経路ガード診断', expanded=expanded):
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric('device', str(gpu.get('device_used') or 'none'))
+            c2.metric('v47 active', str(route_active))
+            c3.metric('v47 functional', str(route_functional))
+            c4.metric('tensor ops', int(gpu.get('tensor_ops_count') or 0))
+            if not route_active or not route_functional:
+                try:
+                    st.warning('GPU診断の最終経路が期待値と一致していません。leap_engine.py の v48 route guard proof を確認してください。')
+                except Exception:
+                    pass
+            st.json({
+                'app_patch_id': APP_LEAP_V48_GPU_ROUTE_GUARD_VIEW_PATCH_ID,
+                'expected_gpu_patch_id': APP_LEAP_V48_EXPECTED_GPU_PATCH_ID,
+                'route_guard_v48': guard,
+                'gpu_route_core': _app48_pick(gpu, ['patch_id','device_used','gpu_route_selected','torch_import_ok','cuda_available','candidate_count','candidate_count_tensorized','edge_count_tensorized','s_matrix_tensorized_count','tensor_ops_count','abc_coverage_mean','near_duplicate_pair_count','mean_candidate_distance','skip_reason','exception']),
+                'no_task_or_benchmark_name_hardcoding': True,
+            })
+    except Exception:
+        pass
+    return None
+
+try:
+    APP_LEAP_V48_GPU_ROUTE_GUARD_VIEW_PROOF = {
+        'patch_id': APP_LEAP_V48_GPU_ROUTE_GUARD_VIEW_PATCH_ID,
+        'overrides_v47b_compact_builder': True,
+        'overrides_v47b_gpu_renderer': True,
+        'dedupe_compact_candidates': True,
+        'reads_gpu_diagnostic_route_guard_v48': True,
+        'no_task_or_benchmark_name_hardcoding': True,
+    }
+except Exception:
+    pass
+
+# ============================================================================
+# END ADD-ONLY PATCH: APP-LEAP-V48-GPU-ROUTE-GUARD-VIEW-20260509
+# ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY PATCH: APP-V49-COMPACT-USES-LATEST-GPU-AND-DEDUPE-BY-ID-20260509
+# generated_at_jst: 20260509
+# purpose:
+# - Re-apply V49 on top of the current uploaded V48 app.py parent.
+# - Fix compact export still reporting V47B schema and V46 GPU fields.
+# - Override compact builder/render helpers so feedback export proves whether
+#   leap_engine V49/V47 route is active.
+# - Dedupe compact candidates by candidate_id first, preventing 8 real candidates
+#   from becoming 24 compact references.
+# - Prefer V47/latest GPU evaluation over V46 or empty mirrors.
+# - Generic implementation: no benchmark/task/problem-name hardcoding.
+# ============================================================================
+
+APP_V49_COMPACT_GPU_PATCH_ID = 'APP-V49-COMPACT-USES-LATEST-GPU-AND-DEDUPE-BY-ID-20260509'
+APP_V49_EXPECTED_GPU_PATCH_ID = 'LEAP-V47-GPU-DIAGNOSTIC-RICH-GRAPH-FIX-20260509'
+APP_V49_EXPECTED_LEAP_ROUTE_GUARD = 'LEAP-V49-FORCE-V47-ROUTE-AND-CANDIDATE-MIRROR-SYNC-20260509'
+
+
+def _app49_dict(x):
+    return x if isinstance(x, dict) else {}
+
+
+def _app49_list(x):
+    if x is None:
+        return []
+    if isinstance(x, list):
+        return x
+    if isinstance(x, tuple):
+        return list(x)
+    return []
+
+
+def _app49_text(x, limit=256):
+    try:
+        s = '' if x is None else str(x)
+    except Exception:
+        try:
+            s = repr(x)
+        except Exception:
+            s = ''
+    return s[:int(limit)] if limit and len(s) > int(limit) else s
+
+
+def _app49_hash(obj, n=12):
+    try:
+        import json as _json
+        import hashlib as _hashlib
+        raw = _json.dumps(obj, ensure_ascii=False, sort_keys=True, default=str)
+        return _hashlib.sha256(raw.encode('utf-8')).hexdigest()[:int(n)]
+    except Exception:
+        return 'nohash'
+
+
+def _app49_pick(d, keys):
+    d = _app49_dict(d)
+    return {k: d.get(k) for k in keys if k in d}
+
+
+def _app49_route(root):
+    root = _app49_dict(root)
+    return _app49_dict(root.get('gpu_tensor_route_v47') or root.get('gpu_tensor_route_latest') or root.get('gpu_tensor_route') or root.get('gpu_tensor_route_v46'))
+
+
+def _app49_guard(root):
+    root = _app49_dict(root)
+    for k in ('gpu_diagnostic_route_guard_v49', 'gpu_diagnostic_route_guard_v48'):
+        if isinstance(root.get(k), dict):
+            return root.get(k)
+    route = _app49_route(root)
+    for k in ('route_guard_v49', 'route_guard_v48'):
+        if isinstance(route.get(k), dict):
+            return route.get(k)
+    for pk in ('debug', 'debug_full_result'):
+        d = _app49_dict(root.get(pk))
+        for k in ('gpu_diagnostic_route_guard_v49', 'gpu_diagnostic_route_guard_v48'):
+            if isinstance(d.get(k), dict):
+                return d.get(k)
+    return {}
+
+
+def _app49_candidate_id(c):
+    c = _app49_dict(c)
+    co = _app49_dict(c.get('candidate_object'))
+    return _app49_text(c.get('candidate_id') or co.get('candidate_id') or c.get('id') or '', 160)
+
+
+def _app49_signature(c):
+    c = _app49_dict(c)
+    co = _app49_dict(c.get('candidate_object'))
+    gs = c.get('graph_signature_v45') or co.get('graph_signature_v45') or c.get('graph_signature_v43') or co.get('graph_signature_v43')
+    if isinstance(gs, dict):
+        return _app49_text(gs.get('signature') or gs.get('graph_signature') or gs.get('hash') or '', 160)
+    return _app49_text(gs or '', 160)
+
+
+def _app49_gpu_eval(c):
+    c = _app49_dict(c)
+    co = _app49_dict(c.get('candidate_object'))
+    return _app49_dict(
+        c.get('gpu_tensor_evaluation_v47') or co.get('gpu_tensor_evaluation_v47') or
+        c.get('gpu_tensor_evaluation_latest') or co.get('gpu_tensor_evaluation_latest') or
+        c.get('gpu_tensor_evaluation') or co.get('gpu_tensor_evaluation') or
+        c.get('gpu_tensor_evaluation_v46') or co.get('gpu_tensor_evaluation_v46')
+    )
+
+
+def _app49_score_candidate(c):
+    c = _app49_dict(c)
+    ge = _app49_gpu_eval(c)
+    score = 0
+    if ge:
+        score += 1000
+        if ge.get('patch_id') == APP_V49_EXPECTED_GPU_PATCH_ID:
+            score += 10000
+        if ge.get('diagnostic_functional_v47'):
+            score += 1000
+        if ge.get('graph_tensorized'):
+            score += 100
+        if ge.get('s_matrix_tensorized'):
+            score += 100
+    if _app49_signature(c):
+        score += 50
+    if c.get('s_matrix_graph_view_v43') or _app49_dict(c.get('candidate_object')).get('s_matrix_graph_view_v43'):
+        score += 20
+    return score
+
+
+def _app49_candidate_pools(root, rep):
+    roots = []
+    for obj in (root, rep, _app49_dict(root).get('debug'), _app49_dict(root).get('debug_full_result')):
+        if isinstance(obj, dict):
+            roots.append(obj)
+    out = []
+    for r in roots:
+        for key in ('generated_ideas', 'decoded_candidates', 'accepted_candidates', 'candidates'):
+            if isinstance(r.get(key), list):
+                out.append(r.get(key))
+    return out
+
+
+def _app49_collect_candidates(root, rep):
+    pools = _app49_candidate_pools(root, rep)
+    best = {}
+    order = []
+    raw = 0
+    for pool in pools:
+        for c in _app49_list(pool):
+            if not isinstance(c, dict):
+                continue
+            raw += 1
+            cid = _app49_candidate_id(c)
+            key = ('id', cid) if cid else ('sig', _app49_signature(c) or _app49_hash(c, 16))
+            if key not in best:
+                best[key] = c
+                order.append(key)
+            elif _app49_score_candidate(c) > _app49_score_candidate(best[key]):
+                best[key] = c
+    return [best[k] for k in order], raw
+
+
+# Override previous V47B/V48 helper names. Existing UI/download code calls these names.
+def _app47b_collect_candidates(root, rep):
+    cs, _raw = _app49_collect_candidates(root, rep)
+    return cs
+
+
+def _app49_candidate_compact(c, idx=0):
+    c = _app49_dict(c)
+    co = _app49_dict(c.get('candidate_object'))
+    ge = _app49_gpu_eval(c)
+    sview = _app49_dict(c.get('s_matrix_graph_view_v43') or co.get('s_matrix_graph_view_v43'))
+    gm = _app49_dict(ge.get('graph_metrics'))
+    return {
+        'index': idx,
+        'candidate_id': _app49_candidate_id(c),
+        'status': c.get('status'),
+        'operator_trace': c.get('operator_trace') or co.get('operator_trace'),
+        'publishable_status': c.get('publishable_status') or co.get('publishable_status'),
+        'graph_signature_v45': c.get('graph_signature_v45') or co.get('graph_signature_v45'),
+        'topology_shift_graph_transform_v45': c.get('topology_shift_graph_transform_v45') or co.get('topology_shift_graph_transform_v45'),
+        'gpu_tensor_evaluation': ge,
+        'gpu_review_flags': {
+            'patch_id': ge.get('patch_id'),
+            'device_used': ge.get('device_used'),
+            'graph_tensorized': ge.get('graph_tensorized'),
+            's_matrix_tensorized': ge.get('s_matrix_tensorized'),
+            'diagnostic_functional_v47': ge.get('diagnostic_functional_v47'),
+            'proxy_ratio': gm.get('proxy_intervention_ratio'),
+            'observation_decomposition_ratio': gm.get('observation_decomposition_ratio'),
+            'falsifiable_edge_ratio': gm.get('falsifiable_edge_ratio'),
+            'near_duplicate': ge.get('near_duplicate'),
+        },
+        'rich_graph_metadata_counts_v47': ge.get('rich_graph_metadata_counts_v47'),
+        's_matrix_graph_view_counts': {
+            'present': bool(sview),
+            'nodes': len(_app49_list(sview.get('nodes'))),
+            'edges': len(_app49_list(sview.get('edges'))),
+            'usr_equation_edges': len(_app49_list(sview.get('usr_equation_edges'))),
+        },
+        'edge_falsification_coverage_v45': c.get('edge_falsification_coverage_v45') or co.get('edge_falsification_coverage_v45'),
+        'identifiability_report': c.get('identifiability_report') or co.get('identifiability_report'),
+        'scores_v43': c.get('scores_v43') or co.get('scores_v43'),
+        'growth_hints_v46': c.get('growth_hints_v46') or co.get('growth_hints_v46'),
+    }
+
+
+def _app47b_candidate_compact(c, idx=0):
+    return _app49_candidate_compact(c, idx)
+
+
+def _app47b_build_compact_feedback_payload(debug_payload):
+    debug_payload = _app49_dict(debug_payload)
+    root = _app49_dict(debug_payload.get('result') or debug_payload)
+    rep = _app49_dict(debug_payload.get('hidden_branching_report_v14') or root.get('hidden_branching_report_v14'))
+    candidates, raw_count = _app49_collect_candidates(root, rep)
+    compact_candidates = [_app49_candidate_compact(c, i) for i, c in enumerate(candidates)]
+    route = _app49_route(root)
+    guard = _app49_guard(root)
+    gpu_count = sum(1 for c in compact_candidates if bool(c.get('gpu_tensor_evaluation')))
+    v47_count = sum(1 for c in compact_candidates if _app49_dict(c.get('gpu_tensor_evaluation')).get('patch_id') == APP_V49_EXPECTED_GPU_PATCH_ID)
+    compact = {
+        'compact_export_schema': 'leap_feedback_gpu_route_guard_compact_v49',
+        'patch_id': APP_V49_COMPACT_GPU_PATCH_ID,
+        'source_app_patch_compat': 'APP-LEAP-GPU-DIAG-COMPACT-V47B-20260509',
+        'generic_policy': {
+            'task_or_benchmark_hardcoding': False,
+            'candidate_dedupe': 'candidate_id_first',
+            'prefer_gpu_eval': 'v47/latest_over_v46_or_empty',
+        },
+        'top_level': _app49_pick(root, ['status', 'mode', 'route', 'official_route', 'primary_result_route', 'reason', 'query']),
+        'operation_controls': root.get('operation_controls'),
+        'gpu_diagnostic_route_guard_v49': _app49_dict(root.get('gpu_diagnostic_route_guard_v49')),
+        'gpu_diagnostic_route_guard': guard,
+        'gpu_tensor_route': route,
+        'gpu_tensor_route_latest': _app49_dict(root.get('gpu_tensor_route_latest')),
+        'gpu_tensor_route_v47': _app49_dict(root.get('gpu_tensor_route_v47')),
+        'candidate_count_raw_before_dedupe': raw_count,
+        'candidate_count_compact': len(compact_candidates),
+        'candidate_count_with_gpu_eval': gpu_count,
+        'candidate_count_with_v47_gpu_eval': v47_count,
+        'candidate_count_without_gpu_eval': len(compact_candidates) - gpu_count,
+        'operator_dispatch_diagnostics_v45': root.get('operator_dispatch_diagnostics_v45'),
+        'topology_shift_graph_transform_summary_v45': root.get('topology_shift_graph_transform_summary_v45'),
+        's_matrix_usr_verification_summary': root.get('s_matrix_usr_verification_summary'),
+        'candidates': compact_candidates,
+        'review_summary': {
+            'expected_gpu_patch_id': APP_V49_EXPECTED_GPU_PATCH_ID,
+            'expected_leap_route_guard_patch_id': APP_V49_EXPECTED_LEAP_ROUTE_GUARD,
+            'actual_gpu_patch_id': route.get('patch_id') or guard.get('actual_gpu_patch_id'),
+            'actual_route_guard_patch_id': guard.get('patch_id'),
+            'v47_route_active': (route.get('patch_id') == APP_V49_EXPECTED_GPU_PATCH_ID) or bool(guard.get('v47_route_active')),
+            'candidate_count_compact_should_equal_max_candidates_when_ids_exist': len(compact_candidates),
+            'gpu_evaluated_compact_candidates': gpu_count,
+            'v47_gpu_evaluated_compact_candidates': v47_count,
+            'raw_candidate_references_before_dedupe': raw_count,
+            'device_used': route.get('device_used'),
+            'candidate_count_tensorized': route.get('candidate_count_tensorized'),
+            'tensor_ops_count': route.get('tensor_ops_count'),
+        },
+    }
+    compact['compact_hash'] = _app49_hash(compact, 12)
+    return compact
+
+
+def _app47b_render_gpu_diagnostic_summary(root):
+    root = _app49_dict(root)
+    route = _app49_route(root)
+    guard = _app49_guard(root)
+    if not route and not guard:
+        return None
+    try:
+        active = (route.get('patch_id') == APP_V49_EXPECTED_GPU_PATCH_ID) or bool(guard.get('v47_route_active'))
+        with st.expander('GPU route guard summary / GPU経路ガード診断 v49', expanded=not active):
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric('route patch', str(route.get('patch_id') or 'none')[:32])
+            c2.metric('v47 active', str(active))
+            c3.metric('device', str(route.get('device_used') or 'none'))
+            c4.metric('tensor ops', int(route.get('tensor_ops_count') or 0))
+            if not active:
+                st.warning('GPU経路がV47/latestとして公開されていません。leap_engine.py の V49 ファイルに差し替えてください。')
+            st.json({
+                'app_patch_id': APP_V49_COMPACT_GPU_PATCH_ID,
+                'route': route,
+                'guard': guard,
+                'no_task_or_benchmark_name_hardcoding': True,
+            })
+    except Exception:
+        pass
+    return None
+
+
+try:
+    APP_V49_COMPACT_GPU_PROOF = {
+        'patch_id': APP_V49_COMPACT_GPU_PATCH_ID,
+        'schema': 'leap_feedback_gpu_route_guard_compact_v49',
+        'dedupe_by_candidate_id_first': True,
+        'reads_v49_route_guard': True,
+        'no_task_or_benchmark_name_hardcoding': True,
+    }
+except Exception:
+    pass
+
+# ============================================================================
+# END ADD-ONLY PATCH: APP-V49-COMPACT-USES-LATEST-GPU-AND-DEDUPE-BY-ID-20260509
+# ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY PATCH: APP-V52-QUALITY-DIVERSITY-COMPACT-FEEDBACK-20260509
+# Purpose:
+# - Align app.py with Leap/Causal/Growth V52 policy: GPU usage is not the
+#   objective; final output quality, diversity, falsifiability, identifiability,
+#   S-matrix/graph richness, mask constraints, and experiment-readiness are.
+# - Ensure the "compact log" contains enough feedback information to debug and
+#   improve the invention test without pasting huge full logs.
+# - Preserve existing UI/routes/buttons. This patch only appends helpers and
+#   wraps existing compact payload/run/render functions when present.
+# - No benchmark/task-name hardcoding. All fields are extracted generically.
+# ============================================================================
+
+APP_V52_QUALITY_DIVERSITY_COMPACT_PATCH_ID = 'APP-V52-QUALITY-DIVERSITY-COMPACT-FEEDBACK-20260509'
+
+
+def _app_v52_safe_dict(x):
+    return dict(x) if isinstance(x, dict) else {}
+
+
+def _app_v52_safe_list(x):
+    if isinstance(x, list):
+        return list(x)
+    if isinstance(x, tuple):
+        return list(x)
+    return []
+
+
+def _app_v52_text(x, limit=4000):
+    try:
+        s = '' if x is None else str(x)
+    except Exception:
+        s = repr(x)
+    try:
+        import re as _re
+        s = _re.sub(r'\s+', ' ', s).strip()
+    except Exception:
+        s = ' '.join(s.split())
+    return s[:max(0, int(limit))]
+
+
+def _app_v52_float(x, default=0.0):
+    try:
+        return float(x)
+    except Exception:
+        return float(default)
+
+
+def _app_v52_int(x, default=0):
+    try:
+        return int(x)
+    except Exception:
+        return int(default)
+
+
+def _app_v52_hash_obj(obj, n=12):
+    try:
+        import json as _json, hashlib as _hashlib
+        raw = _json.dumps(obj, ensure_ascii=False, sort_keys=True, default=str)
+        return _hashlib.sha256(raw.encode('utf-8')).hexdigest()[:int(n)]
+    except Exception:
+        return 'hash_unavailable'
+
+
+def _app_v52_candidate_id(c, idx=0):
+    c = _app_v52_safe_dict(c)
+    return _app_v52_text(c.get('candidate_id') or c.get('id') or c.get('idea_id') or ('APP-V52-CAND-%03d' % (int(idx) + 1)), 160)
+
+
+def _app_v52_collect_candidates(result):
+    r = _app_v52_safe_dict(result)
+    out = []
+    for key in ('generated_ideas', 'accepted_candidates', 'decoded_candidates', 'candidates'):
+        out.extend([x for x in _app_v52_safe_list(r.get(key)) if isinstance(x, dict)])
+    rep = _app_v52_safe_dict(r.get('hidden_branching_report_v14'))
+    for key in ('generated_ideas', 'accepted_candidates', 'decoded_candidates', 'candidates'):
+        out.extend([x for x in _app_v52_safe_list(rep.get(key)) if isinstance(x, dict)])
+    # Deduplicate by candidate_id + graph signature while preserving order.
+    dedup = []
+    seen = set()
+    for i, c in enumerate(out):
+        sig = _app_v52_graph_signature(c)
+        key = (_app_v52_candidate_id(c, i), sig)
+        if key in seen:
+            continue
+        seen.add(key)
+        dedup.append(c)
+    return dedup
+
+
+def _app_v52_graph_signature(c):
+    c = _app_v52_safe_dict(c)
+    for key in ('graph_signature_v52', 'graph_signature_v45', 'graph_signature'):
+        v = c.get(key)
+        if isinstance(v, dict) and v.get('signature'):
+            return _app_v52_text(v.get('signature'), 96)
+        if isinstance(v, str) and v.strip():
+            return _app_v52_text(v, 96)
+    material = {}
+    for key in ('s_matrix_graph_view_v52', 's_matrix_graph_view_v43', 'candidate_object', 'causal_graph_delta', 'complex_s_edges_v52'):
+        if key in c:
+            material[key] = c.get(key)
+    return _app_v52_hash_obj(material or {'candidate_id': _app_v52_candidate_id(c)}, 16)
+
+
+def _app_v52_graph_view(c):
+    c = _app_v52_safe_dict(c)
+    for key in ('s_matrix_graph_view_v52', 's_matrix_graph_view_v43'):
+        v = c.get(key)
+        if isinstance(v, dict):
+            return v
+    obj = _app_v52_safe_dict(c.get('candidate_object'))
+    for key in ('s_matrix_graph_view_v52', 's_matrix_graph_view_v43', 'causal_graph_delta', 'graph'):
+        v = obj.get(key)
+        if isinstance(v, dict):
+            return v
+    return {}
+
+
+def _app_v52_graph_counts(c):
+    gv = _app_v52_graph_view(c)
+    nodes = _app_v52_safe_list(gv.get('nodes'))
+    edges = _app_v52_safe_list(gv.get('edges'))
+    group_nodes = _app_v52_safe_list(gv.get('group_nodes') or c.get('group_nodes_v52'))
+    complex_edges = _app_v52_safe_list(gv.get('complex_s_edges') or c.get('complex_s_edges_v52'))
+    mask = _app_v52_safe_dict(gv.get('causal_mask_hint') or c.get('causal_mask_hint_v52'))
+    im_nonzero = 0
+    for e in complex_edges:
+        if isinstance(e, dict) and abs(_app_v52_float(e.get('weight_im'), 0.0)) > 1e-12:
+            im_nonzero += 1
+    return {
+        'graph_view_present': bool(gv),
+        'node_count': len(nodes),
+        'edge_count': len(edges),
+        'group_node_count': len(group_nodes),
+        'complex_s_edge_count': len(complex_edges),
+        'complex_s_edge_imag_nonzero_count': int(im_nonzero),
+        'complex_s_edge_imag_nonzero_ratio': float(im_nonzero / max(1, len(complex_edges))),
+        'mask_node_count': len(mask),
+        'mask_intervene_allowed_count': sum(1 for v in mask.values() if isinstance(v, dict) and v.get('intervene_allowed')),
+        'mask_observe_only_count': sum(1 for v in mask.values() if isinstance(v, dict) and v.get('observe_only')),
+        'mask_blocked_count': sum(1 for v in mask.values() if isinstance(v, dict) and v.get('blocked')),
+    }
+
+
+def _app_v52_candidate_compact(c, idx=0):
+    c = _app_v52_safe_dict(c)
+    q = _app_v52_safe_dict(c.get('quality_diversity_review_v52'))
+    lifecycle = _app_v52_safe_dict(c.get('growth_quality_lifecycle_v52'))
+    growth_fb = _app_v52_safe_dict(c.get('growth_feedback_v52'))
+    gpu_flags = _app_v52_safe_dict(c.get('gpu_review_flags'))
+    counts = _app_v52_graph_counts(c)
+    interventions = _app_v52_safe_list(c.get('distinguishing_interventions') or c.get('required_experiments'))
+    return {
+        'index': int(idx),
+        'candidate_id': _app_v52_candidate_id(c, idx),
+        'status': _app_v52_text(c.get('status'), 160),
+        'accepted': bool(c.get('accepted', False)),
+        'publishable_status': _app_v52_text(c.get('publishable_status'), 160),
+        'requires_experiment': bool(c.get('requires_experiment', True)),
+        'operator_trace': _app_v52_safe_list(c.get('operator_trace'))[:20],
+        'graph_signature': _app_v52_graph_signature(c),
+        'quality_score_v52': _app_v52_float(q.get('quality_score_v52', c.get('overall_score_v52')), 0.0),
+        'falsifiability_score': _app_v52_float(q.get('falsifiability_score', gpu_flags.get('falsifiable_edge_ratio')), 0.0),
+        'identifiability_score': _app_v52_float(q.get('identifiability_score', gpu_flags.get('observation_decomposition_ratio')), 0.0),
+        'experiment_readiness_score': _app_v52_float(q.get('experiment_readiness_score'), 0.0),
+        'phase_edge_ratio': _app_v52_float(q.get('phase_edge_ratio'), counts.get('complex_s_edge_imag_nonzero_ratio', 0.0)),
+        'mask_coverage': _app_v52_float(q.get('mask_coverage'), 0.0),
+        'duplicate_signature_penalty': _app_v52_float(q.get('duplicate_signature_penalty'), 0.0),
+        'near_duplicate_penalty': _app_v52_float(q.get('near_duplicate_penalty'), 0.0),
+        'growth_lifecycle_status': _app_v52_text(lifecycle.get('status'), 160),
+        'growth_lifecycle_reasons': _app_v52_safe_list(lifecycle.get('reasons'))[:10],
+        'growth_feedback_actions': _app_v52_safe_list(growth_fb.get('actions'))[:10],
+        'growth_operator_hints': _app_v52_safe_list(growth_fb.get('operator_hints'))[:10],
+        'intervention_count': len(interventions),
+        'distinguishing_interventions_head': [_app_v52_text(x, 260) for x in interventions[:3]],
+        'decoded_hypothesis_head': _app_v52_text(c.get('decoded_hypothesis'), 500),
+        'decoded_mechanism_head': _app_v52_text(c.get('decoded_mechanism'), 500),
+        'why_non_near_or_reason_head': _app_v52_text(c.get('why_non_near') or c.get('reason'), 360),
+        'graph_counts': counts,
+        'core_generation_policy_v52': _app_v52_safe_dict(c.get('core_generation_policy_v52')),
+    }
+
+
+def _app_v52_top_level_summaries(result):
+    r = _app_v52_safe_dict(result)
+    sm = _app_v52_safe_dict(r.get('s_matrix_usr_verification_summary'))
+    return {
+        'quality_diversity_summary_v52': _app_v52_safe_dict(r.get('quality_diversity_summary_v52')),
+        'growth_quality_summary_v52': _app_v52_safe_dict(r.get('growth_quality_summary_v52')),
+        'growth_quality_feedback_v52': _app_v52_safe_dict(r.get('growth_quality_feedback_v52')),
+        's_matrix_usr_verification_summary': sm,
+        'gpu_tensor_route_latest': _app_v52_safe_dict(r.get('gpu_tensor_route_latest') or r.get('gpu_tensor_route_v47') or r.get('gpu_tensor_route')),
+        'gpu_diagnostic_route_guard': _app_v52_safe_dict(r.get('gpu_diagnostic_route_guard_v49') or r.get('gpu_diagnostic_route_guard')),
+        'operator_dispatch_diagnostics': _app_v52_safe_dict(r.get('operator_dispatch_diagnostics_v45')),
+        'topology_shift_graph_transform_summary': _app_v52_safe_dict(r.get('topology_shift_graph_transform_summary_v45')),
+    }
+
+
+def _app_v52_feedback_next_actions(result, candidates_compact):
+    summaries = _app_v52_top_level_summaries(result)
+    growth_fb = _app_v52_safe_dict(summaries.get('growth_quality_feedback_v52'))
+    summary = _app_v52_safe_dict(growth_fb.get('summary') or summaries.get('growth_quality_summary_v52'))
+    actions = []
+    if _app_v52_int(summary.get('duplicate_signature_count'), 0) or _app_v52_int(summary.get('near_duplicate_count'), 0):
+        actions.append('重複/近傍候補をacceptedから外し、topology_shift・observation_shift・mediator_insertionを優先する')
+    if _app_v52_int(summary.get('weak_falsifiability_count'), 0):
+        actions.append('主要edgeごとにdo/proxy/ablationテストを追加する')
+    if _app_v52_int(summary.get('weak_identifiability_count'), 0):
+        actions.append('proxy_intervention と observation_decomposition を各edgeへ付与する')
+    if _app_v52_int(summary.get('weak_experiment_readiness_count'), 0):
+        actions.append('機構主張をtargeted experimentへ変換する')
+    if not actions:
+        # Candidate-level fallback.
+        if any(_app_v52_float(c.get('quality_score_v52'), 0.0) < 0.45 for c in candidates_compact):
+            actions.append('低品質候補のgraph/mask/S行列表現を強化する')
+        if any(c.get('graph_counts', {}).get('complex_s_edge_imag_nonzero_count', 0) == 0 for c in candidates_compact):
+            actions.append('複素S行列の虚部を遅延・媒介・境界・hidden/proxy成分として導入する')
+    if not actions:
+        actions.append('現状の候補はpre-experimentとして保持し、外部実験/検証ログを追加してpublishable判定へ進む')
+    return actions
+
+
+def _app_v52_build_compact_feedback_payload(result, existing_payload=None):
+    r = _app_v52_safe_dict(result)
+    base = dict(existing_payload) if isinstance(existing_payload, dict) else {}
+    candidates = _app_v52_collect_candidates(r)
+    compact_candidates = [_app_v52_candidate_compact(c, idx=i) for i, c in enumerate(candidates[:64])]
+    summaries = _app_v52_top_level_summaries(r)
+    qsum = _app_v52_safe_dict(summaries.get('quality_diversity_summary_v52'))
+    gsum = _app_v52_safe_dict(summaries.get('growth_quality_summary_v52'))
+    gfb = _app_v52_safe_dict(summaries.get('growth_quality_feedback_v52'))
+    sm = _app_v52_safe_dict(summaries.get('s_matrix_usr_verification_summary'))
+    base['compact_export_schema'] = 'leap_feedback_quality_diversity_compact_v52'
+    base['patch_id'] = APP_V52_QUALITY_DIVERSITY_COMPACT_PATCH_ID
+    base['top_level_v52'] = {
+        'status': _app_v52_text(r.get('status'), 120),
+        'mode': _app_v52_text(r.get('mode'), 180),
+        'route': _app_v52_text(r.get('route'), 180),
+        'primary_result_route': _app_v52_text(r.get('primary_result_route'), 180),
+        'reason': _app_v52_text(r.get('reason'), 300),
+        'quality_and_diversity_are_primary': True,
+        'gpu_required_for_quality': False,
+        'core_llm_generate_called': False,
+    }
+    if r.get('operation_controls') is not None:
+        base['operation_controls'] = r.get('operation_controls')
+    base['v52_patch_alignment'] = {
+        'app_patch_id': APP_V52_QUALITY_DIVERSITY_COMPACT_PATCH_ID,
+        'leap_quality_patch_seen': bool(qsum.get('patch_id') or sm.get('quality_diversity_patch_id_v52')),
+        'causal_contract_seen': any(bool(c.get('s_matrix_graph_view_v52') or c.get('complex_s_edges_v52') or c.get('causal_mask_hint_v52')) for c in candidates),
+        'growth_feedback_seen': bool(gsum or gfb or sm.get('growth_quality_summary_v52')),
+        'quality_and_diversity_are_primary': True,
+        'gpu_required_for_quality': False,
+        'no_task_or_benchmark_name_hardcoding': True,
+    }
+    base['quality_diversity_summary_v52'] = qsum
+    base['growth_quality_summary_v52'] = gsum or _app_v52_safe_dict(gfb.get('summary'))
+    base['growth_quality_feedback_v52'] = gfb
+    base['s_matrix_usr_verification_summary_v52'] = sm
+    base['gpu_route_note_v52'] = {
+        'gpu_is_not_primary_objective': True,
+        'gpu_route_latest': summaries.get('gpu_tensor_route_latest'),
+        'gpu_diagnostic_route_guard': summaries.get('gpu_diagnostic_route_guard'),
+    }
+    base['operator_and_topology_diagnostics_v52'] = {
+        'operator_dispatch_diagnostics': summaries.get('operator_dispatch_diagnostics'),
+        'topology_shift_graph_transform_summary': summaries.get('topology_shift_graph_transform_summary'),
+    }
+    base['candidate_count_raw_compact_v52'] = len(candidates)
+    base['candidate_count_compact_v52'] = len(compact_candidates)
+    base['candidates_v52'] = compact_candidates
+    # Backward compatible key expected by earlier compact log tools.
+    base['candidates'] = compact_candidates
+    base['feedback_needed_next_v52'] = _app_v52_feedback_next_actions(r, compact_candidates)
+    base['compact_log_completeness_v52'] = {
+        'has_quality_summary': bool(qsum),
+        'has_growth_summary': bool(gsum or gfb),
+        'has_s_matrix_summary': bool(sm),
+        'has_candidate_quality_reviews': any(bool(c.get('quality_score_v52') or c.get('growth_lifecycle_status')) for c in compact_candidates),
+        'has_graph_signatures': any(bool(c.get('graph_signature')) for c in compact_candidates),
+        'has_complex_s_edge_counts': any(c.get('graph_counts', {}).get('complex_s_edge_count', 0) > 0 for c in compact_candidates),
+        'has_mask_counts': any(c.get('graph_counts', {}).get('mask_node_count', 0) > 0 for c in compact_candidates),
+        'has_feedback_actions': any(bool(c.get('growth_feedback_actions')) for c in compact_candidates) or bool(base['feedback_needed_next_v52']),
+    }
+    return base
+
+
+try:
+    _APP_V52_PREV_COMPACT_BUILDER = _app47b_build_compact_feedback_payload
+except Exception:
+    _APP_V52_PREV_COMPACT_BUILDER = None
+
+
+def _app47b_build_compact_feedback_payload(result):
+    base = {}
+    if callable(_APP_V52_PREV_COMPACT_BUILDER):
+        try:
+            base = _APP_V52_PREV_COMPACT_BUILDER(result)
+        except Exception as e:
+            base = {'previous_compact_builder_error_v52': _app_v52_text(e, 500)}
+    return _app_v52_build_compact_feedback_payload(result, existing_payload=base)
+
+
+try:
+    _APP_V52_PREV_CANDIDATE_COMPACT = _app47b_candidate_compact
+except Exception:
+    _APP_V52_PREV_CANDIDATE_COMPACT = None
+
+
+def _app47b_candidate_compact(c):
+    base = {}
+    if callable(_APP_V52_PREV_CANDIDATE_COMPACT):
+        try:
+            base = _APP_V52_PREV_CANDIDATE_COMPACT(c)
+        except Exception as e:
+            base = {'previous_candidate_compact_error_v52': _app_v52_text(e, 300)}
+    v52 = _app_v52_candidate_compact(c, idx=0)
+    if isinstance(base, dict):
+        base.update(v52)
+        return base
+    return v52
+
+
+try:
+    _APP_V52_PREV_LEAPV8_RUN = _leapv8_run
+except Exception:
+    _APP_V52_PREV_LEAPV8_RUN = None
+
+
+def _leapv8_run(cfg):
+    if callable(_APP_V52_PREV_LEAPV8_RUN):
+        result = _APP_V52_PREV_LEAPV8_RUN(cfg)
+    else:
+        result = {'status': 'failed', 'reason': 'previous_leapv8_run_missing_v52', 'generated_ideas': []}
+    if isinstance(result, dict):
+        try:
+            result['compact_feedback_payload_v52'] = _app_v52_build_compact_feedback_payload(result)
+            result['compact_feedback_payload_latest'] = result['compact_feedback_payload_v52']
+        except Exception as e:
+            result['compact_feedback_payload_v52_error'] = _app_v52_text(e, 800)
+    return result
+
+
+try:
+    _APP_V52_PREV_LEAPV8_RENDER_RESULT = _leapv8_render_result
+except Exception:
+    _APP_V52_PREV_LEAPV8_RENDER_RESULT = None
+
+
+def _leapv8_render_result(result):
+    # Preserve previous rendering first.
+    if callable(_APP_V52_PREV_LEAPV8_RENDER_RESULT):
+        try:
+            _APP_V52_PREV_LEAPV8_RENDER_RESULT(result)
+        except Exception as e:
+            try:
+                st.warning('Previous Leap render failed before V52 feedback block: ' + _app_v52_text(e, 500))
+            except Exception:
+                pass
+    # Add compact quality/diversity feedback panel and download button.
+    try:
+        payload = _app_v52_build_compact_feedback_payload(result)
+        with st.expander('V52 compact feedback: quality / diversity / S-matrix / growth', expanded=False):
+            cols = st.columns(4)
+            qsum = _app_v52_safe_dict(payload.get('quality_diversity_summary_v52'))
+            gsum = _app_v52_safe_dict(payload.get('growth_quality_summary_v52'))
+            cols[0].metric('candidates', str(payload.get('candidate_count_compact_v52', 0)))
+            cols[1].metric('mean quality', f"{_app_v52_float(qsum.get('mean_quality_score_v52', gsum.get('mean_quality_score')), 0.0):.3f}")
+            cols[2].metric('duplicates', str(_app_v52_int(gsum.get('duplicate_signature_count', qsum.get('accepted_duplicate_graph_signature_count')), 0)))
+            cols[3].metric('weak ident.', str(_app_v52_int(gsum.get('weak_identifiability_count'), 0)))
+            next_actions = _app_v52_safe_list(payload.get('feedback_needed_next_v52'))
+            if next_actions:
+                st.markdown('**次の修正に必要なフィードバック**')
+                for a in next_actions[:8]:
+                    st.write('- ' + _app_v52_text(a, 500))
+            st.json({
+                'compact_log_completeness_v52': payload.get('compact_log_completeness_v52'),
+                'v52_patch_alignment': payload.get('v52_patch_alignment'),
+                'growth_quality_summary_v52': payload.get('growth_quality_summary_v52'),
+                'quality_diversity_summary_v52': payload.get('quality_diversity_summary_v52'),
+            })
+            try:
+                import json as _json, time as _time, hashlib as _hashlib
+                raw = _json.dumps(payload, ensure_ascii=False, indent=2, default=str).encode('utf-8')
+                sha8 = _hashlib.sha256(raw).hexdigest()[:8]
+                fname = f"leap_compact_quality_feedback_v52_{int(_time.time())}_{len(raw)}bytes_{sha8}.json"
+                st.download_button('保存: V52コンパクトログ(JSON)', data=raw, file_name=fname, mime='application/json', key='download_v52_compact_feedback_json')
+            except Exception:
+                pass
+    except Exception as e:
+        try:
+            st.warning('V52 compact feedback render failed: ' + _app_v52_text(e, 500))
+        except Exception:
+            pass
+
+
+try:
+    APP_V52_QUALITY_DIVERSITY_COMPACT_EXECUTION_PROOF = {
+        'patch_id': APP_V52_QUALITY_DIVERSITY_COMPACT_PATCH_ID,
+        'wrapped_functions': ['_app47b_build_compact_feedback_payload', '_app47b_candidate_compact', '_leapv8_run', '_leapv8_render_result'],
+        'compact_log_contains': [
+            'quality_diversity_summary_v52',
+            'growth_quality_summary_v52',
+            'growth_quality_feedback_v52',
+            's_matrix_usr_verification_summary_v52',
+            'candidate graph signatures',
+            'complex S-edge counts and imaginary ratio',
+            'causal mask counts',
+            'feedback_needed_next_v52',
+        ],
+        'quality_and_diversity_are_primary': True,
+        'gpu_required_for_quality': False,
+        'no_task_or_benchmark_name_hardcoding': True,
+    }
+except Exception:
+    pass
+
+# ============================================================================
+# END ADD-ONLY PATCH: APP-V52-QUALITY-DIVERSITY-COMPACT-FEEDBACK-20260509
+# ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY PATCH: APP-V54-UNIVERSAL-OPERATOR-SEMANTICS-TIME-AXIS-20260510
+# Purpose:
+# - Surface V54 candidate causal contracts in compact feedback payloads.
+# - Mark stale compact schemas and expose demo-content-independent policy flags.
+# - Do not remove legacy compact builders; wrap and extend them ADD-ONLY.
+# ============================================================================
+
+APP_V54_UNIVERSAL_OPERATOR_SEMANTICS_TIME_AXIS_PATCH_ID = "APP-V54-UNIVERSAL-OPERATOR-SEMANTICS-TIME-AXIS-20260510"
+APP_V54_COMPACT_SCHEMA = "leap_feedback_universal_operator_semantics_time_axis_v54"
+
+try:
+    import json as _app_v54_json
+except Exception:
+    _app_v54_json = None
+
+def _app_v54_safe_dict(x):
+    return dict(x) if isinstance(x, dict) else {}
+
+def _app_v54_safe_list(x):
+    if isinstance(x, list): return list(x)
+    if isinstance(x, (tuple,set)): return list(x)
+    return [] if x is None else [x]
+
+def _app_v54_s(x, limit=4000):
+    try: s='' if x is None else str(x)
+    except Exception: s=''
+    return ' '.join(s.split())[:int(limit)]
+
+def _app_v54_collect_candidates(result):
+    r=_app_v54_safe_dict(result); out=[]; seen=set()
+    for key in ['generated_ideas','candidates','decoded_candidates','accepted','rejected','ideas']:
+        for c in _app_v54_safe_list(r.get(key)):
+            if isinstance(c,dict) and id(c) not in seen:
+                seen.add(id(c)); out.append(c)
+    return out
+
+def _app_v54_candidate_contract(c):
+    return _app_v54_safe_dict(_app_v54_safe_dict(c).get('candidate_causal_contract_v54'))
+
+def _app_v54_extract_candidate_contract_table(result):
+    rows=[]
+    for i,c in enumerate(_app_v54_collect_candidates(result)):
+        con=_app_v54_candidate_contract(c)
+        rows.append({
+            'index': i,
+            'candidate_id': con.get('candidate_id') or c.get('candidate_id') or c.get('id'),
+            'accepted_status_v54': con.get('accepted_status') or c.get('accepted_status_v54'),
+            'design_axis_signature': con.get('design_axis_signature') or c.get('design_axis_signature_v54'),
+            'operator_trace': con.get('operator_trace') or c.get('operator_trace'),
+            'operator_semantics_contract_count': len(_app_v54_safe_list(con.get('operator_semantics_contracts'))),
+            'causal_effect_edges_Re_count': len(_app_v54_safe_list(con.get('causal_effect_edges_Re'))),
+            'information_flow_edges_Im_count': len(_app_v54_safe_list(con.get('information_flow_edges_Im'))),
+            'observable_discriminator_count': len(_app_v54_safe_list(con.get('observable_discriminators'))),
+            'minimal_intervention_count': len(_app_v54_safe_list(con.get('minimal_interventions'))),
+            'falsification_condition_count': len(_app_v54_safe_list(con.get('falsification_conditions'))),
+            'status_reason': con.get('status_reason') or c.get('v54_status_reason'),
+        })
+    return rows
+
+def _app_v54_build_single_source_compact_payload(result):
+    r=_app_v54_safe_dict(result)
+    cands=_app_v54_collect_candidates(r); n=len(cands)
+    rows=_app_v54_extract_candidate_contract_table(r)
+    contract_count=sum(1 for c in cands if _app_v54_candidate_contract(c))
+    op_count=sum(1 for c in cands if _app_v54_candidate_contract(c).get('operator_semantics_contracts'))
+    im_count=sum(1 for c in cands if _app_v54_candidate_contract(c).get('information_flow_edges_Im'))
+    time_count=sum(1 for c in cands if _app_v54_candidate_contract(c).get('time_evolution_axis') and any(_app_v54_safe_dict(_app_v54_candidate_contract(c).get('time_evolution_axis')).values()))
+    generic_accepted=0; accepted_without=0
+    sigs=[]
+    for c in cands:
+        con=_app_v54_candidate_contract(c); legacy=_app_v54_s(c.get('status') or c.get('accepted') or c.get('publishable_status'),240).lower()
+        if 'accepted' in legacy and not con: accepted_without+=1
+        risks=_app_v54_s(con.get('failure_risks') or con.get('status_reason') or c.get('v54_status_reason'),1000).lower()
+        st=_app_v54_s(con.get('accepted_status') or c.get('accepted_status_v54'),200).lower()
+        if 'generic_mediator' in risks and ('accepted' in legacy or 'accepted' in st): generic_accepted+=1
+        sig=con.get('design_axis_signature') or c.get('design_axis_signature_v54')
+        if sig: sigs.append(str(sig))
+    prior_summary=_app_v54_safe_dict(r.get('v54_universal_operator_semantics_summary'))
+    return {
+        'compact_export_schema': APP_V54_COMPACT_SCHEMA,
+        'patch_id': APP_V54_UNIVERSAL_OPERATOR_SEMANTICS_TIME_AXIS_PATCH_ID,
+        'source_result_route': _app_v54_safe_dict(r.get('top_level')).get('route') or r.get('route') or '',
+        'legacy_schema_seen': r.get('compact_export_schema') or r.get('compact_export_schema_v54') or '',
+        'stale_compact_warning_v54': None if (r.get('compact_export_schema') == APP_V54_COMPACT_SCHEMA or r.get('compact_export_schema_v54') == APP_V54_COMPACT_SCHEMA) else 'legacy_or_missing_compact_schema_wrapped_by_v54',
+        'demo_content_dependency_warning': True,
+        'no_demo_specific_parameter_extraction': True,
+        'candidate_count': n,
+        'candidate_contract_coverage': prior_summary.get('candidate_contract_coverage', contract_count/max(1,n)),
+        'operator_semantics_contract_coverage': prior_summary.get('operator_semantics_contract_coverage', op_count/max(1,n)),
+        'time_evolution_axis_coverage': prior_summary.get('time_evolution_axis_coverage', time_count/max(1,n)),
+        'information_flow_edge_coverage': prior_summary.get('information_flow_edge_coverage', im_count/max(1,n)),
+        'accepted_without_contract_count': prior_summary.get('accepted_without_contract_count', accepted_without),
+        'generic_mediator_accepted_count': prior_summary.get('generic_mediator_accepted_count', generic_accepted),
+        'design_axis_unique_count': prior_summary.get('design_axis_unique_count', len(set(sigs))),
+        'near_duplicate_pair_count': _app_v54_safe_dict(r.get('gpu_tensor_route')).get('near_duplicate_pair_count', _app_v54_safe_dict(r.get('gpu_tensor_route_latest')).get('near_duplicate_pair_count', None)),
+        'candidate_table_v54': rows,
+        'v54_universal_operator_semantics_summary': prior_summary,
+    }
+
+def _app_v54_validate_compact_payload(payload):
+    p=_app_v54_safe_dict(payload)
+    required=['compact_export_schema','demo_content_dependency_warning','no_demo_specific_parameter_extraction','candidate_contract_coverage','operator_semantics_contract_coverage','time_evolution_axis_coverage','information_flow_edge_coverage','accepted_without_contract_count','generic_mediator_accepted_count','design_axis_unique_count','stale_compact_warning_v54']
+    missing=[k for k in required if k not in p]
+    return {'ok': not missing and p.get('compact_export_schema')==APP_V54_COMPACT_SCHEMA, 'missing_keys': missing, 'schema_ok': p.get('compact_export_schema')==APP_V54_COMPACT_SCHEMA}
+
+def _app_v54_render_universal_contract_panel(result):
+    payload=_app_v54_build_single_source_compact_payload(result)
+    try:
+        st.subheader('V54 Universal Contract / Operator Semantics')
+        st.json(payload)
+    except Exception:
+        return payload
+    return payload
+
+def _app_v54_render_time_evolution_axis_panel(result):
+    rows=[]
+    for c in _app_v54_collect_candidates(result):
+        con=_app_v54_candidate_contract(c)
+        rows.append({'candidate_id': con.get('candidate_id') or c.get('candidate_id'), 'time_evolution_axis': con.get('time_evolution_axis') or c.get('time_evolution_axis_v54')})
+    try:
+        st.subheader('V54 Time Evolution Axis')
+        st.json(rows)
+    except Exception:
+        pass
+    return rows
+
+def _app_v54_render_operator_semantics_panel(result):
+    rows=[]
+    for c in _app_v54_collect_candidates(result):
+        con=_app_v54_candidate_contract(c)
+        rows.append({'candidate_id': con.get('candidate_id') or c.get('candidate_id'), 'operator_semantics_contracts': con.get('operator_semantics_contracts') or c.get('operator_semantics_contracts_v54')})
+    try:
+        st.subheader('V54 Operator Semantics')
+        st.json(rows)
+    except Exception:
+        pass
+    return rows
+
+def _app_v54_render_smatrix_re_im_panel(result):
+    rows=[]
+    for c in _app_v54_collect_candidates(result):
+        con=_app_v54_candidate_contract(c)
+        rows.append({'candidate_id': con.get('candidate_id') or c.get('candidate_id'), 'Re_count': len(_app_v54_safe_list(con.get('causal_effect_edges_Re'))), 'Im_count': len(_app_v54_safe_list(con.get('information_flow_edges_Im')))})
+    try:
+        st.subheader('V54 S-matrix Re/Im')
+        st.json(rows)
+    except Exception:
+        pass
+    return rows
+
+try:
+    _APP_V54_PREV_APP_V52_BUILD_COMPACT = _app_v52_build_compact_feedback_payload
+except Exception:
+    _APP_V54_PREV_APP_V52_BUILD_COMPACT = None
+
+def _app_v52_build_compact_feedback_payload(result, *args, **kwargs):
+    legacy = _APP_V54_PREV_APP_V52_BUILD_COMPACT(result, *args, **kwargs) if callable(_APP_V54_PREV_APP_V52_BUILD_COMPACT) else {}
+    payload = legacy if isinstance(legacy, dict) else {'legacy_payload': legacy}
+    payload['v54_compact_payload'] = _app_v54_build_single_source_compact_payload(result)
+    payload['compact_export_schema_v54'] = APP_V54_COMPACT_SCHEMA
+    payload['demo_content_dependency_warning_v54'] = True
+    payload['no_demo_specific_parameter_extraction_v54'] = True
+    return payload
+
+try:
+    _APP_V54_PREV_APP47B_BUILD_COMPACT = _app47b_build_compact_feedback_payload
+except Exception:
+    _APP_V54_PREV_APP47B_BUILD_COMPACT = None
+
+def _app47b_build_compact_feedback_payload(result, *args, **kwargs):
+    legacy = _APP_V54_PREV_APP47B_BUILD_COMPACT(result, *args, **kwargs) if callable(_APP_V54_PREV_APP47B_BUILD_COMPACT) else {}
+    payload = legacy if isinstance(legacy, dict) else {'legacy_payload': legacy}
+    payload['v54_compact_payload'] = _app_v54_build_single_source_compact_payload(result)
+    payload['compact_export_schema_v54'] = APP_V54_COMPACT_SCHEMA
+    payload['demo_content_dependency_warning_v54'] = True
+    payload['no_demo_specific_parameter_extraction_v54'] = True
+    return payload
+
+# ============================================================================
+# END ADD-ONLY PATCH: APP-V54-UNIVERSAL-OPERATOR-SEMANTICS-TIME-AXIS-20260510
+# ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY PATCH: APP-V57-COMPACT-PRESELECTION-AND-GROWTH-LOG-EXPORT-20260511
+# Purpose:
+# - Ensure compact feedback JSON exposes V56/V57 growth diagnostics, not only
+#   aggregate fields nested in s_matrix_usr_verification_summary.
+# - Prefer v57_selected_candidates when present, so compact output reflects
+#   preselection gates before export.
+# - Preserve legacy payload and existing UI behavior.
+# - Existing code is preserved; this patch is append-only.
+# ============================================================================
+
+APP_V57_COMPACT_PRESELECTION_AND_GROWTH_LOG_EXPORT_PATCH_ID = "APP-V57-COMPACT-PRESELECTION-AND-GROWTH-LOG-EXPORT-20260511"
+APP_V57_COMPACT_SCHEMA = "leap_feedback_preselection_growth_log_compact_v57"
+
+try:
+    _APP_V57_PREV_APP50_COLLECT_CANDIDATES = _app50_collect_candidates
+except Exception:
+    _APP_V57_PREV_APP50_COLLECT_CANDIDATES = None
+try:
+    _APP_V57_PREV_APP50_CANDIDATE_COMPACT = _app50_candidate_compact
+except Exception:
+    _APP_V57_PREV_APP50_CANDIDATE_COMPACT = None
+try:
+    _APP_V57_PREV_APP47B_BUILD_COMPACT = _app47b_build_compact_feedback_payload
+except Exception:
+    _APP_V57_PREV_APP47B_BUILD_COMPACT = None
+try:
+    _APP_V57_PREV_APPV52_BUILD_COMPACT = _app_v52_build_compact_feedback_payload
+except Exception:
+    _APP_V57_PREV_APPV52_BUILD_COMPACT = None
+
+
+def _app_v57_dict(x):
+    return x if isinstance(x, dict) else {}
+
+
+def _app_v57_list(x):
+    if isinstance(x, list):
+        return x
+    if isinstance(x, (tuple,set)):
+        return list(x)
+    return [] if x is None else [x]
+
+
+def _app_v57_collect_result_root(obj):
+    d=_app_v57_dict(obj)
+    return _app_v57_dict(d.get('result') or d.get('debug_full_result') or d)
+
+
+def _app50_collect_candidates(root, rep):
+    root=_app_v57_dict(root); rep=_app_v57_dict(rep)
+    selected=root.get('v57_selected_candidates') or _app_v57_dict(root.get('result')).get('v57_selected_candidates')
+    if isinstance(selected, list):
+        return selected, int(_app_v57_dict(root.get('candidate_preselection_summary_v57')).get('candidate_count_before_preselection') or len(selected))
+    if callable(_APP_V57_PREV_APP50_COLLECT_CANDIDATES):
+        return _APP_V57_PREV_APP50_COLLECT_CANDIDATES(root, rep)
+    return [],0
+
+
+def _app50_candidate_compact(c, idx=0):
+    base=_APP_V57_PREV_APP50_CANDIDATE_COMPACT(c, idx) if callable(_APP_V57_PREV_APP50_CANDIDATE_COMPACT) else {}
+    payload=base if isinstance(base, dict) else {'legacy_candidate_compact':base}
+    c=_app_v57_dict(c)
+    for k in ('growth_source_diagnostics_v56','growth_source_diagnostics_v57','v56_selection_rank','v57_primary_selection_rank','v56_status_reason','v57_status_reason','legacy_status_v56','legacy_status_v57','v57_preselection_score','v57_rejected_from_primary_compact'):
+        if k in c:
+            payload[k]=c.get(k)
+    return payload
+
+
+def _app_v57_enrich_compact_payload(payload, source_result):
+    p=payload if isinstance(payload, dict) else {'legacy_payload':payload}
+    r=_app_v57_collect_result_root(source_result)
+    p['compact_export_schema_v57']=APP_V57_COMPACT_SCHEMA
+    p['app_v57_patch_id']=APP_V57_COMPACT_PRESELECTION_AND_GROWTH_LOG_EXPORT_PATCH_ID
+    for k in ('candidate_preselection_summary_v57','growth_engine_connection_check_v57','growth_engine_shadow_loop_v57','v57_compact_payload','growth_source_quota_summary_v56','growth_engine_connection_check_v56','growth_engine_shadow_loop_v56','v56_compact_payload'):
+        if k in r:
+            p[k]=r.get(k)
+    sm=_app_v57_dict(r.get('s_matrix_usr_verification_summary'))
+    p['v57_summary_from_s_matrix_usr_verification_summary']={kk:vv for kk,vv in sm.items() if str(kk).startswith('v57_') or str(kk).startswith('v56_')}
+    if isinstance(p.get('review_summary'), dict):
+        p['review_summary']['app_v57_compact_growth_log_export_active']=True
+        p['review_summary']['v57_selected_candidate_count']=_app_v57_dict(r.get('candidate_preselection_summary_v57')).get('candidate_count_after_preselection')
+    return p
+
+
+def _app47b_build_compact_feedback_payload(result, *args, **kwargs):
+    legacy=_APP_V57_PREV_APP47B_BUILD_COMPACT(result, *args, **kwargs) if callable(_APP_V57_PREV_APP47B_BUILD_COMPACT) else {}
+    return _app_v57_enrich_compact_payload(legacy, result)
+
+
+def _app_v52_build_compact_feedback_payload(result, *args, **kwargs):
+    legacy=_APP_V57_PREV_APPV52_BUILD_COMPACT(result, *args, **kwargs) if callable(_APP_V57_PREV_APPV52_BUILD_COMPACT) else {}
+    return _app_v57_enrich_compact_payload(legacy, result)
+
+# ============================================================================
+# END ADD-ONLY PATCH: APP-V57-COMPACT-PRESELECTION-AND-GROWTH-LOG-EXPORT-20260511
+# ============================================================================
+
+
+
+# ============================================================================
+# ADD-ONLY PATCH: APP-V58-LEAP-GROWTH-CAUSAL-COMPACT-UI-INTEGRATION
+# generated_at_jst: 2026-05-12
+# policy:
+# - ADD-ONLY: no existing UI/routes/code are deleted or modified above this block.
+# - Universal: no benchmark name, task name, or domain-specific target hardcoding.
+# - Purpose:
+#   1) Align app.py with leap_engine.py V58, growth_engine.py V58, and
+#      causal_engine.py V58.
+#   2) Add diagnostic-only self-growth loop controls and pass the loop config to
+#      growth_engine when available.
+#   3) Attach causal S-matrix verification to candidates when causal_engine V58
+#      is available.
+#   4) Ensure compact feedback logs include review_metrics_v58,
+#      v58_generation_quota_summary, causal verification summaries, growth loop
+#      feedback, and UI configuration.
+# ============================================================================
+
+APP_V58_LEAP_GROWTH_CAUSAL_COMPACT_UI_PATCH_ID = 'APP-V58-LEAP-GROWTH-CAUSAL-COMPACT-UI-INTEGRATION-20260512'
+APP_V58_COMPACT_SCHEMA = 'leap_feedback_app_v58_growth_causal_compact'
+
+try:
+    _APP_V58_PREV_LEAPV8_RUN = _leapv8_run
+except Exception:
+    _APP_V58_PREV_LEAPV8_RUN = None
+try:
+    _APP_V58_PREV_LEAPV8_RENDER = _leapv8_render_result
+except Exception:
+    _APP_V58_PREV_LEAPV8_RENDER = None
+try:
+    _APP_V58_PREV_APP47B_COMPACT = _app47b_build_compact_feedback_payload
+except Exception:
+    _APP_V58_PREV_APP47B_COMPACT = None
+try:
+    _APP_V58_PREV_APPV52_COMPACT = _app_v52_build_compact_feedback_payload
+except Exception:
+    _APP_V58_PREV_APPV52_COMPACT = None
+try:
+    _APP_V58_PREV_RENDER_PANEL_V46 = _render_invention_benchmark_panel_v46
+except Exception:
+    _APP_V58_PREV_RENDER_PANEL_V46 = None
+
+
+def _app_v58_dict(x):
+    return x if isinstance(x, dict) else {}
+
+
+def _app_v58_list(x):
+    if isinstance(x, list):
+        return x
+    if isinstance(x, tuple):
+        return list(x)
+    return []
+
+
+def _app_v58_text(x, limit=2000):
+    try:
+        s = '' if x is None else str(x)
+    except Exception:
+        s = repr(x)
+    return ' '.join(s.split())[:max(0, int(limit))]
+
+
+def _app_v58_float(x, default=0.0):
+    try:
+        return float(x)
+    except Exception:
+        return float(default)
+
+
+def _app_v58_int(x, default=0):
+    try:
+        return int(x)
+    except Exception:
+        return int(default)
+
+
+def _app_v58_hash_obj(obj, n=12):
+    try:
+        import json as _json, hashlib as _hashlib
+        raw = _json.dumps(obj, ensure_ascii=False, sort_keys=True, default=str)
+        return _hashlib.sha256(raw.encode('utf-8')).hexdigest()[:int(n)]
+    except Exception:
+        return 'hash_unavailable'
+
+
+def _app_v58_init_session_defaults():
+    try:
+        st.session_state.setdefault('leap_v58_growth_loop_enabled', True)
+        st.session_state.setdefault('leap_v58_growth_loop_count', 1)
+        st.session_state.setdefault('leap_v58_growth_loop_mode', 'diagnostic_only')
+        st.session_state.setdefault('leap_v58_allow_candidate_regeneration', False)
+        st.session_state.setdefault('leap_v58_causal_verification_enabled', True)
+        st.session_state.setdefault('leap_v58_existing_smatrix_check_enabled', True)
+        st.session_state.setdefault('leap_v58_use_complex_imag_information_flow', True)
+        st.session_state.setdefault('leap_v58_apply_causal_mask_to_score', True)
+        st.session_state.setdefault('leap_v58_usr_equation_eval_enabled', True)
+        st.session_state.setdefault('leap_v58_max_candidate_verifications', 12)
+    except Exception:
+        pass
+
+
+def _app_v58_growth_loop_config_from_session():
+    _app_v58_init_session_defaults()
+    try:
+        return {
+            'patch_id': APP_V58_LEAP_GROWTH_CAUSAL_COMPACT_UI_PATCH_ID,
+            'enabled': bool(st.session_state.get('leap_v58_growth_loop_enabled', True)),
+            'max_growth_loops': _app_v58_int(st.session_state.get('leap_v58_growth_loop_count', 1), 1),
+            'mode': _app_v58_text(st.session_state.get('leap_v58_growth_loop_mode', 'diagnostic_only'), 80),
+            'allow_candidate_regeneration': bool(st.session_state.get('leap_v58_allow_candidate_regeneration', False)),
+            'candidate_regeneration_default': False,
+        }
+    except Exception:
+        return {
+            'patch_id': APP_V58_LEAP_GROWTH_CAUSAL_COMPACT_UI_PATCH_ID,
+            'enabled': True,
+            'max_growth_loops': 1,
+            'mode': 'diagnostic_only',
+            'allow_candidate_regeneration': False,
+            'candidate_regeneration_default': False,
+        }
+
+
+def _app_v58_causal_verifier_config_from_session():
+    _app_v58_init_session_defaults()
+    try:
+        return {
+            'patch_id': APP_V58_LEAP_GROWTH_CAUSAL_COMPACT_UI_PATCH_ID,
+            'enabled': bool(st.session_state.get('leap_v58_causal_verification_enabled', True)),
+            'existing_smatrix_check_enabled': bool(st.session_state.get('leap_v58_existing_smatrix_check_enabled', True)),
+            'use_complex_imag_information_flow': bool(st.session_state.get('leap_v58_use_complex_imag_information_flow', True)),
+            'apply_causal_mask_to_score': bool(st.session_state.get('leap_v58_apply_causal_mask_to_score', True)),
+            'usr_equation_eval_enabled': bool(st.session_state.get('leap_v58_usr_equation_eval_enabled', True)),
+            'max_candidate_verifications': _app_v58_int(st.session_state.get('leap_v58_max_candidate_verifications', 12), 12),
+        }
+    except Exception:
+        return {'patch_id': APP_V58_LEAP_GROWTH_CAUSAL_COMPACT_UI_PATCH_ID, 'enabled': True, 'max_candidate_verifications': 12}
+
+
+def app_v58_render_growth_causal_controls():
+    """Render diagnostic controls if Streamlit is available.
+
+    This function is safe to call multiple times. It does not trigger candidate
+    regeneration; it only stores configuration in session_state for run/logging.
+    """
+    _app_v58_init_session_defaults()
+    try:
+        with st.expander('V58 Growth / Causal Verification Controls', expanded=False):
+            st.caption('V58は候補再生成ではなく、生成方針・因果検証・スコアリング診断を優先します。')
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                st.checkbox('自己成長ループを使う', key='leap_v58_growth_loop_enabled')
+                st.number_input('自己成長ループ回数', min_value=0, max_value=10, step=1, key='leap_v58_growth_loop_count')
+            with c2:
+                st.selectbox('成長ループモード', ['diagnostic_only', 'adjust_generation_policy', 'full_reflection'], key='leap_v58_growth_loop_mode')
+                st.checkbox('候補再生成を許可する（既定OFF）', key='leap_v58_allow_candidate_regeneration')
+            with c3:
+                st.checkbox('S行列検証を有効化', key='leap_v58_causal_verification_enabled')
+                st.number_input('候補検証上限', min_value=1, max_value=64, step=1, key='leap_v58_max_candidate_verifications')
+            c4, c5, c6, c7 = st.columns(4)
+            with c4:
+                st.checkbox('既存因果との整合性', key='leap_v58_existing_smatrix_check_enabled')
+            with c5:
+                st.checkbox('虚部=情報流/遅延として使う', key='leap_v58_use_complex_imag_information_flow')
+            with c6:
+                st.checkbox('causal maskをスコアへ反映', key='leap_v58_apply_causal_mask_to_score')
+            with c7:
+                st.checkbox('USR式候補を評価', key='leap_v58_usr_equation_eval_enabled')
+            st.json({'growth_loop_config_v58': _app_v58_growth_loop_config_from_session(), 'causal_verifier_config_v58': _app_v58_causal_verifier_config_from_session()})
+    except Exception:
+        return None
+
+
+def _app_v58_candidate_id(c, idx=0):
+    c = _app_v58_dict(c)
+    return _app_v58_text(c.get('candidate_id') or c.get('id') or c.get('uid') or ('APPV58-CAND-%03d' % int(idx or 0)), 128)
+
+
+def _app_v58_collect_candidates(result):
+    r = _app_v58_dict(result)
+    out = []
+    seen = set()
+    for key in ('v58_selected_candidates', 'generated_ideas', 'decoded_candidates', 'accepted_candidates', 'candidates', 'v57_selected_candidates'):
+        for c in _app_v58_list(r.get(key)):
+            if not isinstance(c, dict):
+                continue
+            cid = _app_v58_candidate_id(c, len(out) + 1)
+            if cid in seen:
+                continue
+            seen.add(cid)
+            out.append(c)
+    return out
+
+
+def _app_v58_existing_smatrix_from_result(result):
+    r = _app_v58_dict(result)
+    for key in ('existing_smatrix', 's_matrix_record', 's_matrix_store_snapshot', 'prior_smatrix'):
+        if isinstance(r.get(key), (dict, list)):
+            return r.get(key)
+    sm = _app_v58_dict(r.get('s_matrix_usr_verification_summary'))
+    for key in ('s_matrix_record', 'prior_smatrix', 'existing_smatrix'):
+        if isinstance(sm.get(key), (dict, list)):
+            return sm.get(key)
+    return None
+
+
+def _app_v58_attach_causal_verification(result):
+    r = result if isinstance(result, dict) else {}
+    cfg = _app_v58_causal_verifier_config_from_session()
+    if not cfg.get('enabled', True):
+        r['app_v58_causal_verification_summary'] = {
+            'patch_id': APP_V58_LEAP_GROWTH_CAUSAL_COMPACT_UI_PATCH_ID,
+            'enabled': False,
+            'candidate_verification_count': 0,
+        }
+        return r
+    candidates = _app_v58_collect_candidates(r)
+    max_n = max(1, _app_v58_int(cfg.get('max_candidate_verifications'), 12))
+    prior = _app_v58_existing_smatrix_from_result(r) if cfg.get('existing_smatrix_check_enabled', True) else None
+    rows = []
+    try:
+        from causal_engine import causal_verify_candidate_with_smatrix_v58
+    except Exception as e:
+        r['app_v58_causal_verification_summary'] = {
+            'patch_id': APP_V58_LEAP_GROWTH_CAUSAL_COMPACT_UI_PATCH_ID,
+            'enabled': True,
+            'causal_engine_v58_available': False,
+            'error': repr(e),
+            'candidate_verification_count': 0,
+        }
+        return r
+    for idx, c in enumerate(candidates[:max_n], start=1):
+        try:
+            ver = causal_verify_candidate_with_smatrix_v58(c, prior_smatrix=prior, context={'app_patch_id': APP_V58_LEAP_GROWTH_CAUSAL_COMPACT_UI_PATCH_ID, 'ui_config': cfg})
+        except Exception as e:
+            ver = {'patch_id': APP_V58_LEAP_GROWTH_CAUSAL_COMPACT_UI_PATCH_ID, 'candidate_id': _app_v58_candidate_id(c, idx), 'error': repr(e)}
+        c['app_v58_causal_verification'] = ver
+        rows.append({
+            'candidate_id': ver.get('candidate_id') or _app_v58_candidate_id(c, idx),
+            'logic': ver.get('logic_consistency_score'),
+            'prior': ver.get('prior_consistency_score'),
+            'directionality': ver.get('directionality_score'),
+            'mask': ver.get('mask_compliance_score'),
+            'usr': ver.get('usr_compressibility_score'),
+            'overall': ver.get('overall_causal_verification_score_v58'),
+            'contradictions': ver.get('contradiction_count'),
+            'hard_conflicts_count': len(_app_v58_list(ver.get('hard_conflicts'))),
+            'requires_experiment_edges_count': len(_app_v58_list(ver.get('requires_experiment_edges'))),
+        })
+    if rows:
+        mean_overall = sum(_app_v58_float(x.get('overall'), 0.0) for x in rows) / max(1, len(rows))
+        hard_conflicts = sum(_app_v58_int(x.get('hard_conflicts_count'), 0) for x in rows)
+    else:
+        mean_overall = 0.0
+        hard_conflicts = 0
+    r['app_v58_causal_verification_summary'] = {
+        'patch_id': APP_V58_LEAP_GROWTH_CAUSAL_COMPACT_UI_PATCH_ID,
+        'enabled': True,
+        'causal_engine_v58_available': True,
+        'candidate_verification_count': len(rows),
+        'mean_overall_causal_verification_score': mean_overall,
+        'hard_conflict_count_total': hard_conflicts,
+        'rows': rows,
+        'config': cfg,
+    }
+    sm = r.get('s_matrix_usr_verification_summary')
+    if isinstance(sm, dict):
+        sm['app_v58_causal_verification_enabled'] = True
+        sm['app_v58_candidate_verification_count'] = len(rows)
+        sm['app_v58_mean_overall_causal_verification_score'] = mean_overall
+        sm['app_v58_hard_conflict_count_total'] = hard_conflicts
+    return r
+
+
+def _app_v58_attach_growth_feedback(result):
+    r = result if isinstance(result, dict) else {}
+    cfg = _app_v58_growth_loop_config_from_session()
+    if not cfg.get('enabled', True):
+        r['growth_engine_shadow_loop_v58'] = {
+            'schema': 'growth_engine_diagnostic_metacognition_leap_v58_feedback',
+            'patch_id': APP_V58_LEAP_GROWTH_CAUSAL_COMPACT_UI_PATCH_ID,
+            'connection_confirmed': False,
+            'disabled_by_ui': True,
+            'loop_config': cfg,
+            'loop_count_executed': 0,
+        }
+        return r
+    try:
+        from growth_engine import run_shadow_growth_loop_v58
+        feedback = run_shadow_growth_loop_v58(result=r, step1_summary=r.get('v58_generation_quota_summary'), source='app_v58', loop_config=cfg)
+    except Exception as e:
+        feedback = {
+            'schema': 'growth_engine_diagnostic_metacognition_leap_v58_feedback',
+            'patch_id': APP_V58_LEAP_GROWTH_CAUSAL_COMPACT_UI_PATCH_ID,
+            'connection_confirmed': False,
+            'error': repr(e),
+            'loop_config': cfg,
+            'loop_count_executed': 0,
+        }
+    r['growth_engine_shadow_loop_v58'] = feedback
+    sm = r.get('s_matrix_usr_verification_summary')
+    if isinstance(sm, dict):
+        sm['app_v58_growth_engine_connection_ok'] = bool(feedback.get('connection_confirmed'))
+        sm['app_v58_growth_loop_count_executed'] = _app_v58_int(feedback.get('loop_count_executed'), 0)
+        sm['app_v58_growth_recommended_next_action'] = _app_v58_text(feedback.get('recommended_next_action'), 400)
+    return r
+
+
+def _app_v58_review_metrics(result):
+    r = _app_v58_dict(result)
+    rm = _app_v58_dict(r.get('review_metrics_v58'))
+    if rm:
+        return rm
+    v58s = _app_v58_dict(r.get('v58_generation_quota_summary'))
+    sd = _app_v58_dict(v58s.get('score_distribution_v58'))
+    return {
+        'raw_candidate_count': v58s.get('candidate_count_before_v58_selection'),
+        'compact_candidate_count': v58s.get('candidate_count_after_v58_selection'),
+        'root_edge_coverage_count': v58s.get('root_edge_coverage_count_v58'),
+        'topology_variant_coverage_count': v58s.get('topology_variant_coverage_count_v58'),
+        'primary_causal_edge_candidate_count': v58s.get('primary_causal_edge_candidate_count_v58'),
+        'artifact_dependency_candidate_count': v58s.get('artifact_dependency_candidate_count_v58'),
+        'score_saturation_detected': sd.get('score_saturation_detected'),
+        'score_std': sd.get('std'),
+        's_matrix_mean_abs_imag_weight': v58s.get('s_matrix_mean_abs_imag_weight_v58'),
+        'mask_violation_count': v58s.get('mask_violation_count_v58'),
+        'usr_equation_candidate_count': v58s.get('usr_equation_candidate_count_v58'),
+        'patch_id': v58s.get('patch_id'),
+    }
+
+
+def _app_v58_candidate_compact_rows(result):
+    rows = []
+    for idx, c in enumerate(_app_v58_collect_candidates(result), start=1):
+        if not isinstance(c, dict):
+            continue
+        q = _app_v58_dict(c.get('v58_generation_quota'))
+        art = _app_v58_dict(c.get('v58_artifact_diagnostics'))
+        ver = _app_v58_dict(c.get('app_v58_causal_verification'))
+        rows.append({
+            'candidate_id': _app_v58_candidate_id(c, idx),
+            'rank_v58': c.get('v58_primary_selection_rank'),
+            'root_edge': q.get('assigned_root_edge'),
+            'topology_variant': q.get('assigned_topology_variant'),
+            'primary_edge_count': art.get('primary_causal_edge_count_v58'),
+            'artifact_dependency_ratio': art.get('artifact_dependency_ratio_v58'),
+            'score_v58': c.get('overall_score_v58') or c.get('pre_experiment_rank_score_v58'),
+            'causal_overall': ver.get('overall_causal_verification_score_v58'),
+            'logic': ver.get('logic_consistency_score'),
+            'prior': ver.get('prior_consistency_score'),
+            'mask': ver.get('mask_compliance_score'),
+            'usr': ver.get('usr_compressibility_score'),
+            'requires_experiment_edges_count': len(_app_v58_list(ver.get('requires_experiment_edges'))),
+        })
+    return rows
+
+
+def _app_v58_build_compact_payload(result):
+    r = _app_v58_dict(result)
+    growth = _app_v58_dict(r.get('growth_engine_shadow_loop_v58'))
+    causal = _app_v58_dict(r.get('app_v58_causal_verification_summary'))
+    payload = {
+        'compact_export_schema': APP_V58_COMPACT_SCHEMA,
+        'patch_id': APP_V58_LEAP_GROWTH_CAUSAL_COMPACT_UI_PATCH_ID,
+        'ui_config_v58': {
+            'growth_loop_config_v58': _app_v58_growth_loop_config_from_session(),
+            'causal_verifier_config_v58': _app_v58_causal_verifier_config_from_session(),
+        },
+        'review_metrics_v58': _app_v58_review_metrics(r),
+        'v58_generation_quota_summary': _app_v58_dict(r.get('v58_generation_quota_summary')),
+        'app_v58_causal_verification_summary': causal,
+        'growth_engine_shadow_loop_v58': growth,
+        'candidate_rows_v58': _app_v58_candidate_compact_rows(r),
+        'recommended_next_action_v58': growth.get('recommended_next_action') or _app_v58_dict(r.get('review_metrics_v58')).get('recommended_next_action'),
+        'candidate_regeneration_used_v58': bool(growth.get('candidate_regeneration_used', False)),
+        'no_benchmark_or_task_name_hardcoding': True,
+    }
+    return payload
+
+
+def _app_v58_postprocess_result(result):
+    r = result if isinstance(result, dict) else {'result': result}
+    try:
+        r = _app_v58_attach_causal_verification(r)
+    except Exception as e:
+        r['app_v58_causal_verification_summary'] = {'patch_id': APP_V58_LEAP_GROWTH_CAUSAL_COMPACT_UI_PATCH_ID, 'error': repr(e)}
+    try:
+        r = _app_v58_attach_growth_feedback(r)
+    except Exception as e:
+        r['growth_engine_shadow_loop_v58'] = {'patch_id': APP_V58_LEAP_GROWTH_CAUSAL_COMPACT_UI_PATCH_ID, 'error': repr(e)}
+    r['app_v58_compact_payload'] = _app_v58_build_compact_payload(r)
+    r['compact_export_schema_app_v58'] = APP_V58_COMPACT_SCHEMA
+    r['app_v58_patch_id'] = APP_V58_LEAP_GROWTH_CAUSAL_COMPACT_UI_PATCH_ID
+    return r
+
+
+def _leapv8_run(*args, **kwargs):
+    if callable(_APP_V58_PREV_LEAPV8_RUN):
+        result = _APP_V58_PREV_LEAPV8_RUN(*args, **kwargs)
+    else:
+        result = {'status': 'failed', 'reason': 'previous__leapv8_run_missing_app_v58'}
+    return _app_v58_postprocess_result(result)
+
+
+def _app_v58_render_summary_panel(result):
+    r = _app_v58_dict(result)
+    payload = _app_v58_dict(r.get('app_v58_compact_payload')) or _app_v58_build_compact_payload(r)
+    try:
+        with st.expander('V58 Review Metrics / Growth / Causal Verification', expanded=True):
+            st.subheader('V58 compact review')
+            st.json(payload)
+            rows = _app_v58_list(payload.get('candidate_rows_v58'))
+            if rows:
+                try:
+                    st.dataframe(rows, use_container_width=True)
+                except Exception:
+                    st.json(rows)
+    except Exception:
+        pass
+    return payload
+
+
+def _leapv8_render_result(result, *args, **kwargs):
+    if callable(_APP_V58_PREV_LEAPV8_RENDER):
+        out = _APP_V58_PREV_LEAPV8_RENDER(result, *args, **kwargs)
+    else:
+        out = None
+    try:
+        _app_v58_render_summary_panel(result)
+    except Exception:
+        pass
+    return out
+
+
+def _app47b_build_compact_feedback_payload(result, *args, **kwargs):
+    legacy = _APP_V58_PREV_APP47B_COMPACT(result, *args, **kwargs) if callable(_APP_V58_PREV_APP47B_COMPACT) else {}
+    payload = legacy if isinstance(legacy, dict) else {'legacy_payload': legacy}
+    try:
+        enriched = _app_v58_postprocess_result(result if isinstance(result, dict) else {'result': result})
+    except Exception:
+        enriched = result if isinstance(result, dict) else {'result': result}
+    payload['app_v58_compact_payload'] = _app_v58_build_compact_payload(enriched)
+    payload['compact_export_schema_app_v58'] = APP_V58_COMPACT_SCHEMA
+    payload['review_metrics_v58'] = payload['app_v58_compact_payload'].get('review_metrics_v58')
+    payload['growth_engine_shadow_loop_v58'] = payload['app_v58_compact_payload'].get('growth_engine_shadow_loop_v58')
+    payload['app_v58_causal_verification_summary'] = payload['app_v58_compact_payload'].get('app_v58_causal_verification_summary')
+    return payload
+
+
+def _app_v52_build_compact_feedback_payload(result, *args, **kwargs):
+    legacy = _APP_V58_PREV_APPV52_COMPACT(result, *args, **kwargs) if callable(_APP_V58_PREV_APPV52_COMPACT) else {}
+    payload = legacy if isinstance(legacy, dict) else {'legacy_payload': legacy}
+    try:
+        enriched = _app_v58_postprocess_result(result if isinstance(result, dict) else {'result': result})
+    except Exception:
+        enriched = result if isinstance(result, dict) else {'result': result}
+    payload['app_v58_compact_payload'] = _app_v58_build_compact_payload(enriched)
+    payload['compact_export_schema_app_v58'] = APP_V58_COMPACT_SCHEMA
+    payload['review_metrics_v58'] = payload['app_v58_compact_payload'].get('review_metrics_v58')
+    payload['growth_engine_shadow_loop_v58'] = payload['app_v58_compact_payload'].get('growth_engine_shadow_loop_v58')
+    payload['app_v58_causal_verification_summary'] = payload['app_v58_compact_payload'].get('app_v58_causal_verification_summary')
+    return payload
+
+
+def _render_invention_benchmark_panel_v46(*args, **kwargs):
+    try:
+        app_v58_render_growth_causal_controls()
+    except Exception:
+        pass
+    if callable(_APP_V58_PREV_RENDER_PANEL_V46):
+        return _APP_V58_PREV_RENDER_PANEL_V46(*args, **kwargs)
+    try:
+        st.warning('Invention benchmark panel renderer is unavailable before APP V58 wrapper.')
+    except Exception:
+        pass
+    return None
+
+# Expose a direct compact builder name for future app.py/download buttons.
+def app_v58_build_compact_feedback_payload(result):
+    return _app_v58_build_compact_payload(_app_v58_postprocess_result(result if isinstance(result, dict) else {'result': result}))
+
+try:
+    _app_v58_init_session_defaults()
+except Exception:
+    pass
+
+# ============================================================================
+# END ADD-ONLY PATCH: APP-V58-LEAP-GROWTH-CAUSAL-COMPACT-UI-INTEGRATION
+# ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY PATCH: APP-V59-FORCE-V58-EXPORT-CAUSAL-GROWTH-CONNECTION
+# generated_at_jst: 2026-05-12
+# policy:
+# - ADD-ONLY: no existing UI/routes/code are deleted or modified above this block.
+# - Universal: no benchmark name, task name, or domain-specific target hardcoding.
+# - Purpose:
+#   The previous APP-V58 patch existed but the exported compact payload still
+#   used the APP-V50 schema. This patch force-enriches every known compact export
+#   path with V58/V59 diagnostics and explicitly connects:
+#     * leap_engine V58 generation quota summary
+#     * causal_engine V58 candidate verifier
+#     * growth_engine V58 shadow metacognition loop
+#     * timing / connection diagnostics for detecting no-op fast paths
+# ============================================================================
+
+APP_V59_FORCE_EXPORT_PATCH_ID = 'APP-V59-FORCE-V58-EXPORT-CAUSAL-GROWTH-CONNECTION-20260512'
+APP_V59_COMPACT_SCHEMA = 'leap_feedback_app_v59_forced_v58_causal_growth_export'
+
+try:
+    _APP_V59_PREV_V57_ENRICH_COMPACT = _app_v57_enrich_compact_payload
+except Exception:
+    _APP_V59_PREV_V57_ENRICH_COMPACT = None
+try:
+    _APP_V59_PREV_APP47B_BUILD_COMPACT = _app47b_build_compact_feedback_payload
+except Exception:
+    _APP_V59_PREV_APP47B_BUILD_COMPACT = None
+try:
+    _APP_V59_PREV_APPV52_BUILD_COMPACT = _app_v52_build_compact_feedback_payload
+except Exception:
+    _APP_V59_PREV_APPV52_BUILD_COMPACT = None
+try:
+    _APP_V59_PREV_APP50_COLLECT_CANDIDATES = _app50_collect_candidates
+except Exception:
+    _APP_V59_PREV_APP50_COLLECT_CANDIDATES = None
+try:
+    _APP_V59_PREV_APP50_CANDIDATE_COMPACT = _app50_candidate_compact
+except Exception:
+    _APP_V59_PREV_APP50_CANDIDATE_COMPACT = None
+try:
+    _APP_V59_PREV_LEAPV8_RUN = _leapv8_run
+except Exception:
+    _APP_V59_PREV_LEAPV8_RUN = None
+
+
+def _app_v59_dict(x):
+    return x if isinstance(x, dict) else {}
+
+
+def _app_v59_list(x):
+    if isinstance(x, list):
+        return x
+    if isinstance(x, tuple):
+        return list(x)
+    return []
+
+
+def _app_v59_text(x, limit=2000):
+    try:
+        s = '' if x is None else str(x)
+    except Exception:
+        s = repr(x)
+    return ' '.join(s.split())[:max(0, int(limit))]
+
+
+def _app_v59_float(x, default=0.0):
+    try:
+        return float(x)
+    except Exception:
+        return float(default)
+
+
+def _app_v59_int(x, default=0):
+    try:
+        return int(x)
+    except Exception:
+        return int(default)
+
+
+def _app_v59_now():
+    try:
+        import time as _time
+        return _time.perf_counter()
+    except Exception:
+        return 0.0
+
+
+def _app_v59_root(obj):
+    d = _app_v59_dict(obj)
+    # Accept compact wrappers, debug wrappers, direct result dicts.
+    for k in ('result', 'debug_full_result', 'full_result', 'raw_result'):
+        if isinstance(d.get(k), dict):
+            return d.get(k)
+    return d
+
+
+def _app_v59_candidate_id(c, idx=0):
+    c=_app_v59_dict(c)
+    return _app_v59_text(c.get('candidate_id') or c.get('id') or c.get('uid') or ('APPV59-CAND-%03d' % int(idx or 0)), 128)
+
+
+def _app_v59_collect_candidates(result):
+    r=_app_v59_root(result)
+    out=[]; seen=set()
+    for key in ('v58_selected_candidates','generated_ideas','decoded_candidates','accepted_candidates','candidates','v57_selected_candidates','v58_raw_candidates_before_selection'):
+        for c in _app_v59_list(r.get(key)):
+            if not isinstance(c, dict):
+                continue
+            cid=_app_v59_candidate_id(c, len(out)+1)
+            if cid in seen:
+                continue
+            seen.add(cid); out.append(c)
+    return out
+
+
+def _app_v59_ensure_result_postprocessed(result):
+    r=_app_v59_root(result)
+    if not isinstance(r, dict):
+        r={'result': result}
+    # Prefer APP-V58 postprocess if present; it attaches causal/growth summaries.
+    try:
+        if callable(globals().get('_app_v58_postprocess_result')):
+            r = _app_v58_postprocess_result(r)
+    except Exception as e:
+        r.setdefault('app_v59_postprocess_warnings', []).append({'stage':'app_v58_postprocess_result','error':repr(e)})
+    # If APP-V58 was absent or failed, perform direct minimal attachments here.
+    if 'app_v58_causal_verification_summary' not in r:
+        try:
+            r = _app_v59_attach_causal_verification_direct(r)
+        except Exception as e:
+            r['app_v58_causal_verification_summary']={'patch_id':APP_V59_FORCE_EXPORT_PATCH_ID,'direct_attach_error':repr(e)}
+    if 'growth_engine_shadow_loop_v58' not in r:
+        try:
+            r = _app_v59_attach_growth_feedback_direct(r)
+        except Exception as e:
+            r['growth_engine_shadow_loop_v58']={'patch_id':APP_V59_FORCE_EXPORT_PATCH_ID,'direct_attach_error':repr(e),'connection_confirmed':False}
+    return r
+
+
+def _app_v59_existing_smatrix(result):
+    r=_app_v59_root(result)
+    for key in ('existing_smatrix','prior_smatrix','s_matrix_record','s_matrix_store_snapshot'):
+        if isinstance(r.get(key), (dict,list)):
+            return r.get(key)
+    sm=_app_v59_dict(r.get('s_matrix_usr_verification_summary'))
+    for key in ('existing_smatrix','prior_smatrix','s_matrix_record','complex_s_edges','edges'):
+        if isinstance(sm.get(key), (dict,list)):
+            return sm.get(key)
+    return None
+
+
+def _app_v59_attach_causal_verification_direct(result):
+    r=_app_v59_root(result)
+    t0=_app_v59_now()
+    cands=_app_v59_collect_candidates(r)
+    rows=[]
+    try:
+        from causal_engine import causal_verify_candidate_with_smatrix_v58
+        available=True; import_error=''
+    except Exception as e:
+        available=False; import_error=repr(e); causal_verify_candidate_with_smatrix_v58=None
+    if available:
+        prior=_app_v59_existing_smatrix(r)
+        limit=12
+        try:
+            limit=max(1, int(getattr(st, 'session_state', {}).get('leap_v58_max_candidate_verifications', 12)))
+        except Exception:
+            pass
+        for idx,c in enumerate(cands[:limit], start=1):
+            try:
+                ver=causal_verify_candidate_with_smatrix_v58(c, prior_smatrix=prior, context={'app_patch_id':APP_V59_FORCE_EXPORT_PATCH_ID})
+            except Exception as e:
+                ver={'patch_id':APP_V59_FORCE_EXPORT_PATCH_ID,'candidate_id':_app_v59_candidate_id(c,idx),'error':repr(e)}
+            c['app_v58_causal_verification']=ver
+            rows.append({
+                'candidate_id': ver.get('candidate_id') or _app_v59_candidate_id(c,idx),
+                'logic': ver.get('logic_consistency_score'),
+                'prior': ver.get('prior_consistency_score'),
+                'directionality': ver.get('directionality_score'),
+                'mask': ver.get('mask_compliance_score'),
+                'usr': ver.get('usr_compressibility_score'),
+                'overall': ver.get('overall_causal_verification_score_v58'),
+                'contradictions': ver.get('contradiction_count'),
+                'hard_conflicts_count': len(_app_v59_list(ver.get('hard_conflicts'))),
+                'requires_experiment_edges_count': len(_app_v59_list(ver.get('requires_experiment_edges'))),
+                'error': ver.get('error',''),
+            })
+    elapsed=_app_v59_now()-t0
+    mean=sum(_app_v59_float(x.get('overall'),0.0) for x in rows)/max(1,len(rows)) if rows else 0.0
+    r['app_v58_causal_verification_summary']={
+        'patch_id': APP_V59_FORCE_EXPORT_PATCH_ID,
+        'delegated_to': 'causal_engine.causal_verify_candidate_with_smatrix_v58',
+        'causal_engine_v58_available': available,
+        'import_error': import_error,
+        'candidate_verification_count': len(rows),
+        'mean_overall_causal_verification_score': mean,
+        'hard_conflict_count_total': sum(_app_v59_int(x.get('hard_conflicts_count'),0) for x in rows),
+        'elapsed_sec': elapsed,
+        'rows': rows,
+        'forced_by_app_v59': True,
+    }
+    sm=r.get('s_matrix_usr_verification_summary')
+    if isinstance(sm, dict):
+        sm['app_v59_causal_engine_v58_available']=available
+        sm['app_v59_candidate_verification_count']=len(rows)
+        sm['app_v59_mean_overall_causal_verification_score']=mean
+        sm['app_v59_causal_verification_elapsed_sec']=elapsed
+        sm['v58_causal_engine_verifier_pending']=False if available else sm.get('v58_causal_engine_verifier_pending')
+    return r
+
+
+def _app_v59_growth_config():
+    try:
+        if callable(globals().get('_app_v58_growth_loop_config_from_session')):
+            return _app_v58_growth_loop_config_from_session()
+    except Exception:
+        pass
+    return {'patch_id': APP_V59_FORCE_EXPORT_PATCH_ID, 'enabled': True, 'max_growth_loops': 1, 'mode':'diagnostic_only', 'allow_candidate_regeneration': False}
+
+
+def _app_v59_attach_growth_feedback_direct(result):
+    r=_app_v59_root(result)
+    cfg=_app_v59_growth_config()
+    t0=_app_v59_now()
+    try:
+        from growth_engine import run_shadow_growth_loop_v58
+        feedback=run_shadow_growth_loop_v58(result=r, step1_summary=r.get('v58_generation_quota_summary'), source='app_v59_forced_export', loop_config=cfg)
+        available=True; error=''
+    except Exception as e:
+        feedback={'schema':'growth_engine_diagnostic_metacognition_leap_v58_feedback','patch_id':APP_V59_FORCE_EXPORT_PATCH_ID,'connection_confirmed':False,'error':repr(e),'loop_config':cfg,'loop_count_executed':0}
+        available=False; error=repr(e)
+    elapsed=_app_v59_now()-t0
+    feedback['app_v59_growth_elapsed_sec']=elapsed
+    feedback['app_v59_growth_engine_v58_available']=available
+    if error:
+        feedback['app_v59_growth_error']=error
+    r['growth_engine_shadow_loop_v58']=feedback
+    sm=r.get('s_matrix_usr_verification_summary')
+    if isinstance(sm, dict):
+        sm['app_v59_growth_engine_v58_available']=available
+        sm['app_v59_growth_engine_connection_ok']=bool(feedback.get('connection_confirmed'))
+        sm['app_v59_growth_loop_count_executed']=_app_v59_int(feedback.get('loop_count_executed'),0)
+        sm['app_v59_growth_elapsed_sec']=elapsed
+    return r
+
+
+def _app_v59_review_metrics(result):
+    r=_app_v59_root(result)
+    rm=_app_v59_dict(r.get('review_metrics_v58'))
+    if rm:
+        return rm
+    v58s=_app_v59_dict(r.get('v58_generation_quota_summary'))
+    sm=_app_v59_dict(r.get('s_matrix_usr_verification_summary'))
+    sd=_app_v59_dict(v58s.get('score_distribution_v58'))
+    return {
+        'patch_id': APP_V59_FORCE_EXPORT_PATCH_ID,
+        'raw_candidate_count': v58s.get('candidate_count_before_v58_selection', sm.get('v58_candidate_count_before_selection')),
+        'compact_candidate_count': v58s.get('candidate_count_after_v58_selection', sm.get('v58_candidate_count_after_selection')),
+        'root_edge_coverage_count': v58s.get('root_edge_coverage_count_v58', sm.get('v58_root_edge_coverage_count')),
+        'topology_variant_coverage_count': v58s.get('topology_variant_coverage_count_v58', sm.get('v58_topology_variant_coverage_count')),
+        'primary_causal_edge_candidate_count': v58s.get('primary_causal_edge_candidate_count_v58', sm.get('v58_primary_causal_edge_candidate_count')),
+        'artifact_dependency_candidate_count': v58s.get('artifact_dependency_candidate_count_v58'),
+        'score_saturation_detected': sd.get('score_saturation_detected', sm.get('v58_score_saturation_detected')),
+        'score_std': sd.get('std', sm.get('v58_score_std')),
+        's_matrix_mean_abs_imag_weight': v58s.get('s_matrix_mean_abs_imag_weight_v58', sm.get('v58_s_matrix_mean_abs_imag_weight')),
+        'mask_violation_count': v58s.get('mask_violation_count_v58'),
+        'usr_equation_candidate_count': v58s.get('usr_equation_candidate_count_v58'),
+        'causal_v58_candidate_verification_count': _app_v59_dict(r.get('app_v58_causal_verification_summary')).get('candidate_verification_count'),
+        'growth_v58_loop_count_executed': _app_v59_dict(r.get('growth_engine_shadow_loop_v58')).get('loop_count_executed'),
+    }
+
+
+def _app_v59_candidate_rows(result):
+    rows=[]
+    for idx,c in enumerate(_app_v59_collect_candidates(result), start=1):
+        q=_app_v59_dict(c.get('v58_generation_quota'))
+        art=_app_v59_dict(c.get('v58_artifact_diagnostics'))
+        ver=_app_v59_dict(c.get('app_v58_causal_verification'))
+        rows.append({
+            'candidate_id': _app_v59_candidate_id(c,idx),
+            'status': c.get('status') or c.get('status_v58'),
+            'rank_v58': c.get('v58_primary_selection_rank'),
+            'root_edge': q.get('assigned_root_edge'),
+            'topology_variant': q.get('assigned_topology_variant'),
+            'primary_edge_count': art.get('primary_causal_edge_count_v58'),
+            'artifact_dependency_ratio': art.get('artifact_dependency_ratio_v58'),
+            'score_v58': c.get('overall_score_v58') or c.get('pre_experiment_rank_score_v58'),
+            'causal_overall': ver.get('overall_causal_verification_score_v58'),
+            'logic': ver.get('logic_consistency_score'),
+            'prior': ver.get('prior_consistency_score'),
+            'mask': ver.get('mask_compliance_score'),
+            'usr': ver.get('usr_compressibility_score'),
+            'requires_experiment_edges_count': len(_app_v59_list(ver.get('requires_experiment_edges'))),
+        })
+    return rows
+
+
+def _app_v59_timing_diagnostics(result, previous_payload=None):
+    r=_app_v59_root(result); p=_app_v59_dict(previous_payload)
+    gpu=_app_v59_dict(r.get('gpu_tensor_route_latest') or r.get('gpu_tensor_route') or p.get('gpu_tensor_route_latest') or p.get('gpu_tensor_route'))
+    causal=_app_v59_dict(r.get('app_v58_causal_verification_summary'))
+    growth=_app_v59_dict(r.get('growth_engine_shadow_loop_v58'))
+    return {
+        'patch_id': APP_V59_FORCE_EXPORT_PATCH_ID,
+        'gpu_elapsed_sec': gpu.get('elapsed_sec_v47'),
+        'gpu_tensor_ops_count': gpu.get('tensor_ops_count'),
+        'gpu_extra_tensor_ops_count': gpu.get('extra_tensor_ops_count_v47'),
+        'causal_v58_elapsed_sec': causal.get('elapsed_sec'),
+        'causal_v58_candidate_verification_count': causal.get('candidate_verification_count'),
+        'growth_v58_elapsed_sec': growth.get('app_v59_growth_elapsed_sec'),
+        'growth_v58_loop_count_executed': growth.get('loop_count_executed'),
+        'fast_path_suspected': bool((_app_v59_float(gpu.get('elapsed_sec_v47'),0.0) < 0.1) and (_app_v59_int(causal.get('candidate_verification_count'),0) == 0 or not causal.get('causal_engine_v58_available', False))),
+        'purpose': 'Expose no-op or disconnected fast paths in compact feedback logs.',
+    }
+
+
+def _app_v59_force_enrich_compact_payload(payload, source_result):
+    p=payload if isinstance(payload, dict) else {'legacy_payload': payload}
+    r=_app_v59_ensure_result_postprocessed(source_result)
+    # Force new schema at top-level so export route cannot silently remain V50.
+    p['compact_export_schema_previous_app_v59']=p.get('compact_export_schema')
+    p['compact_export_schema']=APP_V59_COMPACT_SCHEMA
+    p['patch_id_previous_app_v59']=p.get('patch_id')
+    p['patch_id']=APP_V59_FORCE_EXPORT_PATCH_ID
+    p['app_v59_force_export_active']=True
+    p['app_v59_no_benchmark_or_task_name_hardcoding']=True
+    p['review_metrics_v58']=_app_v59_review_metrics(r)
+    p['v58_generation_quota_summary']=_app_v59_dict(r.get('v58_generation_quota_summary'))
+    p['growth_engine_shadow_loop_v58']=_app_v59_dict(r.get('growth_engine_shadow_loop_v58'))
+    p['app_v58_causal_verification_summary']=_app_v59_dict(r.get('app_v58_causal_verification_summary'))
+    p['candidate_rows_v58']=_app_v59_candidate_rows(r)
+    p['app_v59_timing_diagnostics']=_app_v59_timing_diagnostics(r, previous_payload=p)
+    p['app_v59_connection_diagnostics']={
+        'patch_id': APP_V59_FORCE_EXPORT_PATCH_ID,
+        'leap_v58_route_seen': 'v58' in _app_v59_text(_app_v59_dict(r.get('top_level')).get('mode') or r.get('mode') or r.get('route'), 500).lower() or bool(_app_v59_dict(r.get('s_matrix_usr_verification_summary')).get('v58_generation_stage_quota_applied')),
+        'causal_engine_v58_connected': bool(_app_v59_dict(r.get('app_v58_causal_verification_summary')).get('causal_engine_v58_available')),
+        'growth_engine_v58_connected': bool(_app_v59_dict(r.get('growth_engine_shadow_loop_v58')).get('connection_confirmed')),
+        'app_v59_forced_export_schema': APP_V59_COMPACT_SCHEMA,
+        'legacy_schema_was': p.get('compact_export_schema_previous_app_v59'),
+    }
+    if isinstance(p.get('review_summary'), dict):
+        p['review_summary']['app_v59_force_export_active']=True
+        p['review_summary']['compact_export_schema_app_v59']=APP_V59_COMPACT_SCHEMA
+        p['review_summary']['causal_engine_v58_connected']=p['app_v59_connection_diagnostics']['causal_engine_v58_connected']
+        p['review_summary']['growth_engine_v58_connected']=p['app_v59_connection_diagnostics']['growth_engine_v58_connected']
+        p['review_summary']['fast_path_suspected_app_v59']=p['app_v59_timing_diagnostics']['fast_path_suspected']
+    # Also keep an app_v58-compatible nested payload for existing UI panels.
+    p['app_v58_compact_payload']={
+        'compact_export_schema':'leap_feedback_app_v58_growth_causal_compact_wrapped_by_app_v59',
+        'patch_id':APP_V59_FORCE_EXPORT_PATCH_ID,
+        'review_metrics_v58':p['review_metrics_v58'],
+        'v58_generation_quota_summary':p['v58_generation_quota_summary'],
+        'growth_engine_shadow_loop_v58':p['growth_engine_shadow_loop_v58'],
+        'app_v58_causal_verification_summary':p['app_v58_causal_verification_summary'],
+        'candidate_rows_v58':p['candidate_rows_v58'],
+        'timing_diagnostics_v59':p['app_v59_timing_diagnostics'],
+    }
+    return p
+
+
+def _app_v57_enrich_compact_payload(payload, source_result):
+    legacy = _APP_V59_PREV_V57_ENRICH_COMPACT(payload, source_result) if callable(_APP_V59_PREV_V57_ENRICH_COMPACT) else payload
+    return _app_v59_force_enrich_compact_payload(legacy, source_result)
+
+
+def _app47b_build_compact_feedback_payload(result, *args, **kwargs):
+    legacy = _APP_V59_PREV_APP47B_BUILD_COMPACT(result, *args, **kwargs) if callable(_APP_V59_PREV_APP47B_BUILD_COMPACT) else {}
+    return _app_v59_force_enrich_compact_payload(legacy if isinstance(legacy, dict) else {'legacy_payload':legacy}, result)
+
+
+def _app_v52_build_compact_feedback_payload(result, *args, **kwargs):
+    legacy = _APP_V59_PREV_APPV52_BUILD_COMPACT(result, *args, **kwargs) if callable(_APP_V59_PREV_APPV52_BUILD_COMPACT) else {}
+    return _app_v59_force_enrich_compact_payload(legacy if isinstance(legacy, dict) else {'legacy_payload':legacy}, result)
+
+
+def _app50_collect_candidates(root, rep):
+    r=_app_v59_root(root)
+    v58=r.get('v58_selected_candidates') or _app_v59_dict(r.get('result')).get('v58_selected_candidates')
+    if isinstance(v58, list) and v58:
+        before=_app_v59_dict(r.get('v58_generation_quota_summary')).get('candidate_count_before_v58_selection')
+        before=before or _app_v59_dict(r.get('s_matrix_usr_verification_summary')).get('v58_candidate_count_before_selection')
+        return v58, _app_v59_int(before, len(v58))
+    if callable(_APP_V59_PREV_APP50_COLLECT_CANDIDATES):
+        return _APP_V59_PREV_APP50_COLLECT_CANDIDATES(root, rep)
+    return [],0
+
+
+def _app50_candidate_compact(c, idx=0):
+    base=_APP_V59_PREV_APP50_CANDIDATE_COMPACT(c, idx) if callable(_APP_V59_PREV_APP50_CANDIDATE_COMPACT) else {}
+    payload=base if isinstance(base, dict) else {'legacy_candidate_compact':base}
+    c=_app_v59_dict(c)
+    for k in ('v58_generation_quota','v58_artifact_diagnostics','score_components_v58','scores_v58','overall_score_v58','pre_experiment_rank_score_v58','v58_primary_selection_rank','status_v58','app_v58_causal_verification'):
+        if k in c:
+            payload[k]=c.get(k)
+    payload['app_v59_candidate_row']=_app_v59_candidate_rows({'v58_selected_candidates':[c]})[0] if c else {}
+    return payload
+
+
+def _leapv8_run(*args, **kwargs):
+    t0=_app_v59_now()
+    result = _APP_V59_PREV_LEAPV8_RUN(*args, **kwargs) if callable(_APP_V59_PREV_LEAPV8_RUN) else {'status':'failed','reason':'previous__leapv8_run_missing_app_v59'}
+    result = _app_v59_ensure_result_postprocessed(result)
+    result['app_v59_run_elapsed_sec']=_app_v59_now()-t0
+    result['app_v59_force_export_patch_id']=APP_V59_FORCE_EXPORT_PATCH_ID
+    return result
+
+
+def app_v59_build_compact_feedback_payload(result):
+    return _app_v59_force_enrich_compact_payload({}, result)
+
+# ============================================================================
+# END ADD-ONLY PATCH: APP-V59-FORCE-V58-EXPORT-CAUSAL-GROWTH-CONNECTION
+# ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY PATCH APP-V64-COMPACT-EXPORT-V64-FIELDS (2026-05-14 JST)
+# purpose:
+# - Make app.py compact feedback export aware of leap_engine V64 outputs.
+# - Preserve existing V60 compact schema for compatibility, while adding V64 fields.
+# - Surface score degeneracy resolution, operator trace branching, task grounding,
+#   near-duplicate penalties, and V64 gate diagnostics in compact logs.
+# policy:
+# - ADD-ONLY. Existing functions are wrapped, not deleted.
+# - No benchmark/test/task-name hardcoding. Only generic V64 diagnostic fields are exported.
+# ============================================================================
+
+APP_V64_COMPACT_EXPORT_PATCH_ID = 'APP-V64-COMPACT-EXPORT-V64-FIELDS-20260514'
+
+try:
+    _APP_V64_PREV_APP47B_BUILD_COMPACT_FEEDBACK_PAYLOAD = _app47b_build_compact_feedback_payload
+except Exception:
+    _APP_V64_PREV_APP47B_BUILD_COMPACT_FEEDBACK_PAYLOAD = None
+try:
+    _APP_V64_PREV_APP50_CANDIDATE_COMPACT = _app50_candidate_compact
+except Exception:
+    _APP_V64_PREV_APP50_CANDIDATE_COMPACT = None
+
+
+def _app_v64_d(x):
+    try:
+        return dict(x) if isinstance(x, dict) else {}
+    except Exception:
+        return {}
+
+
+def _app_v64_l(x):
+    if x is None:
+        return []
+    if isinstance(x, list):
+        return list(x)
+    if isinstance(x, tuple):
+        return list(x)
+    return [x]
+
+
+def _app_v64_get_any(c, co, key, default=None):
+    c=_app_v64_d(c); co=_app_v64_d(co)
+    if key in c:
+        return c.get(key)
+    if key in co:
+        return co.get(key)
+    return default
+
+
+def _app_v64_candidate_id(c):
+    try:
+        return _app_v60_candidate_id(c)
+    except Exception:
+        c=_app_v64_d(c)
+        return c.get('candidate_id') or c.get('id') or c.get('name')
+
+
+def _app_v64_collect_candidate_sources(root, rep):
+    try:
+        cand, raw = _app_v60_collect_candidates(root, rep)
+        return _app_v64_l(cand), raw
+    except Exception:
+        root=_app_v64_d(root)
+        for k in ('decoded_candidates','review_recommended_candidates','public_candidates_v64','accepted_candidates','candidates'):
+            arr=_app_v64_l(root.get(k))
+            if arr:
+                return arr, len(arr)
+        return [], 0
+
+
+def _app_v64_candidate_v64_fields(c):
+    c=_app_v64_d(c); co=_app_v64_d(c.get('candidate_object'))
+    fields={}
+    for k in (
+        'scores_v64',
+        'score_components_v64',
+        'task_grounding_v64',
+        'candidate_grounded_roles_v64',
+        'near_duplicate_v64',
+        'operator_trace_diversified_v64',
+        'operator_branch_v64',
+        'operator_trace_raw_before_v64',
+        'public_candidate_v64',
+        'publishable_candidate_v64',
+        'publishable_status_v64',
+        'raw_score_before_v64',
+        'score_penalties_v64',
+        'causal_graph_delta_v64_grounding',
+    ):
+        v=_app_v64_get_any(c, co, k, None)
+        if v is not None:
+            fields[k]=v
+    # Preserve V63 gate details too when present; useful for comparing V63/V64 behavior.
+    for k in (
+        'deep_validation_evidence_v63',
+        'score_cap_applied_v63',
+        'score_penalties_v63',
+        'raw_overall_score_v63',
+        'public_candidate_v63',
+    ):
+        v=_app_v64_get_any(c, co, k, None)
+        if v is not None:
+            fields[k]=v
+    return fields
+
+
+def _app_v64_result_v64_top_fields(root):
+    root=_app_v64_d(root)
+    out={}
+    for k in (
+        'patch_id_v64',
+        'degeneracy_grounding_diversity_gate_v64',
+        'compact_feedback_v64',
+        'task_grounding_profile_v64',
+        'near_duplicate_summary_v64',
+        'public_candidates_v64',
+        'decoded_candidates_before_v64',
+        'route_trace',
+    ):
+        if k in root:
+            out[k]=root.get(k)
+    for k in (
+        'patch_id_v63',
+        'deep_validation_gate_v63',
+        'compact_feedback_v63',
+        'short_circuit_audit_v63',
+        'public_candidates_v63',
+    ):
+        if k in root:
+            out[k]=root.get(k)
+    return out
+
+
+def _app_v64_enrich_compact_payload(compact, debug_payload):
+    compact=_app_v64_d(compact).copy()
+    debug_payload=_app_v64_d(debug_payload)
+    root=_app_v64_d(debug_payload.get('result') or debug_payload)
+    try:
+        rep=_app_v60_d(debug_payload.get('hidden_branching_report_v14') or _app_v60_report(root))
+    except Exception:
+        rep={}
+    cand, raw = _app_v64_collect_candidate_sources(root, rep)
+    # Build source map by candidate_id and fallback by index.
+    by_id={}
+    for i,c in enumerate(cand):
+        cid=_app_v64_candidate_id(c)
+        if cid is not None and cid not in by_id:
+            by_id[cid]=c
+    rows=[]
+    for i,row in enumerate(_app_v64_l(compact.get('candidates'))):
+        row=_app_v64_d(row).copy()
+        src=by_id.get(row.get('candidate_id'))
+        if src is None and i < len(cand):
+            src=cand[i]
+        src=_app_v64_d(src)
+        co=_app_v64_d(src.get('candidate_object'))
+        # Refresh operator_trace/score from V64-enriched candidate if present.
+        if src:
+            if src.get('operator_trace') is not None:
+                row['operator_trace']=src.get('operator_trace')
+            if src.get('overall_score') is not None:
+                row['overall_score']=src.get('overall_score')
+            elif src.get('score') is not None:
+                row['overall_score']=src.get('score')
+        row.update(_app_v64_candidate_v64_fields(src))
+        # A short diagnostic row makes compact review easier without expanding full structures.
+        row['app_v64_compact_row_summary']={
+            'patch_id':APP_V64_COMPACT_EXPORT_PATCH_ID,
+            'score_v64': _app_v64_d(row.get('scores_v64')).get('overall'),
+            'task_grounding_score': _app_v64_d(row.get('task_grounding_v64')).get('score'),
+            'near_duplicate_penalty': _app_v64_d(row.get('near_duplicate_v64')).get('penalty'),
+            'operator_branch_v64': row.get('operator_branch_v64') or _app_v64_d(row.get('operator_trace_diversified_v64')).get('selected_branch'),
+            'public_candidate_v64': row.get('public_candidate_v64'),
+            'publishable_status_v64': row.get('publishable_status_v64'),
+        }
+        rows.append(row)
+    compact['candidates']=rows
+    compact['candidate_count_compact']=len(rows)
+    compact['app_v64_compact_export']={
+        'patch_id':APP_V64_COMPACT_EXPORT_PATCH_ID,
+        'enabled':True,
+        'candidate_count_checked':len(rows),
+        'v64_candidate_rows_with_scores':sum(1 for r in rows if r.get('scores_v64') is not None),
+        'v64_candidate_rows_with_grounding':sum(1 for r in rows if r.get('task_grounding_v64') is not None),
+        'v64_candidate_rows_with_near_duplicate':sum(1 for r in rows if r.get('near_duplicate_v64') is not None),
+        'v64_candidate_rows_with_operator_branch':sum(1 for r in rows if r.get('operator_branch_v64') is not None or r.get('operator_trace_diversified_v64') is not None),
+        'no_task_or_benchmark_name_hardcoding':True,
+    }
+    compact.update(_app_v64_result_v64_top_fields(root))
+    # Keep the old schema string for backward compatibility but add explicit V64 schema marker.
+    compact['compact_export_schema_v64']='leap_feedback_pre_render_active_compact_v64_fields_overlay'
+    compact['patch_id_v64_app']=APP_V64_COMPACT_EXPORT_PATCH_ID
+    try:
+        compact['compact_hash']=_app_v60_hash(compact,12)
+    except Exception:
+        pass
+    return compact
+
+
+def _app47b_build_compact_feedback_payload(debug_payload):
+    if callable(_APP_V64_PREV_APP47B_BUILD_COMPACT_FEEDBACK_PAYLOAD):
+        compact=_APP_V64_PREV_APP47B_BUILD_COMPACT_FEEDBACK_PAYLOAD(debug_payload)
+    else:
+        root=_app_v64_d(_app_v64_d(debug_payload).get('result') or debug_payload)
+        compact={'compact_export_schema':'leap_feedback_pre_render_active_compact_v60','patch_id':globals().get('APP_V60_PRE_RENDER_ACTIVE_PATCH_ID','APP-V60-UNKNOWN'),'top_level':{k:root.get(k) for k in ('status','mode','route','official_route','primary_result_route','reason','query') if k in root},'candidates':[],'warnings':_app_v64_l(root.get('warnings'))}
+    return _app_v64_enrich_compact_payload(compact, debug_payload)
+
+
+def _app50_candidate_compact(c, idx=0):
+    if callable(_APP_V64_PREV_APP50_CANDIDATE_COMPACT):
+        payload=_APP_V64_PREV_APP50_CANDIDATE_COMPACT(c, idx)
+        payload=payload if isinstance(payload, dict) else {'legacy_candidate_compact':payload}
+    else:
+        payload={}
+    c=_app_v64_d(c)
+    payload.update(_app_v64_candidate_v64_fields(c))
+    payload['app_v64_candidate_compact_export']={
+        'patch_id':APP_V64_COMPACT_EXPORT_PATCH_ID,
+        'has_scores_v64':'scores_v64' in payload,
+        'has_task_grounding_v64':'task_grounding_v64' in payload,
+        'has_near_duplicate_v64':'near_duplicate_v64' in payload,
+        'has_operator_trace_diversified_v64':'operator_trace_diversified_v64' in payload,
+    }
+    return payload
+
+try:
+    APP_V64_COMPACT_EXPORT_EXECUTION_PROOF={'patch_id':APP_V64_COMPACT_EXPORT_PATCH_ID,'module':__name__,'file':__file__}
+except Exception:
+    pass
+# ============================================================================
+# END ADD-ONLY PATCH APP-V64-COMPACT-EXPORT-V64-FIELDS
+# ============================================================================
+
+# ============================================================================
+# ADD-ONLY PATCH: APP-V65-INVENTION-CLOSED-LOOP-ROUTE-COMPACT-UI
+# generated_at_jst: 20260516
+# source_file_before_bytes: 1012162
+# source_file_before_sha256_8: 8ca06671
+# purpose:
+# - Stage 4 integration for V65 invention closed loop.
+# - Route invention/Leap execution through leap_engine.run_invention_closed_loop_v65.
+# - Add GUI control for bounded growth/regeneration cycles.
+# - Ensure compact feedback includes cycles_executed, regeneration_count,
+#   loop_effective, pre_generation_plan, growth_feedback, and S-matrix feedback.
+# policy:
+# - ADD-ONLY: no existing code is deleted or overwritten.
+# - No benchmark/task-name hardcoding. Route is generic for any prompt/problem.
+# - LLM remains UI/helper; closed-loop state is returned as structured CausalOS,
+#   growth, S-matrix, mask, and USR feedback fields.
+# ============================================================================
+
+APP_V65_INVENTION_CLOSED_LOOP_PATCH_ID = 'APP-V65-INVENTION-CLOSED-LOOP-ROUTE-COMPACT-UI-20260516'
+
+try:
+    import importlib as _app_v65_importlib
+    import json as _app_v65_json
+    import hashlib as _app_v65_hashlib
+    import time as _app_v65_time
+except Exception:  # pragma: no cover
+    _app_v65_importlib = None
+    _app_v65_json = None
+    _app_v65_hashlib = None
+    _app_v65_time = None
+
+try:
+    _APP_V65_PREV_LEAP_APP_RUN_ENGINE_V1 = _leap_app_run_engine_v1
+except Exception:
+    _APP_V65_PREV_LEAP_APP_RUN_ENGINE_V1 = None
+try:
+    _APP_V65_PREV_LEAP_APP_RUN_ENGINE_V3 = _leap_app_run_engine_v3
+except Exception:
+    _APP_V65_PREV_LEAP_APP_RUN_ENGINE_V3 = None
+try:
+    _APP_V65_PREV_LEAP_APP_V4_RUN_ENGINE = _leap_app_v4_run_engine
+except Exception:
+    _APP_V65_PREV_LEAP_APP_V4_RUN_ENGINE = None
+try:
+    _APP_V65_PREV_RENDER_INVENTION_PANEL_V46 = _render_invention_benchmark_panel_v46
+except Exception:
+    _APP_V65_PREV_RENDER_INVENTION_PANEL_V46 = None
+try:
+    _APP_V65_PREV_APP47B_BUILD_COMPACT_FEEDBACK_PAYLOAD = _app47b_build_compact_feedback_payload
+except Exception:
+    _APP_V65_PREV_APP47B_BUILD_COMPACT_FEEDBACK_PAYLOAD = None
+try:
+    _APP_V65_PREV_APPV52_BUILD_COMPACT_FEEDBACK_PAYLOAD = _app_v52_build_compact_feedback_payload
+except Exception:
+    _APP_V65_PREV_APPV52_BUILD_COMPACT_FEEDBACK_PAYLOAD = None
+try:
+    _APP_V65_PREV_APPV58_BUILD_COMPACT_FEEDBACK_PAYLOAD = app_v58_build_compact_feedback_payload
+except Exception:
+    _APP_V65_PREV_APPV58_BUILD_COMPACT_FEEDBACK_PAYLOAD = None
+try:
+    _APP_V65_PREV_APP50_CANDIDATE_COMPACT = _app50_candidate_compact
+except Exception:
+    _APP_V65_PREV_APP50_CANDIDATE_COMPACT = None
+
+
+def _app_v65_d(x):
+    try:
+        return dict(x) if isinstance(x, dict) else {}
+    except Exception:
+        return {}
+
+
+def _app_v65_l(x):
+    if x is None:
+        return []
+    if isinstance(x, list):
+        return list(x)
+    if isinstance(x, tuple):
+        return list(x)
+    return [x]
+
+
+def _app_v65_text(x, limit=4000):
+    try:
+        s = '' if x is None else str(x)
+    except Exception:
+        s = ''
+    return ' '.join(s.split())[:max(0, int(limit))]
+
+
+def _app_v65_int(x, default=0):
+    try:
+        return int(x)
+    except Exception:
+        return int(default)
+
+
+def _app_v65_hash(obj, n=12):
+    try:
+        raw = _app_v65_json.dumps(obj, ensure_ascii=False, sort_keys=True, default=str)
+        return _app_v65_hashlib.sha256(raw.encode('utf-8')).hexdigest()[:int(n)]
+    except Exception:
+        return 'hash_unavailable'
+
+
+def _app_v65_session_get(key, default=None):
+    try:
+        if 'st' in globals() and hasattr(st, 'session_state'):
+            return st.session_state.get(key, default)
+    except Exception:
+        pass
+    return default
+
+
+def _app_v65_session_setdefault(key, value):
+    try:
+        if 'st' in globals() and hasattr(st, 'session_state') and key not in st.session_state:
+            st.session_state[key] = value
+    except Exception:
+        pass
+
+
+def _app_v65_init_session_defaults():
+    _app_v65_session_setdefault('app_v65_closed_loop_enabled', True)
+    _app_v65_session_setdefault('app_v65_growth_cycles', 2)
+    _app_v65_session_setdefault('app_v65_max_candidates', 8)
+    _app_v65_session_setdefault('app_v65_show_closed_loop_diagnostics', True)
+
+
+def _app_v65_closed_loop_enabled():
+    return bool(_app_v65_session_get('app_v65_closed_loop_enabled', True))
+
+
+def _app_v65_growth_cycles(default=2):
+    value = _app_v65_session_get('app_v65_growth_cycles', default)
+    return max(1, min(8, _app_v65_int(value, default)))
+
+
+def _app_v65_max_candidates(default=8):
+    value = _app_v65_session_get('app_v65_max_candidates', default)
+    return max(1, min(64, _app_v65_int(value, default)))
+
+
+def app_v65_render_closed_loop_controls():
+    """Render generic V65 closed-loop controls for the invention panel."""
+    _app_v65_init_session_defaults()
+    try:
+        if 'st' not in globals():
+            return None
+        with st.expander('V65 closed-loop controls / 生成前制御→採点→自己成長→S行列反映→再生成', expanded=False):
+            st.session_state['app_v65_closed_loop_enabled'] = st.checkbox(
+                'V65 closed loop routeを有効化する',
+                value=bool(st.session_state.get('app_v65_closed_loop_enabled', True)),
+                help='発明テスト実行時に leap_engine.run_invention_closed_loop_v65 を優先して呼び、bounded regenerationを実行します。',
+                key='app_v65_closed_loop_enabled_checkbox',
+            )
+            st.session_state['app_v65_growth_cycles'] = st.number_input(
+                '閉ループ最大サイクル数 / max_growth_cycles',
+                min_value=1,
+                max_value=8,
+                value=int(st.session_state.get('app_v65_growth_cycles', 2)),
+                step=1,
+                help='cycle_0生成後、品質不足ならfeedbackをpreplanに戻して再生成します。',
+                key='app_v65_growth_cycles_number_input',
+            )
+            st.session_state['app_v65_max_candidates'] = st.number_input(
+                '最大候補数 / max_candidates',
+                min_value=1,
+                max_value=64,
+                value=int(st.session_state.get('app_v65_max_candidates', 8)),
+                step=1,
+                help='V65 closed loopへ渡す候補数上限です。',
+                key='app_v65_max_candidates_number_input',
+            )
+            st.session_state['app_v65_show_closed_loop_diagnostics'] = st.checkbox(
+                'compact診断にV65 traceを表示する',
+                value=bool(st.session_state.get('app_v65_show_closed_loop_diagnostics', True)),
+                key='app_v65_show_closed_loop_diagnostics_checkbox',
+            )
+            st.caption('APP-V65: official_route = leap_engine.run_invention_closed_loop_v65')
+    except Exception:
+        return None
+
+
+def _app_v65_import_optional(module_name):
+    try:
+        if _app_v65_importlib is None:
+            return None
+        return _app_v65_importlib.import_module(module_name)
+    except Exception:
+        return None
+
+
+def _app_v65_collect_candidates(result):
+    root = _app_v65_d(result)
+    out = []
+    seen = set()
+    for key in ('decoded_candidates', 'accepted_candidates', 'candidates', 'candidate_rows_v65', 'candidate_rows', 'public_candidates_v64', 'public_candidates_v63'):
+        for c in _app_v65_l(root.get(key)):
+            if not isinstance(c, dict):
+                continue
+            cid = c.get('candidate_id') or c.get('id') or _app_v65_hash(c, 10)
+            if cid in seen:
+                continue
+            seen.add(cid)
+            cc = dict(c)
+            cc.setdefault('candidate_id', cid)
+            out.append(cc)
+    best = root.get('best_candidate')
+    if isinstance(best, dict):
+        cid = best.get('candidate_id') or best.get('id') or _app_v65_hash(best, 10)
+        if cid not in seen:
+            bb = dict(best)
+            bb.setdefault('candidate_id', cid)
+            out.append(bb)
+    return out
+
+
+def _app_v65_call_growth_feedback(candidates, scoring_summary=None, causal_summary=None, compact_previous=None):
+    mod = _app_v65_import_optional('growth_engine')
+    fn = getattr(mod, 'build_invention_growth_feedback_v65', None) if mod is not None else None
+    if callable(fn):
+        try:
+            return fn(candidates, scoring_summary=scoring_summary, causal_summary=causal_summary, compact_previous=compact_previous)
+        except Exception as e:
+            return {'patch_id': APP_V65_INVENTION_CLOSED_LOOP_PATCH_ID, 'error': 'growth_engine_v65_failed', 'detail': str(e)[:300], 'regeneration_required': False}
+    return {'patch_id': APP_V65_INVENTION_CLOSED_LOOP_PATCH_ID, 'warning': 'growth_engine.build_invention_growth_feedback_v65_not_available', 'regeneration_required': False}
+
+
+def _app_v65_call_smatrix_feedback(candidates, causal_summary=None):
+    mod = _app_v65_import_optional('causal_engine')
+    batch = getattr(mod, 'build_smatrix_generation_feedback_batch_v65', None) if mod is not None else None
+    summary_fn = getattr(mod, 'summarize_smatrix_generation_feedback_v65', None) if mod is not None else None
+    if callable(batch):
+        try:
+            packets = batch(candidates, causal_summary=causal_summary)
+            if callable(summary_fn):
+                return summary_fn(packets)
+            return {'patch_id': APP_V65_INVENTION_CLOSED_LOOP_PATCH_ID, 'packets': packets}
+        except Exception as e:
+            return {'patch_id': APP_V65_INVENTION_CLOSED_LOOP_PATCH_ID, 'error': 'causal_engine_v65_failed', 'detail': str(e)[:300]}
+    return {'patch_id': APP_V65_INVENTION_CLOSED_LOOP_PATCH_ID, 'warning': 'causal_engine.build_smatrix_generation_feedback_batch_v65_not_available'}
+
+
+def _app_v65_extract_scoring_summary(result):
+    root = _app_v65_d(result)
+    trace = _app_v65_d(root.get('closed_loop_trace_v65') or root.get('invention_closed_loop_v65'))
+    compact = _app_v65_d(root.get('compact_feedback_v65'))
+    cycle_summaries = _app_v65_l(compact.get('cycle_summaries'))
+    if cycle_summaries:
+        last = _app_v65_d(cycle_summaries[-1])
+        if isinstance(last.get('scoring_summary'), dict):
+            return dict(last.get('scoring_summary'))
+    eff = _app_v65_d(trace.get('effect_summary'))
+    if eff:
+        return {
+            'candidate_count': eff.get('candidate_count_after'),
+            'accepted_candidate_count': eff.get('accepted_count_after'),
+            'near_duplicate_pair_count': eff.get('near_duplicate_pair_count_after'),
+            'mean_candidate_distance': eff.get('mean_candidate_distance_after'),
+            'score_degeneracy_detected': eff.get('score_degeneracy_after'),
+        }
+    return {}
+
+
+def _app_v65_merge_closed_loop_fields(result, query=None, route_reason=None):
+    """Normalize V65 result so compact export and UI can always find trace fields."""
+    root = _app_v65_d(result).copy()
+    trace = _app_v65_d(root.get('closed_loop_trace_v65') or root.get('invention_closed_loop_v65'))
+    if not trace:
+        trace = {
+            'patch_id': APP_V65_INVENTION_CLOSED_LOOP_PATCH_ID,
+            'enabled': bool(root.get('mode') == 'invention_closed_loop_v65'),
+            'cycles_requested': _app_v65_growth_cycles(2),
+            'cycles_executed': 0,
+            'regeneration_executed': False,
+            'regeneration_count': 0,
+            'loop_effective': False,
+            'stop_reason': route_reason or root.get('reason') or 'v65_trace_missing',
+            'effect_summary': {},
+            'nontrivial_execution_evidence': False,
+        }
+    trace.setdefault('patch_id', APP_V65_INVENTION_CLOSED_LOOP_PATCH_ID)
+    trace.setdefault('enabled', True)
+    trace.setdefault('cycles_requested', _app_v65_growth_cycles(2))
+    trace.setdefault('cycles_executed', 0)
+    trace.setdefault('regeneration_count', 0)
+    trace.setdefault('regeneration_executed', bool(trace.get('regeneration_count', 0)))
+    trace.setdefault('loop_effective', False)
+    trace.setdefault('effect_summary', {})
+    trace.setdefault('nontrivial_execution_evidence', bool(trace.get('cycles_executed', 0)))
+    root['closed_loop_trace_v65'] = trace
+    root['invention_closed_loop_v65'] = trace
+    root['mode'] = 'invention_closed_loop_v65'
+    root['route'] = 'leap_engine.run_invention_closed_loop_v65'
+    root['official_route'] = 'leap_engine.run_invention_closed_loop_v65'
+    root['primary_result_route'] = 'leap_engine.run_invention_closed_loop_v65'
+    root.setdefault('query', query or root.get('prompt') or root.get('goal') or '')
+    root.setdefault('status', 'ok' if trace.get('cycles_executed', 0) else 'degraded')
+    root.setdefault('reason', trace.get('stop_reason') or route_reason or 'invention_closed_loop_v65')
+    candidates = _app_v65_collect_candidates(root)
+    scoring_summary = _app_v65_extract_scoring_summary(root)
+    causal_summary = _app_v65_d(root.get('s_matrix_feedback_summary_v65') or root.get('s_matrix_feedback_summary'))
+    if not causal_summary or causal_summary.get('warning') or causal_summary.get('error'):
+        causal_summary = _app_v65_call_smatrix_feedback(candidates, causal_summary=causal_summary)
+    root['s_matrix_feedback_summary_v65'] = causal_summary
+    growth_feedback = _app_v65_d(root.get('growth_feedback_v65') or root.get('growth_feedback'))
+    if not growth_feedback or growth_feedback.get('warning') or growth_feedback.get('error'):
+        growth_feedback = _app_v65_call_growth_feedback(candidates, scoring_summary=scoring_summary, causal_summary=causal_summary, compact_previous=root.get('compact_feedback_v65'))
+    root['growth_feedback_v65'] = growth_feedback
+    compact = _app_v65_d(root.get('compact_feedback_v65'))
+    compact.setdefault('compact_export_schema', 'leap_feedback_invention_closed_loop_v65_compact_app_integrated')
+    compact.setdefault('patch_id', APP_V65_INVENTION_CLOSED_LOOP_PATCH_ID)
+    compact['top_level'] = {
+        'status': root.get('status'),
+        'mode': 'invention_closed_loop_v65',
+        'route': 'leap_engine.run_invention_closed_loop_v65',
+        'official_route': 'leap_engine.run_invention_closed_loop_v65',
+        'primary_result_route': 'leap_engine.run_invention_closed_loop_v65',
+        'reason': root.get('reason'),
+        'query': root.get('query'),
+    }
+    compact['invention_closed_loop_v65'] = trace
+    compact['closed_loop_trace'] = trace
+    compact['pre_generation_plan'] = root.get('pre_generation_plan_v65') or compact.get('pre_generation_plan') or {}
+    compact['growth_feedback'] = growth_feedback
+    compact['s_matrix_feedback_summary'] = causal_summary
+    compact['candidate_rows'] = root.get('candidate_rows_v65') or compact.get('candidate_rows') or candidates[:_app_v65_max_candidates(8)]
+    compact['app_v65_execution_depth_diagnostics'] = {
+        'patch_id': APP_V65_INVENTION_CLOSED_LOOP_PATCH_ID,
+        'turns_executed_total': int(trace.get('cycles_executed', 0) or 0),
+        'branches_executed': int(trace.get('regeneration_count', 0) or 0),
+        'cycles_executed': int(trace.get('cycles_executed', 0) or 0),
+        'regeneration_count': int(trace.get('regeneration_count', 0) or 0),
+        'loop_effective': bool(trace.get('loop_effective', False)),
+        'nontrivial_execution_evidence': bool(trace.get('nontrivial_execution_evidence', False)),
+        'official_route': 'leap_engine.run_invention_closed_loop_v65',
+    }
+    compact['omitted_from_compact_log_v65'] = [
+        'raw_generation', 'full_graph', 'full_s_matrix_record', 'all_tensor_values',
+        'all_debug_raw_text', 'legacy_candidates_full', 'entire_app_session_state',
+        'runtime_server_full_response', 'all_usr_equation_candidates'
+    ]
+    try:
+        compact['compact_hash_v65'] = _app_v65_hash(compact, 12)
+    except Exception:
+        pass
+    root['compact_feedback_v65'] = compact
+    root['app_v65_execution_depth_diagnostics'] = compact['app_v65_execution_depth_diagnostics']
+    return root
+
+
+def _app_v65_run_closed_loop_route(prompt, seed=123, max_turns=None, operator_names=None, context=None, fallback_fn=None, **kwargs):
+    _app_v65_init_session_defaults()
+    if not _app_v65_closed_loop_enabled():
+        if callable(fallback_fn):
+            return fallback_fn(prompt=prompt, seed=seed, max_turns=max_turns, operator_names=operator_names)
+        return {'status': 'degraded', 'reason': 'app_v65_closed_loop_disabled', 'query': prompt}
+    started = _app_v65_time.time() if _app_v65_time is not None else 0.0
+    cycles = _app_v65_growth_cycles(2)
+    max_candidates = _app_v65_max_candidates(8)
+    operators = _app_v65_l(operator_names) or _app_v65_l(kwargs.get('operators'))
+    ctx = _app_v65_d(context or kwargs.get('context'))
+    ctx.update({
+        'app_v65_closed_loop_enabled': True,
+        'app_v65_cycles_requested': cycles,
+        'app_v65_max_candidates': max_candidates,
+        'app_v65_route': 'leap_engine.run_invention_closed_loop_v65',
+    })
+    mod = _app_v65_import_optional('leap_engine')
+    fn = getattr(mod, 'run_invention_closed_loop_v65', None) if mod is not None else None
+    if callable(fn):
+        try:
+            res = fn(
+                query=prompt,
+                operator_sequence=operators,
+                max_candidates=max_candidates,
+                max_growth_cycles=cycles,
+                seed=int(seed or 123),
+                context=ctx,
+            )
+            res = _app_v65_merge_closed_loop_fields(res, query=prompt, route_reason='v65_route_success')
+            res['app_v65_route_integration'] = {
+                'patch_id': APP_V65_INVENTION_CLOSED_LOOP_PATCH_ID,
+                'used_v65_route': True,
+                'fallback_used': False,
+                'cycles_requested_from_gui': cycles,
+                'max_candidates_from_gui': max_candidates,
+                'elapsed_sec_app_wrapper': max(0.0, (_app_v65_time.time() if _app_v65_time is not None else 0.0) - started),
+            }
+            return res
+        except Exception as e:
+            err = {'status': 'degraded', 'reason': 'run_invention_closed_loop_v65_exception', 'detail': str(e)[:500], 'query': prompt}
+            if callable(fallback_fn):
+                try:
+                    fb = fallback_fn(prompt=prompt, seed=seed, max_turns=max_turns, operator_names=operator_names)
+                    fb = _app_v65_d(fb)
+                    fb['app_v65_route_integration'] = {'patch_id': APP_V65_INVENTION_CLOSED_LOOP_PATCH_ID, 'used_v65_route': False, 'fallback_used': True, 'v65_error': err}
+                    return _app_v65_merge_closed_loop_fields(fb, query=prompt, route_reason='v65_route_failed_fallback_used')
+                except Exception as e2:
+                    err['fallback_error'] = str(e2)[:500]
+            return _app_v65_merge_closed_loop_fields(err, query=prompt, route_reason='v65_route_exception_no_fallback')
+    res = {'status': 'degraded', 'reason': 'leap_engine.run_invention_closed_loop_v65_not_available', 'query': prompt}
+    if callable(fallback_fn):
+        try:
+            fb = fallback_fn(prompt=prompt, seed=seed, max_turns=max_turns, operator_names=operator_names)
+            fb = _app_v65_d(fb)
+            fb['app_v65_route_integration'] = {'patch_id': APP_V65_INVENTION_CLOSED_LOOP_PATCH_ID, 'used_v65_route': False, 'fallback_used': True, 'reason': res['reason']}
+            return _app_v65_merge_closed_loop_fields(fb, query=prompt, route_reason='v65_route_unavailable_fallback_used')
+        except Exception as e:
+            res['fallback_error'] = str(e)[:500]
+    return _app_v65_merge_closed_loop_fields(res, query=prompt, route_reason='v65_route_unavailable')
+
+
+def _leap_app_run_engine_v1(prompt, seed=123, max_turns=None, operator_names=None, *args, **kwargs):
+    return _app_v65_run_closed_loop_route(
+        prompt=prompt,
+        seed=seed,
+        max_turns=max_turns,
+        operator_names=operator_names,
+        fallback_fn=_APP_V65_PREV_LEAP_APP_RUN_ENGINE_V1,
+        **kwargs,
+    )
+
+
+def _leap_app_run_engine_v3(prompt, seed=123, max_turns=None, operator_names=None, *args, **kwargs):
+    return _app_v65_run_closed_loop_route(
+        prompt=prompt,
+        seed=seed,
+        max_turns=max_turns,
+        operator_names=operator_names,
+        fallback_fn=_APP_V65_PREV_LEAP_APP_RUN_ENGINE_V3,
+        **kwargs,
+    )
+
+
+def _leap_app_v4_run_engine(prompt, seed=123, max_turns=None, operator_names=None, *args, **kwargs):
+    return _app_v65_run_closed_loop_route(
+        prompt=prompt,
+        seed=seed,
+        max_turns=max_turns,
+        operator_names=operator_names,
+        fallback_fn=_APP_V65_PREV_LEAP_APP_V4_RUN_ENGINE,
+        **kwargs,
+    )
+
+
+def _app_v65_enrich_compact_payload(compact, debug_payload=None):
+    payload = _app_v65_d(compact).copy()
+    root = _app_v65_d(debug_payload)
+    if 'result' in root and isinstance(root.get('result'), dict):
+        root = _app_v65_d(root.get('result'))
+    if not root and isinstance(compact, dict):
+        root = _app_v65_d(compact.get('result') or compact)
+    v65_result = _app_v65_merge_closed_loop_fields(root, query=root.get('query'), route_reason=root.get('reason')) if root else {}
+    v65_compact = _app_v65_d(v65_result.get('compact_feedback_v65'))
+    payload['compact_export_schema_v65'] = 'leap_feedback_invention_closed_loop_v65_app_compact_overlay'
+    payload['patch_id_v65_app'] = APP_V65_INVENTION_CLOSED_LOOP_PATCH_ID
+    payload['top_level'] = v65_compact.get('top_level') or payload.get('top_level') or {}
+    payload['invention_closed_loop_v65'] = v65_compact.get('invention_closed_loop_v65') or v65_result.get('invention_closed_loop_v65') or {}
+    payload['closed_loop_trace'] = payload['invention_closed_loop_v65']
+    payload['pre_generation_plan'] = v65_compact.get('pre_generation_plan') or v65_result.get('pre_generation_plan_v65') or {}
+    payload['growth_feedback'] = v65_compact.get('growth_feedback') or v65_result.get('growth_feedback_v65') or {}
+    payload['s_matrix_feedback_summary'] = v65_compact.get('s_matrix_feedback_summary') or v65_result.get('s_matrix_feedback_summary_v65') or {}
+    payload['candidate_rows'] = v65_compact.get('candidate_rows') or payload.get('candidate_rows') or payload.get('candidates') or []
+    payload['app_v65_execution_depth_diagnostics'] = v65_compact.get('app_v65_execution_depth_diagnostics') or v65_result.get('app_v65_execution_depth_diagnostics') or {}
+    try:
+        payload['compact_hash_v65'] = _app_v65_hash(payload, 12)
+    except Exception:
+        pass
+    return payload
+
+
+def _app47b_build_compact_feedback_payload(debug_payload, *args, **kwargs):
+    if callable(_APP_V65_PREV_APP47B_BUILD_COMPACT_FEEDBACK_PAYLOAD):
+        try:
+            compact = _APP_V65_PREV_APP47B_BUILD_COMPACT_FEEDBACK_PAYLOAD(debug_payload, *args, **kwargs)
+        except TypeError:
+            compact = _APP_V65_PREV_APP47B_BUILD_COMPACT_FEEDBACK_PAYLOAD(debug_payload)
+    else:
+        compact = {}
+    return _app_v65_enrich_compact_payload(compact, debug_payload)
+
+
+def _app_v52_build_compact_feedback_payload(debug_payload, *args, **kwargs):
+    if callable(_APP_V65_PREV_APPV52_BUILD_COMPACT_FEEDBACK_PAYLOAD):
+        try:
+            compact = _APP_V65_PREV_APPV52_BUILD_COMPACT_FEEDBACK_PAYLOAD(debug_payload, *args, **kwargs)
+        except TypeError:
+            compact = _APP_V65_PREV_APPV52_BUILD_COMPACT_FEEDBACK_PAYLOAD(debug_payload)
+    else:
+        compact = {}
+    return _app_v65_enrich_compact_payload(compact, debug_payload)
+
+
+def app_v58_build_compact_feedback_payload(result):
+    if callable(_APP_V65_PREV_APPV58_BUILD_COMPACT_FEEDBACK_PAYLOAD):
+        try:
+            compact = _APP_V65_PREV_APPV58_BUILD_COMPACT_FEEDBACK_PAYLOAD(result)
+        except Exception:
+            compact = {}
+    else:
+        compact = {}
+    return _app_v65_enrich_compact_payload(compact, result)
+
+
+def _app50_candidate_compact(c, idx=0):
+    payload = {}
+    if callable(_APP_V65_PREV_APP50_CANDIDATE_COMPACT):
+        try:
+            legacy = _APP_V65_PREV_APP50_CANDIDATE_COMPACT(c, idx)
+            payload = legacy if isinstance(legacy, dict) else {'legacy_candidate_compact': legacy}
+        except Exception:
+            payload = {}
+    cc = _app_v65_d(c)
+    payload['app_v65_candidate_compact'] = {
+        'patch_id': APP_V65_INVENTION_CLOSED_LOOP_PATCH_ID,
+        'candidate_id': cc.get('candidate_id') or cc.get('id') or idx,
+        'growth_gate_trace': _app_v65_l(cc.get('growth_gate_trace'))[:16],
+        'smatrix_score': _app_v65_d(cc.get('app_v58_causal_verification') or cc.get('causal_verification')).get('overall_causal_verification_score_v58'),
+        'diversity_signature': cc.get('diversity_signature') or _app_v65_hash(cc, 12),
+    }
+    return payload
+
+
+def _render_invention_benchmark_panel_v46(*args, **kwargs):
+    try:
+        app_v65_render_closed_loop_controls()
+    except Exception:
+        pass
+    if callable(_APP_V65_PREV_RENDER_INVENTION_PANEL_V46):
+        return _APP_V65_PREV_RENDER_INVENTION_PANEL_V46(*args, **kwargs)
+    try:
+        if 'st' in globals():
+            st.warning('Invention benchmark panel renderer is unavailable before APP V65 wrapper.')
+    except Exception:
+        pass
+    return None
+
+
+try:
+    _app_v65_init_session_defaults()
+except Exception:
+    pass
+
+try:
+    APP_V65_INVENTION_CLOSED_LOOP_EXECUTION_PROOF = {
+        'patch_id': APP_V65_INVENTION_CLOSED_LOOP_PATCH_ID,
+        'official_route': 'leap_engine.run_invention_closed_loop_v65',
+        'wrapped_functions': [
+            '_leap_app_run_engine_v1',
+            '_leap_app_run_engine_v3',
+            '_leap_app_v4_run_engine',
+            '_render_invention_benchmark_panel_v46',
+            '_app47b_build_compact_feedback_payload',
+            '_app_v52_build_compact_feedback_payload',
+            'app_v58_build_compact_feedback_payload',
+            '_app50_candidate_compact',
+        ],
+        'compact_required_fields': [
+            'cycles_executed',
+            'regeneration_count',
+            'loop_effective',
+            'pre_generation_plan',
+            'growth_feedback',
+            's_matrix_feedback_summary',
+        ],
+        'no_benchmark_or_task_name_hardcoding': True,
+    }
+except Exception:
+    pass
+# ============================================================================
+# END ADD-ONLY PATCH: APP-V65-INVENTION-CLOSED-LOOP-ROUTE-COMPACT-UI
+# ============================================================================
+
+
+
+# ============================================================================
+# ADD-ONLY PATCH: APP-V70-CLOSED-LOOP-CONTROLS-DEFAULTS
+# generated_at_jst: 2026-05-18
+# Adds non-destructive V70 defaults and helper for the existing invention panel.
+# No existing UI code is deleted. No benchmark/task hardcoding.
+# ============================================================================
+APP_V70_CLOSED_LOOP_CONTROLS_PATCH_ID = 'APP-V70-CLOSED-LOOP-CONTROLS-DEFAULTS-20260518'
+
+def _app_v70_int(x, default, lo=0, hi=10**9):
+    try: v=int(x)
+    except Exception: v=int(default)
+    return max(int(lo), min(int(hi), v))
+
+def app_v70_get_closed_loop_controls():
+    """Return V70 universal invention-test execution controls.
+    Existing panels can read this helper or the session_state keys directly.
+    """
+    return {
+        'patch_id': APP_V70_CLOSED_LOOP_CONTROLS_PATCH_ID,
+        'grounding_enabled': bool(st.session_state.get('v70_grounding_enabled', True)),
+        'candidate_graph_depth': _app_v70_int(st.session_state.get('v70_candidate_graph_depth', 7), 7, 1, 64),
+        'branch_cap': _app_v70_int(st.session_state.get('v70_branch_cap', 16), 16, 2, 128),
+        's_tensor_passes': _app_v70_int(st.session_state.get('v70_s_tensor_passes', 6), 6, 1, 64),
+        'llm_aux_rounds': _app_v70_int(st.session_state.get('v70_llm_aux_rounds', 2), 2, 0, 16),
+        'exploration_depth_multiplier': _app_v70_int(st.session_state.get('v70_exploration_depth_multiplier', 3), 3, 1, 16),
+        'llm_schema_compliance_assumed': False,
+    }
+
+try:
+    st.session_state.setdefault('v70_grounding_enabled', True)
+    st.session_state.setdefault('v70_candidate_graph_depth', 7)
+    st.session_state.setdefault('v70_branch_cap', 16)
+    st.session_state.setdefault('v70_s_tensor_passes', 6)
+    st.session_state.setdefault('v70_llm_aux_rounds', 2)
+    st.session_state.setdefault('v70_exploration_depth_multiplier', 3)
+    st.session_state.setdefault('v70_closed_loop_controls_patch_id', APP_V70_CLOSED_LOOP_CONTROLS_PATCH_ID)
+except Exception:
+    pass
+
+def app_v70_merge_controls_into_context(context=None):
+    ctx = dict(context or {}) if isinstance(context, dict) else {}
+    ctx.update(app_v70_get_closed_loop_controls())
+    ctx['candidate_graph_depth'] = ctx['candidate_graph_depth']
+    ctx['graph_depth'] = ctx['candidate_graph_depth']
+    ctx['s_tensor_passes'] = ctx['s_tensor_passes']
+    ctx['llm_aux_rounds'] = ctx['llm_aux_rounds']
+    return ctx
+
+try:
+    # Visible, compact control block without expander. It is intentionally generic and
+    # can be ignored by older routes; values are stored in session_state.
+    st.markdown('### V70 closed-loop controls')
+    _c1, _c2, _c3, _c4 = st.columns(4)
+    with _c1:
+        st.session_state['v70_candidate_graph_depth'] = st.number_input('candidate graph depth', min_value=1, max_value=64, value=_app_v70_int(st.session_state.get('v70_candidate_graph_depth',7),7,1,64), step=1, key='v70_candidate_graph_depth_input')
+    with _c2:
+        st.session_state['v70_branch_cap'] = st.number_input('branch cap', min_value=2, max_value=128, value=_app_v70_int(st.session_state.get('v70_branch_cap',16),16,2,128), step=1, key='v70_branch_cap_input')
+    with _c3:
+        st.session_state['v70_s_tensor_passes'] = st.number_input('S tensor passes', min_value=1, max_value=64, value=_app_v70_int(st.session_state.get('v70_s_tensor_passes',6),6,1,64), step=1, key='v70_s_tensor_passes_input')
+    with _c4:
+        st.session_state['v70_llm_aux_rounds'] = st.number_input('LLM aux rounds', min_value=0, max_value=16, value=_app_v70_int(st.session_state.get('v70_llm_aux_rounds',2),2,0,16), step=1, key='v70_llm_aux_rounds_input')
+    st.caption('V70: grounding + deeper candidate graph + complex S-matrix retensorization. LLM auxiliary output is treated as untrusted text; schema compliance is not assumed.')
+except Exception:
+    pass
+# ============================================================================
+# END ADD-ONLY PATCH: APP-V70-CLOSED-LOOP-CONTROLS-DEFAULTS
 # ============================================================================
