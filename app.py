@@ -14517,6 +14517,189 @@ try:
 except Exception:
     _APPV15I_PREV_LEAPV8_RUN = None
 
+
+# ============================================================================
+# ADD-ONLY PATCH: APP_LLM_CONNECTION_CALLSITE_CONTRACT_20260604
+# Purpose:
+# - Actually modify the code path that calls leap_engine.run_invention_closed_loop_v65.
+# - Publish and inject a concrete in-process model/tokenizer pair before the call.
+# - Also provide diagnostics in the result so the next log can prove whether app
+#   exposed the pair and whether leap_engine used local model.generate.
+# - No task/benchmark/problem-name hardcoding.
+# ============================================================================
+APP_LLM_CONNECTION_CALLSITE_CONTRACT_20260604 = "APP_LLM_CONNECTION_CALLSITE_CONTRACT_20260604"
+_APP_LLMC_LAST_DIAG = {"patch_id": APP_LLM_CONNECTION_CALLSITE_CONTRACT_20260604, "attempted": False}
+
+def _app_llmc_s(x, n=1000):
+    try:
+        s = '' if x is None else str(x)
+    except Exception:
+        s = repr(x)
+    return ' '.join(s.replace('\r','\n').split())[:max(0,int(n))]
+
+def _app_llmc_d(x):
+    return dict(x) if isinstance(x, dict) else {}
+
+def _app_llmc_is_model(x):
+    return bool(x is not None and callable(getattr(x, 'generate', None)))
+
+def _app_llmc_is_tokenizer(x):
+    return bool(x is not None and callable(getattr(x, 'decode', None)) and (callable(x) or callable(getattr(x, 'encode', None))))
+
+def _app_llmc_pair_from_obj(obj):
+    if obj is None:
+        return None, None
+    if isinstance(obj, dict):
+        m = obj.get('model') or obj.get('llm_model') or obj.get('local_model') or obj.get('leap_direct_model')
+        t = obj.get('tokenizer') or obj.get('llm_tokenizer') or obj.get('local_tokenizer') or obj.get('leap_direct_tokenizer')
+        if _app_llmc_is_model(m) and _app_llmc_is_tokenizer(t):
+            return m, t
+    try:
+        m = getattr(obj, 'model', None)
+        t = getattr(obj, 'tokenizer', None)
+        if _app_llmc_is_model(m) and _app_llmc_is_tokenizer(t):
+            return m, t
+    except Exception:
+        pass
+    return None, None
+
+def _app_llmc_model_path(cfg=None):
+    cfg=_app_llmc_d(cfg)
+    vals=[]
+    for k in ('model_path','selected_model_path','selected_transformers_model_path','transformers_runtime_model_path','causalos_model_path'):
+        if cfg.get(k): vals.append(cfg.get(k))
+    try:
+        for k in ('selected_model_path','selected_transformers_model_path','transformers_runtime_model_path','causalos_model_path'):
+            v=st.session_state.get(k)
+            if v: vals.append(v)
+    except Exception:
+        pass
+    for v in vals:
+        s=_app_llmc_s(v,1200)
+        if s and s.lower() not in ('none','null','false','0'):
+            return s
+    return ''
+
+def _app_llmc_quant(cfg=None):
+    cfg=_app_llmc_d(cfg)
+    try:
+        return _app_llmc_s(cfg.get('quantization') or cfg.get('quant') or st.session_state.get('selected_quantization') or st.session_state.get('transformers_runtime_quantization') or '4bit',80)
+    except Exception:
+        return _app_llmc_s(cfg.get('quantization') or cfg.get('quant') or '4bit',80)
+
+def _app_llmc_publish(model, tokenizer, source, engine=None, diag=None):
+    diag=_app_llmc_d(diag)
+    ready=bool(_app_llmc_is_model(model) and _app_llmc_is_tokenizer(tokenizer))
+    try:
+        st.session_state['leap_direct_model']=model
+        st.session_state['leap_direct_tokenizer']=tokenizer
+        st.session_state['leap_direct_pair']={'model':model,'tokenizer':tokenizer,'source':source,'patch_id':APP_LLM_CONNECTION_CALLSITE_CONTRACT_20260604}
+        if engine is not None:
+            st.session_state['leap_direct_engine']=engine
+        st.session_state['leap_direct_pair_ready']=ready
+        st.session_state['leap_direct_pair_source']=source
+        st.session_state['leap_direct_pair_patch_id']=APP_LLM_CONNECTION_CALLSITE_CONTRACT_20260604
+        st.session_state['leap_direct_pair_diag']={**diag,'ready':ready,'source':source}
+    except Exception:
+        pass
+    return {'patch_id':APP_LLM_CONNECTION_CALLSITE_CONTRACT_20260604,'ready':ready,'source':source,**diag}
+
+def _app_llmc_prepare_pair(cfg=None):
+    global _APP_LLMC_LAST_DIAG
+    cfg=_app_llmc_d(cfg)
+    diag={'patch_id':APP_LLM_CONNECTION_CALLSITE_CONTRACT_20260604,'attempted':True,'ready':False,'model_found':False,'tokenizer_found':False,'source':'','loaded_inprocess':False,'error':''}
+    try:
+        # 1. Already-published explicit pair.
+        try:
+            m=st.session_state.get('leap_direct_model'); t=st.session_state.get('leap_direct_tokenizer')
+            if _app_llmc_is_model(m) and _app_llmc_is_tokenizer(t):
+                diag.update({'model_found':True,'tokenizer_found':True,'source':'session_state.leap_direct_model/tokenizer'})
+                _APP_LLMC_LAST_DIAG=_app_llmc_publish(m,t,diag['source'],diag=diag)
+                return _APP_LLMC_LAST_DIAG
+        except Exception as exc:
+            diag['explicit_pair_exception']=type(exc).__name__+':'+_app_llmc_s(exc,360)
+        # 2. Existing loaded engine objects.
+        try:
+            for key in ('causalos_engine','leap_direct_engine','engine','local_engine','inference_engine'):
+                obj=st.session_state.get(key)
+                m,t=_app_llmc_pair_from_obj(obj)
+                if m is not None and t is not None:
+                    src='session_state.'+key+'.model/tokenizer'
+                    diag.update({'model_found':True,'tokenizer_found':True,'source':src})
+                    _APP_LLMC_LAST_DIAG=_app_llmc_publish(m,t,src,engine=obj,diag=diag)
+                    return _APP_LLMC_LAST_DIAG
+        except Exception as exc:
+            diag['engine_lookup_exception']=type(exc).__name__+':'+_app_llmc_s(exc,360)
+        # 3. Scan session_state objects.
+        try:
+            for key,obj in list(st.session_state.items()):
+                m,t=_app_llmc_pair_from_obj(obj)
+                if m is not None and t is not None:
+                    src='session_state.'+_app_llmc_s(key,140)+'.model/tokenizer'
+                    diag.update({'model_found':True,'tokenizer_found':True,'source':src})
+                    _APP_LLMC_LAST_DIAG=_app_llmc_publish(m,t,src,engine=obj,diag=diag)
+                    return _APP_LLMC_LAST_DIAG
+        except Exception as exc:
+            diag['session_scan_exception']=type(exc).__name__+':'+_app_llmc_s(exc,360)
+        # 4. Load in-process using existing generic loader if path exists.
+        path=_app_llmc_model_path(cfg)
+        if path and callable(globals().get('load_causalos_engine')):
+            q=_app_llmc_quant(cfg)
+            try:
+                trust=bool(cfg.get('trust_remote_code') or st.session_state.get('trust_remote_code',False))
+            except Exception:
+                trust=bool(cfg.get('trust_remote_code'))
+            eng=load_causalos_engine(path,lora_path=None,quant=q,trust_remote_code=trust)
+            m,t=_app_llmc_pair_from_obj(eng)
+            if m is not None and t is not None:
+                src='load_causalos_engine('+_app_llmc_s(path,240)+')'
+                diag.update({'model_found':True,'tokenizer_found':True,'source':src,'loaded_inprocess':True,'quantization':q})
+                _APP_LLMC_LAST_DIAG=_app_llmc_publish(m,t,src,engine=eng,diag=diag)
+                return _APP_LLMC_LAST_DIAG
+            diag['error']='local_loader_returned_object_without_model_tokenizer'
+        else:
+            diag['error']='no_visible_pair_and_no_local_model_path_or_loader'
+    except Exception as exc:
+        diag['error']=type(exc).__name__+':'+_app_llmc_s(exc,700)
+    try:
+        st.session_state['leap_direct_pair_ready']=False
+        st.session_state['leap_direct_pair_patch_id']=APP_LLM_CONNECTION_CALLSITE_CONTRACT_20260604
+        st.session_state['leap_direct_pair_diag']=diag
+    except Exception:
+        pass
+    _APP_LLMC_LAST_DIAG=diag
+    return diag
+
+def _app_llmc_context(cfg, base_context=None):
+    diag=_app_llmc_prepare_pair(cfg)
+    ctx=_app_llmc_d(base_context)
+    try:
+        m=st.session_state.get('leap_direct_model'); t=st.session_state.get('leap_direct_tokenizer')
+        if _app_llmc_is_model(m) and _app_llmc_is_tokenizer(t):
+            ctx['model']=m; ctx['tokenizer']=t; ctx['llm_model']=m; ctx['llm_tokenizer']=t
+            ctx['local_direct_pair']={'model':m,'tokenizer':t,'source':st.session_state.get('leap_direct_pair_source','session_state.leap_direct_*')}
+        ctx['app_llm_connection_callsite_contract']=diag
+        ctx['app_llm_connection_callsite_contract_patch_id']=APP_LLM_CONNECTION_CALLSITE_CONTRACT_20260604
+    except Exception as exc:
+        ctx['app_llm_connection_callsite_context_error']=type(exc).__name__+':'+_app_llmc_s(exc,360)
+    return ctx
+
+def _app_llmc_attach_result_diag(result):
+    if isinstance(result, dict):
+        result['app_llm_connection_callsite_contract']=_APP_LLMC_LAST_DIAG
+        try:
+            oc=result.setdefault('operation_controls',{})
+            oc['app_llm_connection_callsite_attempted']=bool(_APP_LLMC_LAST_DIAG.get('attempted'))
+            oc['app_llm_connection_callsite_ready']=bool(_APP_LLMC_LAST_DIAG.get('ready') or (_APP_LLMC_LAST_DIAG.get('model_found') and _APP_LLMC_LAST_DIAG.get('tokenizer_found')))
+            oc['app_llm_connection_callsite_source']=_app_llmc_s(_APP_LLMC_LAST_DIAG.get('source'),260)
+            oc['app_llm_connection_callsite_loaded_inprocess']=bool(_APP_LLMC_LAST_DIAG.get('loaded_inprocess'))
+            oc['app_llm_connection_callsite_error']=_app_llmc_s(_APP_LLMC_LAST_DIAG.get('error'),400)
+        except Exception:
+            pass
+    return result
+# ============================================================================
+# END ADD-ONLY PATCH: APP_LLM_CONNECTION_CALLSITE_CONTRACT_20260604
+# ============================================================================
 def _leapv8_run(cfg):
     cfg, diag = _appv15i_inject(cfg)
     if diag.get('backend_mode') == 'remote_runtime' and callable(globals().get('_APP_LLMW15C_PREV_LEAPV8_RUN')):
@@ -15025,6 +15208,248 @@ def _app_v65c_normalize_v65_result(result, cfg=None, used_v65_route=False, fallb
     return root
 
 
+
+# ============================================================================
+# ADD-ONLY PATCH: APP_RESTORE_LATENT_RUNTIME_BRIDGE_20260604
+# Purpose:
+# - Restore the original latent-hook runtime path instead of relying only on
+#   local model.generate or plain /generate.
+# - Use the already-built call-site context, which contains runtime_url,
+#   runtime_model_path, and runtime_quantization.
+# - Distinguish structural tensor route, remote latent route, remote text route,
+#   and in-process local generate route.
+# - No task/benchmark/problem-name hardcoding.
+# ============================================================================
+APP_RESTORE_LATENT_RUNTIME_BRIDGE_20260604 = "APP_RESTORE_LATENT_RUNTIME_BRIDGE_20260604"
+_APP_RLRB_LAST = {"patch_id": APP_RESTORE_LATENT_RUNTIME_BRIDGE_20260604, "attempted": False}
+try:
+    _APP_RLRB_PREV_CONTEXT = _app_llmc_context
+except Exception:
+    _APP_RLRB_PREV_CONTEXT = None
+try:
+    _APP_RLRB_PREV_PREPARE_PAIR = _app_llmc_prepare_pair
+except Exception:
+    _APP_RLRB_PREV_PREPARE_PAIR = None
+try:
+    _APP_RLRB_PREV_ATTACH = _app_llmc_attach_result_diag
+except Exception:
+    _APP_RLRB_PREV_ATTACH = None
+
+def _app_rlrb_s(x, n=1000):
+    try:
+        s = '' if x is None else str(x)
+    except Exception:
+        s = repr(x)
+    return ' '.join(s.replace('\r', '\n').split())[:max(0, int(n))]
+
+def _app_rlrb_d(x):
+    return dict(x) if isinstance(x, dict) else {}
+
+def _app_rlrb_runtime_url(ctx=None):
+    ctx = _app_rlrb_d(ctx)
+    u = ctx.get('runtime_url') or ctx.get('transformers_runtime_url')
+    if not u:
+        try:
+            u = _transformers_runtime_url()
+        except Exception:
+            u = ''
+    return str(u or '').rstrip('/')
+
+def _app_rlrb_model_path(cfg=None, ctx=None):
+    cfg = _app_rlrb_d(cfg); ctx = _app_rlrb_d(ctx)
+    vals = []
+    for k in ('runtime_model_path', 'model_path', 'selected_model_path', 'selected_transformers_model_path', 'transformers_runtime_model_path', 'causalos_model_path'):
+        if ctx.get(k): vals.append(ctx.get(k))
+        if cfg.get(k): vals.append(cfg.get(k))
+    try:
+        for k in ('transformers_runtime_model_path', 'selected_transformers_model_path', 'selected_model_path', 'causalos_model_path'):
+            v = st.session_state.get(k)
+            if v: vals.append(v)
+    except Exception:
+        pass
+    for v in vals:
+        s = _app_rlrb_s(v, 1200)
+        if s and s.lower() not in ('none', 'null', 'false', '0'):
+            return s
+    return ''
+
+def _app_rlrb_quant(cfg=None, ctx=None):
+    cfg = _app_rlrb_d(cfg); ctx = _app_rlrb_d(ctx)
+    try:
+        return _app_rlrb_s(ctx.get('runtime_quantization') or cfg.get('runtime_quantization') or cfg.get('quantization') or cfg.get('quant') or st.session_state.get('transformers_runtime_quantization') or st.session_state.get('selected_quantization') or '4bit', 80)
+    except Exception:
+        return _app_rlrb_s(ctx.get('runtime_quantization') or cfg.get('quantization') or cfg.get('quant') or '4bit', 80)
+
+def _app_rlrb_prompt(cfg=None, ctx=None):
+    cfg = _app_rlrb_d(cfg); ctx = _app_rlrb_d(ctx)
+    q = _app_rlrb_s(cfg.get('prompt') or ctx.get('query') or ctx.get('prompt') or '', 2000)
+    return '日本語で一文だけ。思考過程、JSON、採点、前置きは禁止。検証可能性を高める短いレビューを書く。入力: ' + q
+
+def _app_rlrb_first_operator(cfg=None):
+    cfg = _app_rlrb_d(cfg)
+    ops = cfg.get('operator_sequence') or cfg.get('operators') or []
+    if isinstance(ops, (list, tuple)) and ops:
+        return _app_rlrb_s(ops[0], 80)
+    return 'substitution'
+
+def _app_rlrb_call_runtime(cfg=None, ctx=None):
+    global _APP_RLRB_LAST
+    cfg = _app_rlrb_d(cfg); ctx = _app_rlrb_d(ctx)
+    url = _app_rlrb_runtime_url(ctx)
+    model_path = _app_rlrb_model_path(cfg, ctx)
+    quant = _app_rlrb_quant(cfg, ctx)
+    rec = {
+        'patch_id': APP_RESTORE_LATENT_RUNTIME_BRIDGE_20260604,
+        'attempted': True,
+        'latent_attempted': False,
+        'latent_ok': False,
+        'text_attempted': False,
+        'text_ok': False,
+        'runtime_url': url,
+        'model_path': model_path,
+        'quantization': quant,
+        'text_len': 0,
+        'hidden_shape': [],
+        'hidden_dim': 0,
+        'hook_call_count': 0,
+        'operator_delta_norm': 0.0,
+        'layer_resolved_path': '',
+        'layer_resolved_index': None,
+        'error': '',
+    }
+    if not url:
+        rec['error'] = 'runtime_url_missing'; _APP_RLRB_LAST = rec; return '', rec
+    try:
+        import requests, json
+        if model_path:
+            try:
+                lr = requests.post(url + '/load', json={'model_path': model_path, 'quantization': quant}, timeout=300)
+                rec['load_status_code'] = getattr(lr, 'status_code', None)
+                try:
+                    rec['load_ok'] = bool(lr.json().get('ok'))
+                    rec['load_response_preview'] = _app_rlrb_s(lr.json(), 500)
+                except Exception:
+                    rec['load_response_preview'] = _app_rlrb_s(getattr(lr, 'text', ''), 500)
+            except Exception as exc:
+                rec['load_error'] = type(exc).__name__ + ':' + _app_rlrb_s(exc, 500)
+        # First: original latent-hook path. This is the route that proves LLM-backed PyTorch layer access.
+        latent_payload = {
+            'prompt': _app_rlrb_prompt(cfg, ctx),
+            'model_path': model_path,
+            'quantization': quant,
+            'manual_layer_path': None,
+            'manual_layer_index': 0,
+            'operator': _app_rlrb_first_operator(cfg),
+            'operator_trace': cfg.get('operator_sequence') or cfg.get('operators') or [],
+            'theta': 0.05,
+            'rotation_magnitude': 0.05,
+            'max_new_tokens': 96,
+            'return_hidden_diagnostics': True,
+        }
+        rec['latent_attempted'] = True
+        try:
+            rr = requests.post(url + '/latent/generate', json=latent_payload, timeout=300)
+            rec['latent_status_code'] = getattr(rr, 'status_code', None)
+            data = rr.json()
+            text = data.get('text') or data.get('generated_text') or data.get('output') or ''
+            if isinstance(text, dict): text = json.dumps(text, ensure_ascii=False)
+            text = _app_rlrb_s(text, 4000)
+            rec['latent_ok'] = bool(data.get('ok') or data.get('latent_operation_available') or text)
+            rec['text_len'] = len(text)
+            rec['hidden_shape'] = data.get('hidden_shape') or []
+            rec['hidden_dim'] = int(data.get('hidden_dim') or 0)
+            rec['hook_call_count'] = int(data.get('hook_call_count') or 0)
+            rec['operator_delta_norm'] = float(data.get('operator_delta_norm') or 0.0)
+            rec['layer_resolved_path'] = _app_rlrb_s(data.get('layer_resolved_path'), 240)
+            rec['layer_resolved_index'] = data.get('layer_resolved_index')
+            rec['latent_reason'] = _app_rlrb_s(data.get('reason'), 300)
+            rec['latent_error'] = _app_rlrb_s(data.get('error'), 500)
+            if text:
+                _APP_RLRB_LAST = rec
+                return text, rec
+        except Exception as exc:
+            rec['latent_error'] = type(exc).__name__ + ':' + _app_rlrb_s(exc, 700)
+        # Second: plain runtime text fallback. This is LLM text, but not hidden-state proof.
+        rec['text_attempted'] = True
+        try:
+            tr = requests.post(url + '/generate', json={'prompt': _app_rlrb_prompt(cfg, ctx), 'model_path': model_path, 'quantization': quant, 'max_new_tokens': 96, 'temperature': 0.0, 'do_sample': False}, timeout=300)
+            rec['text_status_code'] = getattr(tr, 'status_code', None)
+            data = tr.json()
+            text = data.get('text') or data.get('generated_text') or data.get('output') or data.get('response') or ''
+            if isinstance(text, dict): text = json.dumps(text, ensure_ascii=False)
+            text = _app_rlrb_s(text, 4000)
+            rec['text_ok'] = bool(text)
+            rec['text_len'] = len(text)
+            rec['text_error'] = _app_rlrb_s(data.get('error'), 500)
+            _APP_RLRB_LAST = rec
+            return text, rec
+        except Exception as exc:
+            rec['text_error'] = type(exc).__name__ + ':' + _app_rlrb_s(exc, 700)
+    except Exception as exc:
+        rec['error'] = type(exc).__name__ + ':' + _app_rlrb_s(exc, 700)
+    _APP_RLRB_LAST = rec
+    return '', rec
+
+def _app_llmc_context(cfg, base_context=None):
+    # Final active override before the V65 call site. This fixes the earlier bug:
+    # model_path was inside base_context, while the old preparer only inspected cfg.
+    ctx = _app_rlrb_d(base_context)
+    merged = _app_rlrb_d(cfg)
+    for k, v in ctx.items():
+        if v not in (None, ''):
+            merged[k] = v
+    try:
+        diag = _APP_RLRB_PREV_PREPARE_PAIR(merged) if callable(_APP_RLRB_PREV_PREPARE_PAIR) else {'attempted': False, 'ready': False, 'error': 'previous_prepare_missing'}
+    except Exception as exc:
+        diag = {'attempted': True, 'ready': False, 'error': type(exc).__name__ + ':' + _app_rlrb_s(exc, 700)}
+    try:
+        m = st.session_state.get('leap_direct_model'); t = st.session_state.get('leap_direct_tokenizer')
+        if callable(getattr(m, 'generate', None)) and callable(getattr(t, 'decode', None)):
+            ctx['model'] = m; ctx['tokenizer'] = t; ctx['llm_model'] = m; ctx['llm_tokenizer'] = t
+            ctx['local_direct_pair'] = {'model': m, 'tokenizer': t, 'source': st.session_state.get('leap_direct_pair_source', 'session_state.leap_direct_*')}
+    except Exception:
+        pass
+    text, bridge = _app_rlrb_call_runtime(merged, ctx)
+    if text:
+        ctx['llm_aux_text'] = text
+        ctx['untrusted_llm_text'] = text
+        ctx['auxiliary_generation_text'] = text
+        ctx['runtime_latent_text'] = text
+        ctx['remote_runtime_llm_text'] = text
+    ctx['runtime_latent_bridge'] = bridge
+    ctx['llm_hidden_state_bridge'] = bridge
+    ctx['app_llm_connection_callsite_contract'] = diag
+    ctx['app_restore_latent_runtime_bridge_patch_id'] = APP_RESTORE_LATENT_RUNTIME_BRIDGE_20260604
+    return ctx
+
+def _app_llmc_attach_result_diag(result):
+    if callable(_APP_RLRB_PREV_ATTACH):
+        try:
+            result = _APP_RLRB_PREV_ATTACH(result)
+        except Exception:
+            pass
+    if isinstance(result, dict):
+        result['app_restore_latent_runtime_bridge'] = _APP_RLRB_LAST
+        try:
+            oc = result.setdefault('operation_controls', {})
+            oc['app_restore_latent_runtime_bridge_attempted'] = bool(_APP_RLRB_LAST.get('attempted'))
+            oc['app_restore_latent_runtime_bridge_latent_attempted'] = bool(_APP_RLRB_LAST.get('latent_attempted'))
+            oc['app_restore_latent_runtime_bridge_latent_ok'] = bool(_APP_RLRB_LAST.get('latent_ok'))
+            oc['app_restore_latent_runtime_bridge_text_ok'] = bool(_APP_RLRB_LAST.get('text_ok'))
+            oc['app_restore_latent_runtime_bridge_text_len'] = int(_APP_RLRB_LAST.get('text_len') or 0)
+            oc['app_restore_latent_runtime_bridge_hidden_dim'] = int(_APP_RLRB_LAST.get('hidden_dim') or 0)
+            oc['app_restore_latent_runtime_bridge_hidden_shape'] = _APP_RLRB_LAST.get('hidden_shape') or []
+            oc['app_restore_latent_runtime_bridge_hook_call_count'] = int(_APP_RLRB_LAST.get('hook_call_count') or 0)
+            oc['app_restore_latent_runtime_bridge_operator_delta_norm'] = float(_APP_RLRB_LAST.get('operator_delta_norm') or 0.0)
+            oc['app_restore_latent_runtime_bridge_runtime_url'] = _app_rlrb_s(_APP_RLRB_LAST.get('runtime_url'), 220)
+            oc['app_restore_latent_runtime_bridge_model_path'] = _app_rlrb_s(_APP_RLRB_LAST.get('model_path'), 220)
+            oc['app_restore_latent_runtime_bridge_error'] = _app_rlrb_s(_APP_RLRB_LAST.get('error') or _APP_RLRB_LAST.get('latent_error') or _APP_RLRB_LAST.get('text_error'), 500)
+        except Exception:
+            pass
+    return result
+# ============================================================================
+# END ADD-ONLY PATCH: APP_RESTORE_LATENT_RUNTIME_BRIDGE_20260604
+# ============================================================================
 def _leapv8_run(cfg):
     cfg=_app_v65c_d(cfg)
     _app_v65c_init_defaults()
@@ -15042,15 +15467,20 @@ def _leapv8_run(cfg):
                     max_candidates=max_candidates,
                     max_growth_cycles=cycles,
                     seed=_app_v65c_int(cfg.get('seed'),123),
-                    context={
+                    context=_app_llmc_context(cfg, {
                         'observables': cfg.get('observables'),
                         'controllables': cfg.get('controllables'),
                         'constraints': cfg.get('constraints'),
                         'feedback': cfg.get('feedback'),
                         'app_v65c_latest_panel': True,
                         'app_v65c_route_patch_id': APP_V65C_LATEST_LEAPV8_PATCH_ID,
-                    },
+                        'runtime_url': (_transformers_runtime_url() if callable(globals().get('_transformers_runtime_url')) else ''),
+                        'runtime_model_path': st.session_state.get('transformers_runtime_model_path', st.session_state.get('selected_transformers_model_path', '')) if 'st' in globals() else '',
+                        'runtime_quantization': st.session_state.get('transformers_runtime_quantization', st.session_state.get('selected_quantization', '')) if 'st' in globals() else '',
+                        'assist_context_patch_id': 'APP-V8-RUNTIME-CONTEXT-FOR-QUALITY-ASSIST-20260530',
+                    }),
                 )
+                res=_app_llmc_attach_result_diag(res)
                 return _app_v65c_normalize_v65_result(res, cfg=cfg, used_v65_route=True, fallback_used=False, reason='v65_closed_loop_route_executed_from_latest_panel')
             except Exception as e:
                 fallback_reason='v65_closed_loop_route_exception:' + str(e)[:300]
@@ -21851,3 +22281,1175 @@ except Exception:
 # ============================================================================
 # END ADD-ONLY PATCH: APP-V70-CLOSED-LOOP-CONTROLS-DEFAULTS
 # ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY PATCH: APP_VERIFIED_AUX_RUNTIME_CONTEXT_20260603
+# Purpose: pass runtime URL/model/quantization to all app-side V65 calls.
+# Verified not to pass duplicate context kwargs.
+# ============================================================================
+APP_VERIFIED_AUX_RUNTIME_CONTEXT_20260603 = "APP_VERIFIED_AUX_RUNTIME_CONTEXT_20260603"
+try: _APP_VARC_PREV_V65_RUN = globals().get('_app_v65_run_closed_loop_route')
+except Exception: _APP_VARC_PREV_V65_RUN = None
+
+def _app_varc_runtime_context(ctx=None):
+    d=dict(ctx) if isinstance(ctx,dict) else {}
+    try:
+        if callable(globals().get('_transformers_runtime_url')):
+            d.setdefault('runtime_url', _transformers_runtime_url())
+            d.setdefault('transformers_runtime_url', _transformers_runtime_url())
+    except Exception: pass
+    try:
+        if 'st' in globals():
+            d.setdefault('runtime_model_path', st.session_state.get('transformers_runtime_model_path', st.session_state.get('selected_transformers_model_path','')))
+            d.setdefault('runtime_quantization', st.session_state.get('transformers_runtime_quantization', st.session_state.get('selected_quantization','')))
+    except Exception: pass
+    d.setdefault('app_verified_aux_runtime_context_patch_id', APP_VERIFIED_AUX_RUNTIME_CONTEXT_20260603)
+    return d
+
+if callable(_APP_VARC_PREV_V65_RUN):
+    def _app_v65_run_closed_loop_route(prompt, seed=123, max_turns=None, operator_names=None, context=None, fallback_fn=None, **kwargs):
+        ctx=_app_varc_runtime_context(context or kwargs.pop('context', None))
+        return _APP_VARC_PREV_V65_RUN(prompt=prompt, seed=seed, max_turns=max_turns, operator_names=operator_names, context=ctx, fallback_fn=fallback_fn, **kwargs)
+
+try: _APP_VARC_PREV_LEAPV8_RUN = globals().get('_leapv8_run')
+except Exception: _APP_VARC_PREV_LEAPV8_RUN = None
+if callable(_APP_VARC_PREV_LEAPV8_RUN):
+    def _leapv8_run(cfg):
+        cfg=dict(cfg) if isinstance(cfg,dict) else {}
+        cfg['context']=_app_varc_runtime_context(cfg.get('context'))
+        return _APP_VARC_PREV_LEAPV8_RUN(cfg)
+# ============================================================================
+# END ADD-ONLY PATCH: APP_VERIFIED_AUX_RUNTIME_CONTEXT_20260603
+# ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY PATCH: APP_V65_NO_EXTRA_FORWARD_AND_VISIBLE_FAILURE_20260603
+# Purpose:
+# - Ensure app-side V65 calls never pass `extra` to leap_engine.
+# - If V65 returns a sanitized degraded record, keep it visible instead of hiding
+#   the root cause behind an old no-LLM fallback route.
+# - No task/benchmark/domain-specific branching.
+# ============================================================================
+APP_V65_NO_EXTRA_FORWARD_AND_VISIBLE_FAILURE_20260603 = "APP_V65_NO_EXTRA_FORWARD_AND_VISIBLE_FAILURE_20260603"
+
+try:
+    _APP_XSG_PREV_V65_RUN = globals().get('_app_v65_run_closed_loop_route')
+except Exception:
+    _APP_XSG_PREV_V65_RUN = None
+
+
+def _app_xsg_d(x):
+    return dict(x) if isinstance(x, dict) else {}
+
+
+def _app_xsg_runtime_context(ctx=None):
+    d = _app_xsg_d(ctx)
+    try:
+        if callable(globals().get('_transformers_runtime_url')):
+            d.setdefault('runtime_url', _transformers_runtime_url())
+            d.setdefault('transformers_runtime_url', _transformers_runtime_url())
+    except Exception:
+        pass
+    try:
+        if 'st' in globals():
+            d.setdefault('runtime_model_path', st.session_state.get('transformers_runtime_model_path', st.session_state.get('selected_transformers_model_path', '')))
+            d.setdefault('runtime_quantization', st.session_state.get('transformers_runtime_quantization', st.session_state.get('selected_quantization', '')))
+    except Exception:
+        pass
+    d.setdefault('app_no_extra_forward_patch_id', APP_V65_NO_EXTRA_FORWARD_AND_VISIBLE_FAILURE_20260603)
+    return d
+
+
+if callable(_APP_XSG_PREV_V65_RUN):
+    def _app_v65_run_closed_loop_route(prompt, seed=123, max_turns=None, operator_names=None, context=None, fallback_fn=None, **kwargs):
+        prior_context = context if isinstance(context, dict) else kwargs.pop('context', None)
+        kwargs.pop('extra', None)
+        ctx = _app_xsg_runtime_context(prior_context)
+        res = _APP_XSG_PREV_V65_RUN(
+            prompt=prompt,
+            seed=seed,
+            max_turns=max_turns,
+            operator_names=operator_names,
+            context=ctx,
+            fallback_fn=fallback_fn,
+            **kwargs,
+        )
+        if isinstance(res, dict):
+            res.setdefault('app_no_extra_forward_patch_id', APP_V65_NO_EXTRA_FORWARD_AND_VISIBLE_FAILURE_20260603)
+            try:
+                res.setdefault('operation_controls', {})['app_extra_kwarg_forwarded'] = False
+            except Exception:
+                pass
+        return res
+
+try:
+    _APP_XSG_PREV_LEAPV8_RUN = globals().get('_leapv8_run')
+except Exception:
+    _APP_XSG_PREV_LEAPV8_RUN = None
+
+if callable(_APP_XSG_PREV_LEAPV8_RUN):
+    def _leapv8_run(cfg):
+        cfg = dict(cfg) if isinstance(cfg, dict) else {}
+        cfg['context'] = _app_xsg_runtime_context(cfg.get('context'))
+        cfg.pop('extra', None)
+        return _APP_XSG_PREV_LEAPV8_RUN(cfg)
+
+# ============================================================================
+# END ADD-ONLY PATCH: APP_V65_NO_EXTRA_FORWARD_AND_VISIBLE_FAILURE_20260603
+# ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY PATCH: APP_LOCAL_TEXT_COMPONENT_CONTEXT_20260603
+# Purpose:
+# - Put the in-process model/tokenizer pair into V65 context, because the latest
+#   tests show transport is not the root cause.
+# - Preserve existing code and use generic component keys only.
+# ============================================================================
+APP_LOCAL_TEXT_COMPONENT_CONTEXT_20260603 = "APP_LOCAL_TEXT_COMPONENT_CONTEXT_20260603"
+
+try:
+    _APP_LTC_PREV_V65_RUN = globals().get('_app_v65_run_closed_loop_route')
+except Exception:
+    _APP_LTC_PREV_V65_RUN = None
+try:
+    _APP_LTC_PREV_LEAPV8_RUN = globals().get('_leapv8_run')
+except Exception:
+    _APP_LTC_PREV_LEAPV8_RUN = None
+
+
+def _app_ltc_d(x):
+    return dict(x) if isinstance(x, dict) else {}
+
+
+def _app_ltc_context(ctx=None):
+    d = _app_ltc_d(ctx)
+    # Reuse the existing resolver if it is present. It is already generic and
+    # searches Streamlit state and engine objects for model/tokenizer pairs.
+    try:
+        resolver = globals().get('_app_llmw15c_loaded_transformers_objects')
+        if callable(resolver):
+            model, tok, engine, diag = resolver()
+            d['app_local_text_component_context_diag'] = diag
+            if model is not None and tok is not None:
+                d.setdefault('model', model)
+                d.setdefault('tokenizer', tok)
+                d.setdefault('llm_model', model)
+                d.setdefault('llm_tokenizer', tok)
+                d.setdefault('transformers_model', model)
+                d.setdefault('transformers_tokenizer', tok)
+                if engine is not None:
+                    d.setdefault('engine', engine)
+                    d.setdefault('backend', engine)
+                    d.setdefault('causalos_engine', engine)
+                    d.setdefault('causal_os', engine)
+                    d.setdefault('osys', engine)
+    except Exception as exc:
+        d['app_local_text_component_context_exception'] = repr(exc)
+    # Keep runtime data as fallback context, not as primary proof.
+    try:
+        if callable(globals().get('_transformers_runtime_url')):
+            d.setdefault('runtime_url', _transformers_runtime_url())
+            d.setdefault('transformers_runtime_url', _transformers_runtime_url())
+    except Exception:
+        pass
+    try:
+        if 'st' in globals():
+            d.setdefault('runtime_model_path', st.session_state.get('transformers_runtime_model_path', st.session_state.get('selected_transformers_model_path', '')))
+            d.setdefault('runtime_quantization', st.session_state.get('transformers_runtime_quantization', st.session_state.get('selected_quantization', '')))
+    except Exception:
+        pass
+    d.setdefault('app_local_text_component_context_patch_id', APP_LOCAL_TEXT_COMPONENT_CONTEXT_20260603)
+    return d
+
+
+if callable(_APP_LTC_PREV_V65_RUN):
+    def _app_v65_run_closed_loop_route(prompt, seed=123, max_turns=None, operator_names=None, context=None, fallback_fn=None, **kwargs):
+        prior_context = context if isinstance(context, dict) else kwargs.pop('context', None)
+        kwargs.pop('extra', None)
+        ctx = _app_ltc_context(prior_context)
+        res = _APP_LTC_PREV_V65_RUN(
+            prompt=prompt,
+            seed=seed,
+            max_turns=max_turns,
+            operator_names=operator_names,
+            context=ctx,
+            fallback_fn=fallback_fn,
+            **kwargs,
+        )
+        if isinstance(res, dict):
+            res.setdefault('app_local_text_component_context_patch_id', APP_LOCAL_TEXT_COMPONENT_CONTEXT_20260603)
+            try:
+                res.setdefault('operation_controls', {})['app_local_text_context_injected'] = True
+                res.setdefault('operation_controls', {})['app_extra_kwarg_forwarded'] = False
+            except Exception:
+                pass
+        return res
+
+if callable(_APP_LTC_PREV_LEAPV8_RUN):
+    def _leapv8_run(cfg):
+        cfg = dict(cfg) if isinstance(cfg, dict) else {}
+        cfg['context'] = _app_ltc_context(cfg.get('context'))
+        cfg.pop('extra', None)
+        return _APP_LTC_PREV_LEAPV8_RUN(cfg)
+
+# ============================================================================
+# END ADD-ONLY PATCH: APP_LOCAL_TEXT_COMPONENT_CONTEXT_20260603
+# ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY PATCH: APP_REAL_TEXT_COMPONENT_BRIDGE_20260603
+# Purpose:
+# - Pass an executable in-process text component to leap_engine, not only raw
+#   model/tokenizer hints.
+# - Deep-scan app state generically for a model/tokenizer pair.
+# - Record compact-visible diagnostics before and after execution.
+# - No task, benchmark, or problem-name hardcoding.
+# ============================================================================
+APP_REAL_TEXT_COMPONENT_BRIDGE_20260603 = "APP_REAL_TEXT_COMPONENT_BRIDGE_20260603"
+
+try:
+    import inspect as _artc_inspect
+except Exception:
+    _artc_inspect = None
+
+_ARTC_LAST_RECORD = {"patch_id": APP_REAL_TEXT_COMPONENT_BRIDGE_20260603}
+
+
+def _artc_s(x, n=8000):
+    try:
+        s = "" if x is None else str(x)
+    except Exception:
+        s = repr(x)
+    return " ".join(s.replace("\r", "\n").split())[:max(0, int(n))]
+
+
+def _artc_d(x):
+    return dict(x) if isinstance(x, dict) else {}
+
+
+def _artc_is_model(x):
+    return bool(x is not None and callable(getattr(x, 'generate', None)))
+
+
+def _artc_is_tokenizer(x):
+    return bool(x is not None and (callable(x) or callable(getattr(x, 'encode', None))) and callable(getattr(x, 'decode', None)))
+
+
+def _artc_device(model):
+    try:
+        d = getattr(model, 'device', None)
+        if d is not None:
+            return str(d)
+    except Exception:
+        pass
+    try:
+        return str(next(model.parameters()).device)
+    except Exception:
+        return ""
+
+
+def _artc_to_device(enc, dev):
+    if not dev:
+        return enc
+    try:
+        if hasattr(enc, 'to'):
+            return enc.to(dev)
+    except Exception:
+        pass
+    if isinstance(enc, dict):
+        out = {}
+        for k, v in enc.items():
+            try:
+                out[k] = v.to(dev) if hasattr(v, 'to') else v
+            except Exception:
+                out[k] = v
+        return out
+    return enc
+
+
+def _artc_prompt(tok, text):
+    text = _artc_s(text, 12000)
+    try:
+        fn = getattr(tok, 'apply_chat_template', None)
+        if callable(fn):
+            return fn([{'role': 'user', 'content': text}], tokenize=False, add_generation_prompt=True)
+    except TypeError:
+        try:
+            return tok.apply_chat_template([{'role': 'user', 'content': text}], tokenize=False)
+        except Exception:
+            pass
+    except Exception:
+        pass
+    return text
+
+
+def _artc_local_generate(model, tok, prompt, max_new_tokens=192):
+    rec = {
+        'patch_id': APP_REAL_TEXT_COMPONENT_BRIDGE_20260603,
+        'path': 'local_pair',
+        'model_found': bool(_artc_is_model(model)),
+        'tokenizer_found': bool(_artc_is_tokenizer(tok)),
+        'device': _artc_device(model),
+        'generate_entered': False,
+        'generate_returned': False,
+        'generated_token_count': 0,
+        'decoded_text_len': 0,
+        'text_after_strip_len': 0,
+        'exception_type': '',
+        'exception_message': '',
+    }
+    if not rec['model_found'] or not rec['tokenizer_found']:
+        rec['exception_type'] = 'component_missing'
+        rec['exception_message'] = 'model_or_tokenizer_missing'
+        return '', rec
+    try:
+        import torch
+        prompt_text = _artc_prompt(tok, prompt)
+        try:
+            enc = tok(prompt_text, return_tensors='pt') if callable(tok) else tok.encode(prompt_text, return_tensors='pt')
+        except TypeError:
+            enc = tok(prompt_text)
+        dev = rec.get('device') or ''
+        enc = _artc_to_device(enc, dev)
+        try:
+            input_ids = enc.get('input_ids') if isinstance(enc, dict) else enc
+            input_len = int(input_ids.shape[-1]) if hasattr(input_ids, 'shape') else 0
+        except Exception:
+            input_len = 0
+        try:
+            model.eval()
+        except Exception:
+            pass
+        kwargs = {'max_new_tokens': max(1, min(1024, int(max_new_tokens))), 'do_sample': False}
+        pad_id = getattr(tok, 'pad_token_id', None)
+        eos_id = getattr(tok, 'eos_token_id', None)
+        if pad_id is None:
+            pad_id = eos_id
+        if pad_id is not None:
+            kwargs['pad_token_id'] = pad_id
+        if eos_id is not None:
+            kwargs['eos_token_id'] = eos_id
+        rec['generate_entered'] = True
+        with torch.no_grad():
+            out = model.generate(**enc, **kwargs) if isinstance(enc, dict) else model.generate(enc, **kwargs)
+        rec['generate_returned'] = True
+        try:
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+        except Exception:
+            pass
+        try:
+            seq = out[0]
+        except Exception:
+            seq = out
+        try:
+            total_len = int(seq.shape[-1]) if hasattr(seq, 'shape') else len(seq)
+            rec['generated_token_count'] = max(0, total_len - int(input_len))
+        except Exception:
+            pass
+        text = ''
+        try:
+            new_seq = seq[input_len:] if input_len else seq
+            text = tok.decode(new_seq, skip_special_tokens=True)
+        except Exception as exc:
+            rec['decode_new_exception'] = _artc_s(exc, 300)
+        text = _artc_s(text, 8000)
+        rec['decoded_text_len'] = len(text)
+        if not text:
+            try:
+                full = _artc_s(tok.decode(seq, skip_special_tokens=True), 8000)
+                rec['full_decoded_text_len'] = len(full)
+                if full and not full.startswith(_artc_s(prompt_text, min(len(full), 2000))):
+                    text = full
+                    rec['used_full_decode_fallback'] = True
+            except Exception as exc:
+                rec['decode_full_exception'] = _artc_s(exc, 300)
+        text = _artc_s(text, 8000)
+        rec['text_after_strip_len'] = len(text)
+        if not text:
+            rec['exception_type'] = 'empty_text'
+            rec['exception_message'] = 'generate_returned_but_decoded_text_empty'
+        return text, rec
+    except Exception as exc:
+        rec['exception_type'] = type(exc).__name__
+        rec['exception_message'] = _artc_s(exc, 1000)
+        return '', rec
+
+
+def _artc_scan_state():
+    """Generic bounded graph scan; avoids relying on specific task or benchmark names."""
+    diag = {
+        'patch_id': APP_REAL_TEXT_COMPONENT_BRIDGE_20260603,
+        'resolved': False,
+        'model_available_in_app': False,
+        'tokenizer_available_in_app': False,
+        'model_source': '',
+        'tokenizer_source': '',
+        'device': '',
+        'visited_count': 0,
+    }
+    roots = []
+    try:
+        ss = getattr(globals().get('st'), 'session_state', None)
+        if ss is not None:
+            roots.append(('st.session_state', ss))
+    except Exception:
+        pass
+    # A few generic global containers/functions are included without task naming.
+    for name, obj in list(globals().items()):
+        if name.startswith('_'):
+            continue
+        if any(t in name.lower() for t in ('engine', 'backend', 'model', 'tokenizer', 'runtime', 'llm')):
+            roots.append(('global.' + name, obj))
+    model = None; tok = None; seen = set(); queue = list(roots)
+    while queue and diag['visited_count'] < 240:
+        src, obj = queue.pop(0)
+        try:
+            oid = id(obj)
+            if oid in seen:
+                continue
+            seen.add(oid)
+        except Exception:
+            pass
+        diag['visited_count'] += 1
+        if model is None and _artc_is_model(obj):
+            model = obj; diag['model_source'] = src
+        if tok is None and _artc_is_tokenizer(obj):
+            tok = obj; diag['tokenizer_source'] = src
+        if model is not None and tok is not None:
+            break
+        # Dict-like expansion.
+        try:
+            if isinstance(obj, dict) or hasattr(obj, 'items'):
+                for k, v in list(obj.items())[:80]:
+                    ks = _artc_s(k, 80).lower()
+                    if any(t in ks for t in ('model', 'token', 'engine', 'backend', 'runtime', 'llm')) or _artc_is_model(v) or _artc_is_tokenizer(v):
+                        queue.append((src + '.' + _artc_s(k, 80), v))
+        except Exception:
+            pass
+        # Attribute expansion: prefer generic object attributes, bounded.
+        try:
+            names = []
+            for n in dir(obj)[:300]:
+                nl = n.lower()
+                if any(t in nl for t in ('model', 'token', 'engine', 'backend', 'runtime', 'llm')):
+                    names.append(n)
+            for n in names[:80]:
+                try:
+                    v = getattr(obj, n)
+                    queue.append((src + '.' + n, v))
+                except Exception:
+                    pass
+        except Exception:
+            pass
+    diag['model_available_in_app'] = model is not None
+    diag['tokenizer_available_in_app'] = tok is not None
+    diag['resolved'] = bool(model is not None and tok is not None)
+    diag['device'] = _artc_device(model)
+    return model, tok, diag
+
+
+class _AppRealTextComponent:
+    def __init__(self):
+        self.last_record = {'patch_id': APP_REAL_TEXT_COMPONENT_BRIDGE_20260603, 'created': True}
+    def generate_text(self, prompt):
+        global _ARTC_LAST_RECORD
+        model, tok, diag = _artc_scan_state()
+        text, rec = _artc_local_generate(model, tok, prompt)
+        rec['scan_diag'] = diag
+        rec['component_class'] = '_AppRealTextComponent'
+        self.last_record = rec
+        _ARTC_LAST_RECORD = rec
+        return text
+    def run(self, prompt):
+        return self.generate_text(prompt)
+    def invoke(self, prompt):
+        return self.generate_text(prompt)
+    def complete(self, prompt):
+        return self.generate_text(prompt)
+
+
+def _artc_context(ctx=None):
+    d = _artc_d(ctx)
+    model, tok, diag = _artc_scan_state()
+    d['app_real_text_component_scan_diag'] = diag
+    if model is not None and tok is not None:
+        d.setdefault('model', model)
+        d.setdefault('tokenizer', tok)
+        d.setdefault('llm_model', model)
+        d.setdefault('llm_tokenizer', tok)
+        d.setdefault('transformers_model', model)
+        d.setdefault('transformers_tokenizer', tok)
+    # Always pass executable component as well; leap_engine can call it even if
+    # raw model/tokenizer are not serializable or are overwritten by older wrappers.
+    comp = _AppRealTextComponent()
+    d['direct'] = comp
+    d['auxiliary_direct'] = comp
+    d['runtime_direct'] = comp
+    d['app_real_text_component_context_patch_id'] = APP_REAL_TEXT_COMPONENT_BRIDGE_20260603
+    return d
+
+try:
+    _ARTC_PREV_APP_V65_RUN = globals().get('_app_v65_run_closed_loop_route')
+except Exception:
+    _ARTC_PREV_APP_V65_RUN = None
+
+if callable(_ARTC_PREV_APP_V65_RUN):
+    def _app_v65_run_closed_loop_route(prompt, seed=123, max_turns=None, operator_names=None, context=None, fallback_fn=None, **kwargs):
+        kwargs.pop('extra', None)
+        ctx = _artc_context(context if isinstance(context, dict) else kwargs.pop('context', None))
+        res = _ARTC_PREV_APP_V65_RUN(prompt=prompt, seed=seed, max_turns=max_turns, operator_names=operator_names, context=ctx, fallback_fn=fallback_fn, **kwargs)
+        if isinstance(res, dict):
+            res['app_real_text_component_context_patch_id'] = APP_REAL_TEXT_COMPONENT_BRIDGE_20260603
+            res['app_real_text_component_scan_diag'] = _artc_d(ctx.get('app_real_text_component_scan_diag'))
+            try:
+                res.setdefault('operation_controls', {})['app_real_text_component_context_injected'] = True
+                res.setdefault('operation_controls', {})['app_real_text_component_resolved'] = bool(_artc_d(ctx.get('app_real_text_component_scan_diag')).get('resolved'))
+                res.setdefault('operation_controls', {})['app_extra_kwarg_forwarded'] = False
+            except Exception:
+                pass
+        return res
+
+try:
+    _ARTC_PREV_LEAPV8_RUN = globals().get('_leapv8_run')
+except Exception:
+    _ARTC_PREV_LEAPV8_RUN = None
+
+if callable(_ARTC_PREV_LEAPV8_RUN):
+    def _leapv8_run(cfg):
+        cfg = dict(cfg) if isinstance(cfg, dict) else {}
+        cfg['context'] = _artc_context(cfg.get('context'))
+        cfg.pop('extra', None)
+        return _ARTC_PREV_LEAPV8_RUN(cfg)
+
+# Compact payload overlay: make diagnostics visible even when legacy compact
+# exporters whitelist fields.
+try:
+    _ARTC_PREV_COMPACT_BUILDER = globals().get('_app47b_build_compact_feedback_payload')
+except Exception:
+    _ARTC_PREV_COMPACT_BUILDER = None
+
+if callable(_ARTC_PREV_COMPACT_BUILDER):
+    def _app47b_build_compact_feedback_payload(debug_payload):
+        compact = _ARTC_PREV_COMPACT_BUILDER(debug_payload)
+        try:
+            root = _artc_d(_artc_d(debug_payload).get('result') or debug_payload)
+            if isinstance(compact, dict):
+                for k in ('local_text_generation_bridge', 'local_text_generation_bridge_patch_id', 'app_real_text_component_scan_diag', 'app_real_text_component_context_patch_id'):
+                    if k in root:
+                        compact[k] = root.get(k)
+                compact.setdefault('app_real_text_component_compact_overlay', {'patch_id': APP_REAL_TEXT_COMPONENT_BRIDGE_20260603, 'installed': True})
+        except Exception as exc:
+            if isinstance(compact, dict):
+                compact['app_real_text_component_compact_overlay_error'] = repr(exc)
+        return compact
+
+# ============================================================================
+# END ADD-ONLY PATCH: APP_REAL_TEXT_COMPONENT_BRIDGE_20260603
+# ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY PATCH: APP_AUX_TEXT_PATH_COMPACT_FINAL_20260603
+# Purpose:
+# - Make unified auxiliary path diagnostics visible in compact exports.
+# - No task/benchmark/problem-name hardcoding.
+# ============================================================================
+APP_AUX_TEXT_PATH_COMPACT_FINAL_20260603 = "APP_AUX_TEXT_PATH_COMPACT_FINAL_20260603"
+
+try:
+    _APP_UATPF_PREV_COMPACT = globals().get('_app47b_build_compact_feedback_payload')
+except Exception:
+    _APP_UATPF_PREV_COMPACT = None
+
+def _app_uatpf_d(x):
+    return dict(x) if isinstance(x, dict) else {}
+
+if callable(_APP_UATPF_PREV_COMPACT):
+    def _app47b_build_compact_feedback_payload(debug_payload):
+        compact = _APP_UATPF_PREV_COMPACT(debug_payload)
+        try:
+            root = _app_uatpf_d(_app_uatpf_d(debug_payload).get('result') or debug_payload)
+            if isinstance(compact, dict):
+                for k in ('unified_aux_text_path','unified_aux_text_path_patch_id','assist_record','quality_assist_used','quality_assist_reason_code','real_text_component_bridge','local_text_generation_bridge'):
+                    if k in root:
+                        compact[k]=root.get(k)
+                compact['app_aux_text_path_compact_final']={'patch_id':APP_AUX_TEXT_PATH_COMPACT_FINAL_20260603,'installed':True,'root_keys_seen':sorted([k for k in root.keys() if 'aux' in k or 'assist' in k or 'text_generation' in k])[:40]}
+        except Exception as exc:
+            if isinstance(compact, dict): compact['app_aux_text_path_compact_final_error']=repr(exc)
+        return compact
+
+# ============================================================================
+# END ADD-ONLY PATCH: APP_AUX_TEXT_PATH_COMPACT_FINAL_20260603
+# ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY PATCH: APP_FREE_TEXT_AUX_REVIEW_COMPACT_20260603
+# Purpose:
+# - Surface free-text auxiliary review diagnostics in compact logs.
+# - No schema compliance is required from LLM output.
+# ============================================================================
+APP_FREE_TEXT_AUX_REVIEW_COMPACT_20260603 = "APP_FREE_TEXT_AUX_REVIEW_COMPACT_20260603"
+
+try:
+    _APP_UFT_PREV_COMPACT = globals().get('_app47b_build_compact_feedback_payload')
+except Exception:
+    _APP_UFT_PREV_COMPACT = None
+
+def _app_uft_d(x):
+    return dict(x) if isinstance(x, dict) else {}
+
+if callable(_APP_UFT_PREV_COMPACT):
+    def _app47b_build_compact_feedback_payload(debug_payload):
+        compact = _APP_UFT_PREV_COMPACT(debug_payload)
+        try:
+            root = _app_uft_d(_app_uft_d(debug_payload).get('result') or debug_payload)
+            if isinstance(compact, dict):
+                for k in ('free_text_aux_review','free_text_aux_review_patch_id','assist_record','quality_assist_used','quality_assist_reason_code'):
+                    if k in root:
+                        compact[k] = root.get(k)
+                compact['app_free_text_aux_review_compact'] = {
+                    'patch_id': APP_FREE_TEXT_AUX_REVIEW_COMPACT_20260603,
+                    'installed': True,
+                    'policy': 'llm_free_text_untrusted_deterministic_normalization_no_schema_required'
+                }
+        except Exception as exc:
+            if isinstance(compact, dict):
+                compact['app_free_text_aux_review_compact_error'] = repr(exc)
+        return compact
+
+# ============================================================================
+# END ADD-ONLY PATCH: APP_FREE_TEXT_AUX_REVIEW_COMPACT_20260603
+# ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY PATCH: APP_LLM_CONNECTION_FINAL_GUARD_20260604
+# Purpose: final guard for any later _leapv8_run route; primary fix remains call-site injection.
+# ============================================================================
+APP_LLM_CONNECTION_FINAL_GUARD_20260604 = "APP_LLM_CONNECTION_FINAL_GUARD_20260604"
+try:
+    _APP_LLMC_FINAL_PREV_LEAPV8_RUN = _leapv8_run
+except Exception:
+    _APP_LLMC_FINAL_PREV_LEAPV8_RUN = None
+
+def _leapv8_run(*args, **kwargs):
+    cfg = args[0] if args and isinstance(args[0], dict) else (kwargs.get('cfg') if isinstance(kwargs.get('cfg'), dict) else {})
+    try:
+        _app_llmc_prepare_pair(cfg)
+        if isinstance(cfg, dict):
+            cfg['context'] = _app_llmc_context(cfg, cfg.get('context'))
+    except Exception:
+        pass
+    if args and isinstance(args[0], dict):
+        args = (cfg,) + tuple(args[1:])
+    elif 'cfg' in kwargs and isinstance(kwargs.get('cfg'), dict):
+        kwargs = dict(kwargs); kwargs['cfg'] = cfg
+    result = _APP_LLMC_FINAL_PREV_LEAPV8_RUN(*args, **kwargs) if callable(_APP_LLMC_FINAL_PREV_LEAPV8_RUN) else {'status':'failed','reason':'previous_leapv8_run_missing_final_guard'}
+    return _app_llmc_attach_result_diag(result)
+# ============================================================================
+# END ADD-ONLY PATCH: APP_LLM_CONNECTION_FINAL_GUARD_20260604
+# ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY PATCH: APP_PREFLIGHT_LOG_BUTTON_R9_20260606
+# Purpose:
+# - Preflight button now records feedback-ready logs.
+# - Results include evidence_summary, next_actions, and downloadable JSON.
+# ============================================================================
+APP_PREFLIGHT_LOG_BUTTON_R9_20260606="APP_PREFLIGHT_LOG_BUTTON_R9_20260606"
+def _app_r9_preflight_call(runtime_url, timeout_s=120):
+    import json as _json, urllib.request as _urlreq
+    base=str(runtime_url or 'http://localhost:8011').rstrip('/')
+    payload={'prompt':'Return one short sentence for preflight.','max_new_tokens':32,'max_time':30,'theta':0.03,'latent':True}
+    req=_urlreq.Request(base+'/runtime/r9/validate',data=_json.dumps(payload,ensure_ascii=False).encode('utf-8'),headers={'Content-Type':'application/json'},method='POST')
+    with _urlreq.urlopen(req,timeout=timeout_s) as r: return _json.loads(r.read().decode('utf-8'))
+try:
+    import streamlit as _st_r9, json as _json_r9
+    _st_r9.sidebar.markdown('### 発明エンジン事前チェック R9')
+    _url=_st_r9.sidebar.text_input('Runtime URL for R9 preflight', value=str(_st_r9.session_state.get('leap_r9_runtime_url','http://localhost:8011')), key='leap_r9_runtime_url')
+    if _st_r9.sidebar.button('潜在空間演算 + LLM接続を試験しログ生成', key='run_invention_preflight_r9'):
+        try:
+            _res=_app_r9_preflight_call(_url)
+        except Exception as _e:
+            _res={'ok':False,'schema_version':'preflight.feedback.v1','component':'app','stage':'preflight_request','reason':'preflight_request_error','error':repr(_e),'next_actions':['runtime URL/port/container を確認する'],'feedback_ready':True}
+        _st_r9.session_state['invention_preflight_r9_result']=_res
+        _st_r9.session_state['invention_preflight_r9_ok']=bool(_res.get('ok') and _res.get('llm_ok') and _res.get('latent_ok'))
+    _res=_st_r9.session_state.get('invention_preflight_r9_result')
+    if _st_r9.session_state.get('invention_preflight_r9_ok'):
+        _st_r9.sidebar.success('R9事前チェック成功: 本動作可能')
+    else:
+        _st_r9.sidebar.warning('R9事前チェック未通過: 本動作前に実行してください')
+    if _res:
+        with _st_r9.sidebar.expander('R9 フィードバックログ'):
+            _st_r9.json(_res)
+            _st_r9.download_button('R9ログJSONを保存', data=_json_r9.dumps(_res,ensure_ascii=False,indent=2), file_name='r9_preflight_feedback_log.json', mime='application/json')
+except Exception:
+    pass
+# ============================================================================
+# END ADD-ONLY PATCH: APP_PREFLIGHT_LOG_BUTTON_R9_20260606
+# ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY PATCH: APP_DECISION_LOG_BUTTON_R10_20260607
+# Purpose:
+# - Preflight button records runtime_url, endpoint, prompt, evidence, and next actions.
+# - Stores downloadable JSON for feedback loops.
+# ============================================================================
+APP_DECISION_LOG_BUTTON_R10_20260607="APP_DECISION_LOG_BUTTON_R10_20260607"
+def _app_r10_preflight_call(runtime_url, timeout_s=120):
+    import json as _json, urllib.request as _urlreq
+    base=str(runtime_url or 'http://transformers-runtime:8011').rstrip('/')
+    prompt='Return one short sentence for preflight.'
+    payload={'prompt':prompt,'max_new_tokens':32,'max_time':30,'theta':0.03,'latent':True,'caller_runtime_url':base,'caller_component':'app','caller_request_endpoint':'/runtime/r10/validate'}
+    req=_urlreq.Request(base+'/runtime/r10/validate',data=_json.dumps(payload,ensure_ascii=False).encode('utf-8'),headers={'Content-Type':'application/json'},method='POST')
+    with _urlreq.urlopen(req,timeout=timeout_s) as r: return _json.loads(r.read().decode('utf-8'))
+try:
+    import streamlit as _st_r10, json as _json_r10
+    _st_r10.sidebar.markdown('### 発明エンジン事前チェック R10')
+    _url=_st_r10.sidebar.text_input('Runtime URL for R10 preflight', value=str(_st_r10.session_state.get('leap_r10_runtime_url','http://transformers-runtime:8011')), key='leap_r10_runtime_url')
+    if _st_r10.sidebar.button('潜在空間演算 + LLM接続を試験し判断ログ生成', key='run_invention_preflight_r10'):
+        try: _res=_app_r10_preflight_call(_url)
+        except Exception as _e:
+            _res={'ok':False,'schema_version':'preflight.feedback.v2','component':'app','stage':'preflight_request','caller_runtime_url':_url,'request_endpoint':'/runtime/r10/validate','input_prompt':'Return one short sentence for preflight.','reason':'preflight_request_error','error':repr(_e),'next_actions':['Runtime URL、Docker service name、port、/runtime/r10/validate を確認する'],'feedback_ready':True}
+        _st_r10.session_state['invention_preflight_r10_result']=_res
+        _st_r10.session_state['invention_preflight_r10_ok']=bool(_res.get('ok') and _res.get('llm_ok') and _res.get('latent_ok'))
+    _res=_st_r10.session_state.get('invention_preflight_r10_result')
+    if _st_r10.session_state.get('invention_preflight_r10_ok'): _st_r10.sidebar.success('R10事前チェック成功: 本動作可能')
+    else: _st_r10.sidebar.warning('R10事前チェック未通過: 本動作前に実行してください')
+    if _res:
+        with _st_r10.sidebar.expander('R10 判断ログ'):
+            _st_r10.json(_res)
+            _st_r10.download_button('R10判断ログJSONを保存', data=_json_r10.dumps(_res,ensure_ascii=False,indent=2), file_name='r10_preflight_decision_log.json', mime='application/json')
+except Exception: pass
+# ============================================================================
+# END ADD-ONLY PATCH: APP_DECISION_LOG_BUTTON_R10_20260607
+# ============================================================================
+
+
+
+# R12b APP ADD-ONLY
+try:
+    import streamlit as _r12b_st
+except ImportError:
+    _r12b_st = None
+try:
+    import requests as _r12b_rq
+except ImportError:
+    _r12b_rq = None
+import json as _r12b_jn
+import os as _r12b_os
+
+def _r12b_url():
+    if _r12b_st and hasattr(_r12b_st, 'session_state'):
+        for k in ('runtime_url', 'transformers_runtime_url'):
+            v = _r12b_st.session_state.get(k)
+            if v:
+                return str(v)
+    return _r12b_os.environ.get('TRANSFORMERS_RUNTIME_URL', 'http://transformers-runtime:8011')
+
+def r12b_precheck_panel():
+    if not _r12b_st or not _r12b_rq:
+        return
+    _r12b_st.sidebar.markdown('---')
+    _r12b_st.sidebar.subheader('R12b Pre-Check')
+    if _r12b_st.sidebar.button('R12b Test', key='r12b_pchk'):
+        url = _r12b_url()
+        try:
+            j = _r12b_rq.post(url + '/runtime/r12b/validate', json={}, timeout=30).json()
+            st = j.get('status', '?')
+            if st == 'ok':
+                _r12b_st.sidebar.success('OK')
+            elif st == 'degraded':
+                _r12b_st.sidebar.warning('degraded')
+            else:
+                _r12b_st.sidebar.error(st)
+            _r12b_st.sidebar.json(j)
+        except Exception as e:
+            _r12b_st.sidebar.error(str(e))
+
+def r12b_invention_panel():
+    if not _r12b_st:
+        return
+    _r12b_st.markdown('### R12b Invention Test')
+    q = _r12b_st.text_area('Problem', key='r12b_q', height=80)
+    nc = _r12b_st.slider('Candidates', 1, 16, 5, key='r12b_nc')
+    if _r12b_st.button('Run', key='r12b_inv'):
+        if not q or len(q.strip()) < 3:
+            _r12b_st.warning('Enter question')
+            return
+        ctx = {'runtime_url': _r12b_url()}
+        with _r12b_st.spinner('Running...'):
+            try:
+                fn = globals().get('run_invention_closed_loop_r12_guarded')
+                if fn is None:
+                    try:
+                        from leap_engine import run_invention_closed_loop_r12_guarded as _fn
+                        fn = _fn
+                    except ImportError:
+                        pass
+                if fn is None:
+                    _r12b_st.error('No R12b fn')
+                    return
+                res = fn(context=ctx, query=q, max_candidates=nc)
+                st = res.get('status', '?')
+                if st == 'ok':
+                    _r12b_st.success('Done')
+                elif st == 'blocked':
+                    _r12b_st.error('Blocked')
+                else:
+                    _r12b_st.warning(st)
+                for c in res.get('candidates', []):
+                    with _r12b_st.expander('C' + str(c.get('index', '?'))):
+                        m = c.get('mechanism', '')
+                        if m:
+                            _r12b_st.text(m[:800])
+                        _r12b_st.warning('Experiment required.')
+                with _r12b_st.expander('Log'):
+                    for e in res.get('phase_log', []):
+                        _r12b_st.text(str(e))
+                _r12b_st.download_button(
+                    'DL',
+                    _r12b_jn.dumps(res, indent=2, default=str, ensure_ascii=False),
+                    'r12b_result.json',
+                    'application/json',
+                    key='r12b_dl')
+            except Exception as e:
+                _r12b_st.error(str(e))
+
+# R12b END APP
+_R12B_APP_PATCH_LOADED = True
+
+
+# R12c Quick Test / Full Run ADD-ONLY
+# Quick Test: pipeline verify (1 cand, no growth, 32 tok)
+# Full Run: real invention with user params
+
+def r12c_invention_panel():
+    if not _r12b_st: return
+    _r12b_st.markdown('### R12c Invention')
+    q=_r12b_st.text_area('Problem',key='r12c_q',height=80)
+    nc=_r12b_st.slider('Candidates',1,16,5,key='r12c_nc')
+    c1,c2=_r12b_st.columns(2)
+    with c1: qt=_r12b_st.button('Quick Test',key='r12c_qt')
+    with c2: fr=_r12b_st.button('Full Run',key='r12c_fr')
+    if not qt and not fr: return
+    if not q or len(q.strip())<3: _r12b_st.warning('Enter question'); return
+    iq=qt; ctx={'runtime_url':_r12b_url()}; ml='Quick Test' if iq else 'Full Run'
+    _r12b_st.info('Mode: '+ml)
+    with _r12b_st.spinner(ml+'...'):
+        try:
+            fn=globals().get('run_invention_closed_loop_r12_guarded')
+            if fn is None:
+                try:
+                    from leap_engine import run_invention_closed_loop_r12_guarded as _fn; fn=_fn
+                except ImportError: pass
+            if fn is None: _r12b_st.error('No fn'); return
+            kw={'context':ctx,'query':q,'quick_test':iq}
+            if not iq: kw['max_candidates']=nc
+            res=fn(**kw); st=res.get('status','?'); el=res.get('diagnostics',{}).get('elapsed_sec','?')
+            if st=='ok': _r12b_st.success(ml+' OK ('+str(el)+'s)')
+            elif st=='blocked': _r12b_st.error('Blocked')
+            else: _r12b_st.warning(st)
+            for c in res.get('candidates',[]):
+                with _r12b_st.expander('C'+str(c.get('index','?'))):
+                    m=c.get('mechanism','')
+                    if m: _r12b_st.text(m[:800])
+                    _r12b_st.warning('Experiment required.')
+            with _r12b_st.expander('Log'):
+                for e in res.get('phase_log',[]): _r12b_st.text(str(e))
+            _r12b_st.download_button('DL',_r12b_jn.dumps(res,indent=2,default=str,ensure_ascii=False),'r12c_result.json','application/json',key='r12c_dl')
+        except Exception as e: _r12b_st.error(str(e))
+
+# R12c END APP
+_R12C_APP_PATCH_LOADED=True
+
+
+## ============================================================================
+## ADD-ONLY PATCH: APP_R12BC_UI_CONNECT_20260613
+## generated_at_jst: 20260613_101828
+## source_file_before_bytes: 1133770
+## purpose:
+##   - Connect R12b/R12c panel functions to the existing Streamlit UI drawing flow.
+##   - r12b_precheck_panel() → sidebar (pre-invention validation)
+##   - r12b_invention_panel() → main area (R12b invention test)
+##   - r12c_invention_panel() → main area (R12c Quick Test / Full Run)
+##   - S-matrix handling, complex notation, group-node graph representation,
+##     attention-mask-like constraint structure, and causal reasoning are
+##     preserved through the existing R12b/R12c pipeline.
+##   - LLM is UI/helper; core is CausalOS + USR + latent-space operations.
+## policy:
+##   - ADD-ONLY: no existing code is deleted or modified.
+##   - No benchmark/task-name hardcoding. Panel rendering is generic.
+##   - Syntax verified before save.
+## major_symbols_added:
+##   - _app_r12bc_connect_ui (orchestrator function)
+##   - Call sites for r12b_precheck_panel, r12b_invention_panel, r12c_invention_panel
+## ============================================================================
+
+APP_R12BC_UI_CONNECT_PATCH_ID = 'APP_R12BC_UI_CONNECT_20260613'
+
+def _app_r12bc_connect_ui():
+    """
+    ADD-ONLY UI connection orchestrator for R12b/R12c panels.
+    
+    Connects the following defined-but-uncalled panel functions to the
+    Streamlit drawing flow:
+      - r12b_precheck_panel()  → sidebar pre-invention validation
+      - r12b_invention_panel() → main area invention test (R12b route)
+      - r12c_invention_panel() → main area invention test (R12c Quick/Full)
+    
+    Design notes (per project policy):
+      - S-matrix store, complex-weight edges, group-node graph representation,
+        attention-mask-like constraints are handled inside the R12b/R12c
+        pipeline (leap_engine / causal_engine / growth_engine).
+      - USR (equation-based causal/correlation aggregation) is a tool of
+        CausalOS; LLM output is treated as untrusted text.
+      - Latent-space operations drive invention; LLM reasoning is supplementary.
+      - No benchmark/task-name/domain-specific vocabulary in function names,
+        keys, or intermediate data names.
+      - Existing code is never deleted; unused paths are commented or guarded.
+    """
+    try:
+        # --- Sidebar: R12b pre-check (latent-space + LLM connection validation) ---
+        if callable(globals().get('r12b_precheck_panel')):
+            try:
+                r12b_precheck_panel()
+            except Exception as _r12b_pchk_e:
+                try:
+                    import streamlit as _r12bc_st
+                    _r12bc_st.sidebar.warning(
+                        'R12b precheck panel render skipped: '
+                        + str(_r12b_pchk_e)[:300]
+                    )
+                except Exception:
+                    pass
+
+        # --- Main area: R12c invention panel (Quick Test / Full Run) ---
+        # R12c is rendered first because it includes Quick Test mode which
+        # is the recommended first step before a full invention run.
+        if callable(globals().get('r12c_invention_panel')):
+            try:
+                r12c_invention_panel()
+            except Exception as _r12c_inv_e:
+                try:
+                    import streamlit as _r12bc_st
+                    _r12bc_st.warning(
+                        'R12c invention panel render skipped: '
+                        + str(_r12c_inv_e)[:300]
+                    )
+                except Exception:
+                    pass
+
+        # --- Main area: R12b invention panel (legacy route, preserved) ---
+        # Wrapped in expander to avoid visual collision with R12c panel.
+        if callable(globals().get('r12b_invention_panel')):
+            try:
+                import streamlit as _r12bc_st
+                with _r12bc_st.expander('R12b Invention Test (legacy route, preserved)', expanded=False):
+                    r12b_invention_panel()
+            except Exception as _r12b_inv_e:
+                try:
+                    import streamlit as _r12bc_st
+                    _r12bc_st.warning(
+                        'R12b invention panel render skipped: '
+                        + str(_r12b_inv_e)[:300]
+                    )
+                except Exception:
+                    pass
+
+    except Exception as _r12bc_connect_e:
+        try:
+            import streamlit as _r12bc_st
+            _r12bc_st.warning(
+                'R12b/R12c UI connection failed: '
+                + str(_r12bc_connect_e)[:500]
+            )
+        except Exception:
+            pass
+
+
+# --- Execute the UI connection ---
+try:
+    _app_r12bc_connect_ui()
+except Exception as _r12bc_final_e:
+    try:
+        import streamlit as _r12bc_st
+        _r12bc_st.error(
+            'R12b/R12c UI connection orchestrator failed: '
+            + str(_r12bc_final_e)[:500]
+        )
+    except Exception:
+        pass
+
+try:
+    APP_R12BC_UI_CONNECT_EXECUTION_PROOF = {
+        'patch_id': APP_R12BC_UI_CONNECT_PATCH_ID,
+        'connected_panels': [
+            'r12b_precheck_panel (sidebar)',
+            'r12b_invention_panel (main, expander)',
+            'r12c_invention_panel (main)',
+        ],
+        'policy': 'ADD-ONLY / no benchmark hardcoding / S-matrix + USR + latent-space driven',
+        'existing_code_deleted': False,
+    }
+except Exception:
+    pass
+
+## ============================================================================
+## END ADD-ONLY PATCH: APP_R12BC_UI_CONNECT_20260613
+## ============================================================================
+
+
+## ============================================================================
+## ADD-ONLY PATCH: APP_R12C_PRECHECK_FINAL_20260614
+## purpose:
+##   (1) Redefine r12b_precheck_panel with correct endpoint /runtime/r12/validate
+##   (2) Override _app_r12bc_connect_ui to PreCheck-only (sidebar)
+##   (3) Suppress R12c/R12b invention panels (handoff Section 6C design mistake)
+##   (4) Suppress empty candidate selectors at startup
+##   V15C/V14 (_leapv8_render_main_ui) is THE correct invention test UI.
+## ============================================================================
+
+APP_R12C_PRECHECK_FINAL_PATCH_ID = 'APP_R12C_PRECHECK_FINAL_20260614'
+
+# --- (1) r12b_precheck_panel: correct endpoint, R10 fallback ---
+
+def r12b_precheck_panel():
+    """Sidebar Pre-Check: verify latent-space + LLM connection.
+    Calls GET /runtime/r12/validate. Falls back to POST /runtime/r10/validate.
+    """
+    if not _r12b_st or not _r12b_rq:
+        return
+    _r12b_st.sidebar.markdown('---')
+    _r12b_st.sidebar.subheader('Leap Engine 事前チェック')
+    _r12b_st.sidebar.caption('潜在空間演算 + LLM接続を検証します。')
+    url_key = 'leap_precheck_url_final'
+    _r12b_st.session_state.setdefault(url_key, _r12b_url())
+    precheck_url = _r12b_st.sidebar.text_input(
+        'Runtime URL', value=str(_r12b_st.session_state.get(url_key, _r12b_url())),
+        key=url_key,
+    )
+    if _r12b_st.sidebar.button('Pre-Check 実行', key='r12b_pchk_final_v2'):
+        base = str(precheck_url or _r12b_url()).rstrip('/')
+        result = None
+        used_endpoint = ''
+        # Try R12 GET first (existing endpoint), then R10 POST fallback
+        for method, ep in [
+            ('GET',  '/runtime/r12/validate'),
+            ('POST', '/runtime/r10/validate'),
+        ]:
+            try:
+                if method == 'GET':
+                    r = _r12b_rq.get(base + ep, timeout=120)
+                else:
+                    r = _r12b_rq.post(base + ep, json={
+                        'prompt': 'Return one short sentence for preflight.',
+                        'max_new_tokens': 32, 'max_time': 30, 'theta': 0.03,
+                    }, timeout=120)
+                if r.status_code < 500:
+                    result = r.json()
+                    used_endpoint = f'{method} {ep}'
+                    break
+            except Exception:
+                continue
+        if result is None:
+            _r12b_st.sidebar.error('Pre-Check失敗: Runtimeに接続できません。URLを確認してください。')
+            return
+        _r12b_st.session_state['invention_precheck_result'] = result
+        _r12b_st.session_state['invention_precheck_endpoint'] = used_endpoint
+        status = result.get('status', '?')
+        # Display
+        text_probe = result.get('text_probe', {})
+        latent_probe = result.get('latent_probe', {})
+        text_ms = text_probe.get('elapsed_ms', 0) if isinstance(text_probe, dict) else 0
+        latent_ms = latent_probe.get('elapsed_ms', 0) if isinstance(latent_probe, dict) else 0
+        if status == 'ok':
+            _r12b_st.sidebar.success(f'Pre-Check 成功 ({used_endpoint})')
+        elif 'degraded' in str(status):
+            _r12b_st.sidebar.warning(f'Pre-Check 部分成功: {status}')
+        else:
+            _r12b_st.sidebar.error(f'Pre-Check 失敗: {status}')
+        # Thinking control verdict
+        if latent_ms:
+            if int(latent_ms) < 5000:
+                _r12b_st.sidebar.success(f'Thinking制御有効: latent {latent_ms}ms')
+            else:
+                _r12b_st.sidebar.warning(f'Thinking制御未適用の可能性: latent {latent_ms}ms (期待: 2-4s)')
+        if text_ms:
+            _r12b_st.sidebar.info(f'テキスト生成: {text_ms}ms (thinking ON, 品質維持)')
+        with _r12b_st.sidebar.expander('Pre-Check ログ', expanded=False):
+            _r12b_st.json(result)
+        try:
+            _r12b_st.sidebar.download_button(
+                'Pre-Checkログを保存',
+                data=_r12b_jn.dumps(result, ensure_ascii=False, indent=2),
+                file_name='precheck_log.json', mime='application/json',
+                key='precheck_dl_final_v2',
+            )
+        except Exception:
+            pass
+
+
+# --- (2) Override _app_r12bc_connect_ui: PreCheck ONLY ---
+
+def _app_r12bc_connect_ui():
+    """FINAL: PreCheck only in sidebar. R12b/R12c invention panels suppressed."""
+    try:
+        r12b_precheck_panel()
+    except Exception as _e:
+        try:
+            _r12b_st.sidebar.warning('Pre-Check render skipped: ' + str(_e)[:300])
+        except Exception:
+            pass
+
+# Execute
+try:
+    _app_r12bc_connect_ui()
+except Exception:
+    pass
+
+
+# --- (3) Suppress R12c/R12b invention panels ---
+
+def r12c_invention_panel():
+    """SUPPRESSED per handoff Section 6C (lost V15C/V14 settings)."""
+    pass
+
+def r12b_invention_panel():
+    """SUPPRESSED per handoff Section 6B (legacy route)."""
+    pass
+
+
+# --- (4) Suppress empty candidate selectors ---
+
+def _ucs_render_selector():
+    return []
+
+def _ucs_render_selector_v2():
+    return []
+
+def _ucs_render_download():
+    pass
+
+
+try:
+    APP_R12C_PRECHECK_FINAL_EXECUTION_PROOF = {
+        'patch_id': APP_R12C_PRECHECK_FINAL_PATCH_ID,
+        'precheck_endpoint': 'GET /runtime/r12/validate (+ POST /runtime/r10/validate fallback)',
+        'invention_test_ui': 'V15C/V14 (_leapv8_render_main_ui) unchanged',
+        'suppressed': ['r12c_invention_panel', 'r12b_invention_panel', 'empty selectors'],
+    }
+except Exception:
+    pass
+
+## ============================================================================
+## END ADD-ONLY PATCH: APP_R12C_PRECHECK_FINAL_20260614
+## ============================================================================

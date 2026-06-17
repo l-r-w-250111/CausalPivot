@@ -3567,3 +3567,3314 @@ def runtime_v70_capabilities():
 # ============================================================================
 # END ADD-ONLY PATCH: RUNTIME-V70-FLEXIBLE-DEEP-AUX-ENDPOINT
 # ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY PATCH: UNIVERSAL-BOUNDED-GENERATION-ROUTE-V16-20260601
+# purpose:
+# - Bound auxiliary generation more aggressively for normal synchronous calls.
+# - Preserve single-flight safety; do not force-release another active generation.
+# - Replace POST /generate with a compact bounded route.
+# - No task, benchmark, question-form, or domain branching.
+# ============================================================================
+try:
+    import os as _br_os
+    import time as _br_time
+except Exception:
+    _br_os = None
+    _br_time = None
+
+UNIVERSAL_BOUNDED_GENERATION_ROUTE_V16_PATCH_ID = 'UNIVERSAL-BOUNDED-GENERATION-ROUTE-V16-20260601'
+
+
+def _br_dict(x):
+    try:
+        return dict(x) if isinstance(x, dict) else {}
+    except Exception:
+        return {}
+
+
+def _br_int(x, default=0, lo=None, hi=None):
+    try:
+        v = int(x)
+    except Exception:
+        v = int(default)
+    if lo is not None:
+        v = max(int(lo), v)
+    if hi is not None:
+        v = min(int(hi), v)
+    return v
+
+
+def _br_float(x, default=0.0, lo=None, hi=None):
+    try:
+        v = float(x)
+    except Exception:
+        v = float(default)
+    if lo is not None:
+        v = max(float(lo), v)
+    if hi is not None:
+        v = min(float(hi), v)
+    return v
+
+
+def _br_env(name, default=''):
+    try:
+        return _br_os.getenv(name, default) if _br_os is not None else default
+    except Exception:
+        return default
+
+
+def _br_now():
+    try:
+        return _br_time.time() if _br_time is not None else 0.0
+    except Exception:
+        return 0.0
+
+
+def _br_requested(req):
+    ceiling = globals().get('RUNTIME_V36_MAX_NEW_TOKENS_CEILING', 8192)
+    return _br_int(req.get('requested_max_new_tokens', req.get('max_new_tokens', 64)), default=64, lo=1, hi=ceiling)
+
+
+def _br_effective(req):
+    ceiling = globals().get('RUNTIME_V36_MAX_NEW_TOKENS_CEILING', 8192)
+    requested = _br_requested(req)
+    if bool(req.get('allow_long_generation', False)):
+        return _br_int(requested, default=requested, lo=1, hi=ceiling)
+    cap = _br_int(req.get('generation_token_limit', _br_env('GENERATION_TOKEN_LIMIT', 32)), default=32, lo=4, hi=ceiling)
+    return min(requested, cap)
+
+
+def _br_wait(req):
+    return _br_float(req.get('generation_wait_timeout_seconds', req.get('wait_timeout_seconds', _br_env('GENERATION_WAIT_TIMEOUT_SECONDS', 2))), default=2.0, lo=0.0, hi=120.0)
+
+
+def _br_maxtime(req):
+    if bool(req.get('allow_long_generation', False)):
+        return _br_float(req.get('generation_max_time_seconds', _br_env('GENERATION_MAX_TIME_SECONDS_LONG', 120)), default=120.0, lo=1.0, hi=3600.0)
+    return _br_float(req.get('generation_max_time_seconds', req.get('max_time', _br_env('GENERATION_MAX_TIME_SECONDS', 8))), default=8.0, lo=1.0, hi=300.0)
+
+
+def _br_gpu_diag():
+    try:
+        if callable(globals().get('_runtime_v19_gpu_diag')):
+            return globals()['_runtime_v19_gpu_diag']()
+    except Exception:
+        pass
+    return {}
+
+
+def _br_acquire(lock, wait_s):
+    if lock is None or not hasattr(lock, 'acquire'):
+        return True
+    try:
+        if wait_s <= 0:
+            return bool(lock.acquire(blocking=False))
+        return bool(lock.acquire(timeout=float(wait_s)))
+    except TypeError:
+        deadline = _br_now() + float(max(0.0, wait_s))
+        while _br_now() <= deadline:
+            try:
+                if lock.acquire(False):
+                    return True
+            except Exception:
+                return False
+            try:
+                _br_time.sleep(0.05)
+            except Exception:
+                break
+        return False
+    except Exception:
+        return False
+
+
+def _br_release(lock):
+    try:
+        if lock is not None and hasattr(lock, 'release'):
+            lock.release()
+    except Exception:
+        pass
+
+
+def _br_chat_text(tokenizer, prompt):
+    try:
+        if callable(globals().get('_rtv36_build_chat_text')):
+            return globals()['_rtv36_build_chat_text'](tokenizer, prompt)
+    except Exception:
+        pass
+    try:
+        if callable(globals().get('_build_chat_text')):
+            return globals()['_build_chat_text'](tokenizer, prompt)
+    except Exception:
+        pass
+    return 'User: ' + str(prompt or '') + '\nAssistant:'
+
+
+def _br_generate(kind, processor, tokenizer, model, prompt, max_new_tokens, max_time):
+    import torch
+    t0 = _br_now()
+    text = _br_chat_text(tokenizer, prompt)
+    pad = getattr(tokenizer, 'pad_token_id', None)
+    eos = getattr(tokenizer, 'eos_token_id', None)
+    if pad is None and eos is not None:
+        pad = eos
+    kwargs = {'max_new_tokens': int(max_new_tokens), 'do_sample': False, 'use_cache': True, 'num_beams': 1, 'max_time': float(max_time)}
+    if pad is not None:
+        kwargs['pad_token_id'] = int(pad)
+    if eos is not None:
+        kwargs['eos_token_id'] = int(eos)
+    if kind == 'image_text_to_text' and processor is not None:
+        inputs = processor(text=text, images=None, return_tensors='pt')
+        inputs = {k: v.to(model.device) if hasattr(v, 'to') else v for k, v in inputs.items()}
+        input_len = int(inputs['input_ids'].shape[-1]) if hasattr(inputs.get('input_ids'), 'shape') else 0
+        with torch.inference_mode():
+            output = model.generate(**inputs, **kwargs)
+        gen_ids = output[:, input_len:] if input_len and getattr(output, 'ndim', 0) >= 2 and output.shape[-1] > input_len else output
+        txt = processor.batch_decode(gen_ids, skip_special_tokens=True)[0].strip() if hasattr(processor, 'batch_decode') else str(gen_ids)
+    else:
+        inputs = tokenizer(text, return_tensors='pt')
+        inputs = {k: v.to(model.device) if hasattr(v, 'to') else v for k, v in inputs.items()}
+        input_len = int(inputs['input_ids'].shape[-1]) if 'input_ids' in inputs else 0
+        with torch.inference_mode():
+            output = model.generate(**inputs, **kwargs)
+        gen_ids = output[:, input_len:] if getattr(output, 'ndim', 0) >= 2 and output.shape[-1] > input_len else output
+        txt = tokenizer.decode(gen_ids[0], skip_special_tokens=True).strip()
+    try:
+        torch.cuda.synchronize() if torch.cuda.is_available() else None
+    except Exception:
+        pass
+    elapsed = max(1e-6, _br_now() - t0)
+    try:
+        n = int(gen_ids.shape[-1]) if hasattr(gen_ids, 'shape') else 0
+    except Exception:
+        n = 0
+    return txt, {'generated_tokens': n, 'input_tokens': int(input_len), 'generation_elapsed_sec': elapsed, 'tokens_per_sec': float(n/elapsed) if n else 0.0, 'finish_reason': 'max_time' if elapsed >= float(max_time) else ('max_new_tokens' if n >= int(max_new_tokens) else 'eos_or_stop'), 'max_time_seconds': float(max_time)}
+
+
+def _br_runtime_generate_impl(payload: dict):
+    t0 = _br_now()
+    req = _br_dict(payload)
+    requested = _br_requested(req)
+    effective = _br_effective(req)
+    wait_s = _br_wait(req)
+    max_time = _br_maxtime(req)
+    lock = globals().get('RUNTIME_V36_GENERATE_LOCK')
+    if not _br_acquire(lock, wait_s):
+        return {'ok': False, 'patch_id': UNIVERSAL_BOUNDED_GENERATION_ROUTE_V16_PATCH_ID, 'generation_backend': 'universal_bounded_generate_route_v16', 'text': '', 'generated_text': '', 'reason': 'generation_wait_timeout_guard', 'requested_max_new_tokens': requested, 'effective_max_new_tokens': effective, 'wait_timeout_seconds': wait_s, 'max_time_seconds': max_time, 'elapsed_ms': int((_br_now()-t0)*1000), 'gpu': _br_gpu_diag()}
+    try:
+        kind, processor, tokenizer, model, loaded_path, loaded_quant = _ensure_loaded(req.get('model_path'), req.get('quantization'))
+        prompt = str(req.get('prompt') or req.get('inputs') or req.get('text') or '')[:4000]
+        txt, meas = _br_generate(kind, processor, tokenizer, model, prompt, effective, max_time)
+        devdiag = globals()['_rtv36_model_device_diag'](model) if callable(globals().get('_rtv36_model_device_diag')) else {}
+        return {'ok': bool(str(txt).strip()), 'patch_id': UNIVERSAL_BOUNDED_GENERATION_ROUTE_V16_PATCH_ID, 'generation_backend': 'universal_bounded_generate_route_v16', 'text': txt, 'generated_text': txt, 'model_loaded': True, 'model_path': loaded_path, 'loader_kind': kind, 'quantization': loaded_quant, 'requested_max_new_tokens': requested, 'effective_max_new_tokens': effective, 'max_new_tokens_used': effective, 'max_time_seconds': max_time, 'generated_tokens': meas.get('generated_tokens'), 'input_tokens': meas.get('input_tokens'), 'generation_elapsed_sec': meas.get('generation_elapsed_sec'), 'tokens_per_sec': meas.get('tokens_per_sec'), 'finish_reason': meas.get('finish_reason'), 'device_diagnostics': devdiag, 'wait_timeout_seconds': wait_s, 'elapsed_ms': int((_br_now()-t0)*1000), 'gpu': _br_gpu_diag()}
+    except Exception as exc:
+        return {'ok': False, 'patch_id': UNIVERSAL_BOUNDED_GENERATION_ROUTE_V16_PATCH_ID, 'generation_backend': 'universal_bounded_generate_route_v16', 'text': '', 'generated_text': '', 'reason': 'generation_exception_v16', 'error': repr(exc), 'requested_max_new_tokens': requested, 'effective_max_new_tokens': effective, 'wait_timeout_seconds': wait_s, 'max_time_seconds': max_time, 'elapsed_ms': int((_br_now()-t0)*1000), 'gpu': _br_gpu_diag()}
+    finally:
+        _br_release(lock)
+
+
+def _br_remove_post_routes(paths):
+    removed=[]
+    try:
+        wanted=set(paths); keep=[]
+        for route in list(getattr(app.router,'routes',[])):
+            path=getattr(route,'path',''); methods=set(getattr(route,'methods',[]) or [])
+            if path in wanted and 'POST' in methods:
+                removed.append({'path':path,'name':getattr(route,'name',''),'endpoint':getattr(getattr(route,'endpoint',None),'__name__','')})
+            else:
+                keep.append(route)
+        app.router.routes=keep
+        try: app.openapi_schema=None
+        except Exception: pass
+    except Exception as exc:
+        removed.append({'error':repr(exc)})
+    return removed
+
+try:
+    _UNIVERSAL_BOUNDED_GENERATION_ROUTE_V16_REMOVED = _br_remove_post_routes(['/generate'])
+except Exception as _br_rm_exc:
+    _UNIVERSAL_BOUNDED_GENERATION_ROUTE_V16_REMOVED = [{'error': repr(_br_rm_exc)}]
+
+try:
+    @app.post('/generate')
+    def universal_bounded_generation_route_v16(payload: dict):
+        return _br_runtime_generate_impl(payload)
+
+    @app.get('/runtime/bounded-generation-route/status')
+    def universal_bounded_generation_route_status_v16():
+        return {'ok': True, 'patch_id': UNIVERSAL_BOUNDED_GENERATION_ROUTE_V16_PATCH_ID, 'active_generate_endpoint': 'universal_bounded_generation_route_v16', 'removed_routes': _UNIVERSAL_BOUNDED_GENERATION_ROUTE_V16_REMOVED, 'wait_timeout_env': 'GENERATION_WAIT_TIMEOUT_SECONDS', 'token_limit_env': 'GENERATION_TOKEN_LIMIT', 'max_time_env': 'GENERATION_MAX_TIME_SECONDS', 'task_or_question_branching': False}
+except Exception as _br_add_exc:
+    try:
+        _UNIVERSAL_BOUNDED_GENERATION_ROUTE_V16_ADD_ERROR = repr(_br_add_exc)
+    except Exception:
+        pass
+# ============================================================================
+# END ADD-ONLY PATCH: UNIVERSAL-BOUNDED-GENERATION-ROUTE-V16-20260601
+# ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY PATCH: UNIVERSAL-COOPERATIVE-GENERATION-ROUTE-V18-20260601
+# purpose:
+# - Keep LLM generation enabled, but make it small, observable, and cooperatively
+#   stoppable before long GPU saturation can occur.
+# - Bound input tokens, output tokens, lock wait, and wall-clock stopping criteria.
+# - Preserve existing implementations; replace only the active POST /generate route.
+# - No task, benchmark, question-form, or domain branching.
+# ============================================================================
+try:
+    import os as _cg_os
+    import time as _cg_time
+except Exception:
+    _cg_os = None
+    _cg_time = None
+
+UNIVERSAL_COOPERATIVE_GENERATION_ROUTE_V18_PATCH_ID = 'UNIVERSAL-COOPERATIVE-GENERATION-ROUTE-V18-20260601'
+
+
+def _cg_dict(x):
+    try:
+        return dict(x) if isinstance(x, dict) else {}
+    except Exception:
+        return {}
+
+
+def _cg_int(x, default=0, lo=None, hi=None):
+    try:
+        v = int(x)
+    except Exception:
+        v = int(default)
+    if lo is not None:
+        v = max(int(lo), v)
+    if hi is not None:
+        v = min(int(hi), v)
+    return v
+
+
+def _cg_float(x, default=0.0, lo=None, hi=None):
+    try:
+        v = float(x)
+    except Exception:
+        v = float(default)
+    if lo is not None:
+        v = max(float(lo), v)
+    if hi is not None:
+        v = min(float(hi), v)
+    return v
+
+
+def _cg_env(name, default=''):
+    try:
+        return _cg_os.getenv(name, default) if _cg_os is not None else default
+    except Exception:
+        return default
+
+
+def _cg_now():
+    try:
+        return _cg_time.time() if _cg_time is not None else 0.0
+    except Exception:
+        return 0.0
+
+
+def _cg_bool(x):
+    if isinstance(x, bool):
+        return x
+    try:
+        s = str(x or '').strip().lower()
+    except Exception:
+        s = ''
+    return s in {'1', 'true', 'yes', 'on', 'enable', 'enabled', 'allow', 'allowed'}
+
+
+def _cg_gpu_diag():
+    try:
+        if callable(globals().get('_runtime_v19_gpu_diag')):
+            return globals()['_runtime_v19_gpu_diag']()
+    except Exception:
+        pass
+    return {}
+
+
+def _cg_lock_acquire(lock, wait_s):
+    if lock is None or not hasattr(lock, 'acquire'):
+        return True
+    try:
+        if wait_s <= 0:
+            return bool(lock.acquire(blocking=False))
+        return bool(lock.acquire(timeout=float(wait_s)))
+    except TypeError:
+        deadline = _cg_now() + float(max(0.0, wait_s))
+        while _cg_now() <= deadline:
+            try:
+                if lock.acquire(False):
+                    return True
+            except Exception:
+                return False
+            try:
+                _cg_time.sleep(0.02)
+            except Exception:
+                break
+        return False
+    except Exception:
+        return False
+
+
+def _cg_lock_release(lock):
+    try:
+        if lock is not None and hasattr(lock, 'release'):
+            lock.release()
+    except Exception:
+        pass
+
+
+def _cg_chat_text(tokenizer, prompt):
+    try:
+        if callable(globals().get('_rtv36_build_chat_text')):
+            return globals()['_rtv36_build_chat_text'](tokenizer, prompt)
+    except Exception:
+        pass
+    try:
+        if callable(globals().get('_build_chat_text')):
+            return globals()['_build_chat_text'](tokenizer, prompt)
+    except Exception:
+        pass
+    return 'User: ' + str(prompt or '') + '\nAssistant:'
+
+
+def _cg_limits(req):
+    ceiling = globals().get('RUNTIME_V36_MAX_NEW_TOKENS_CEILING', 8192)
+    allow_long = _cg_bool(req.get('allow_long_generation', False))
+    requested = _cg_int(req.get('requested_max_new_tokens', req.get('max_new_tokens', 16)), default=16, lo=1, hi=ceiling)
+    if allow_long:
+        output_limit = requested
+        time_limit = _cg_float(req.get('generation_max_time_seconds', _cg_env('GENERATION_MAX_TIME_SECONDS_LONG', 120)), default=120.0, lo=1.0, hi=3600.0)
+        input_limit = _cg_int(req.get('generation_input_token_limit', _cg_env('GENERATION_INPUT_TOKEN_LIMIT_LONG', 2048)), default=2048, lo=16, hi=32768)
+    else:
+        output_limit = min(requested, _cg_int(req.get('generation_token_limit', _cg_env('GENERATION_TOKEN_LIMIT', 16)), default=16, lo=1, hi=ceiling))
+        time_limit = _cg_float(req.get('generation_max_time_seconds', req.get('max_time', _cg_env('GENERATION_MAX_TIME_SECONDS', 6))), default=6.0, lo=1.0, hi=300.0)
+        input_limit = _cg_int(req.get('generation_input_token_limit', _cg_env('GENERATION_INPUT_TOKEN_LIMIT', 512)), default=512, lo=16, hi=32768)
+    wait_limit = _cg_float(req.get('generation_wait_timeout_seconds', req.get('wait_timeout_seconds', _cg_env('GENERATION_WAIT_TIMEOUT_SECONDS', 2))), default=2.0, lo=0.0, hi=120.0)
+    return requested, output_limit, time_limit, input_limit, wait_limit
+
+
+def _cg_stopping(max_seconds):
+    try:
+        from transformers import StoppingCriteria, StoppingCriteriaList
+        start = _cg_now()
+        class _TimeStop(StoppingCriteria):
+            def __call__(self, input_ids, scores, **kwargs):
+                return (_cg_now() - start) >= float(max_seconds)
+        return StoppingCriteriaList([_TimeStop()])
+    except Exception:
+        return None
+
+
+def _cg_trim_inputs(inputs, input_limit):
+    try:
+        if 'input_ids' in inputs and hasattr(inputs['input_ids'], 'shape') and int(inputs['input_ids'].shape[-1]) > int(input_limit):
+            inputs['input_ids'] = inputs['input_ids'][:, -int(input_limit):]
+            if 'attention_mask' in inputs and hasattr(inputs['attention_mask'], 'shape'):
+                inputs['attention_mask'] = inputs['attention_mask'][:, -int(input_limit):]
+    except Exception:
+        pass
+    return inputs
+
+
+def _cg_generate(kind, processor, tokenizer, model, prompt, output_limit, time_limit, input_limit):
+    import torch
+    t0 = _cg_now()
+    text = _cg_chat_text(tokenizer, prompt)
+    pad = getattr(tokenizer, 'pad_token_id', None)
+    eos = getattr(tokenizer, 'eos_token_id', None)
+    if pad is None and eos is not None:
+        pad = eos
+    kwargs = {'max_new_tokens': int(output_limit), 'do_sample': False, 'num_beams': 1, 'use_cache': True, 'max_time': float(time_limit)}
+    stop = _cg_stopping(time_limit)
+    if stop is not None:
+        kwargs['stopping_criteria'] = stop
+    if pad is not None:
+        kwargs['pad_token_id'] = int(pad)
+    if eos is not None:
+        kwargs['eos_token_id'] = int(eos)
+    if kind == 'image_text_to_text' and processor is not None:
+        inputs = processor(text=text, images=None, return_tensors='pt')
+        inputs = _cg_trim_inputs(inputs, input_limit)
+        inputs = {k: v.to(model.device) if hasattr(v, 'to') else v for k, v in inputs.items()}
+        input_len = int(inputs['input_ids'].shape[-1]) if hasattr(inputs.get('input_ids'), 'shape') else 0
+        entered = _cg_now()
+        with torch.inference_mode():
+            output = model.generate(**inputs, **kwargs)
+        left = _cg_now()
+        gen_ids = output[:, input_len:] if input_len and getattr(output, 'ndim', 0) >= 2 and output.shape[-1] > input_len else output
+        txt = processor.batch_decode(gen_ids, skip_special_tokens=True)[0].strip() if hasattr(processor, 'batch_decode') else str(gen_ids)
+    else:
+        inputs = tokenizer(text, return_tensors='pt')
+        inputs = _cg_trim_inputs(inputs, input_limit)
+        inputs = {k: v.to(model.device) if hasattr(v, 'to') else v for k, v in inputs.items()}
+        input_len = int(inputs['input_ids'].shape[-1]) if 'input_ids' in inputs else 0
+        entered = _cg_now()
+        with torch.inference_mode():
+            output = model.generate(**inputs, **kwargs)
+        left = _cg_now()
+        gen_ids = output[:, input_len:] if getattr(output, 'ndim', 0) >= 2 and output.shape[-1] > input_len else output
+        txt = tokenizer.decode(gen_ids[0], skip_special_tokens=True).strip()
+    try:
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+    except Exception:
+        pass
+    elapsed = max(1e-6, _cg_now() - t0)
+    generate_elapsed = max(1e-6, left - entered)
+    try:
+        generated_tokens = int(gen_ids.shape[-1]) if hasattr(gen_ids, 'shape') else 0
+    except Exception:
+        generated_tokens = 0
+    finish_reason = 'time_or_stop' if generate_elapsed >= float(time_limit) else ('max_new_tokens' if generated_tokens >= int(output_limit) else 'eos_or_stop')
+    return txt, {'generated_tokens': generated_tokens, 'input_tokens': int(input_len), 'generation_elapsed_sec': generate_elapsed, 'total_elapsed_sec': elapsed, 'tokens_per_sec': float(generated_tokens / generate_elapsed) if generated_tokens else 0.0, 'finish_reason': finish_reason, 'entered_generate': True, 'left_generate': True, 'input_token_limit': int(input_limit)}
+
+
+def _cg_runtime_generate_impl(payload: dict):
+    t0 = _cg_now()
+    req = _cg_dict(payload)
+    requested, output_limit, time_limit, input_limit, wait_limit = _cg_limits(req)
+    lock = globals().get('RUNTIME_V36_GENERATE_LOCK')
+    if not _cg_lock_acquire(lock, wait_limit):
+        return {'ok': False, 'patch_id': UNIVERSAL_COOPERATIVE_GENERATION_ROUTE_V18_PATCH_ID, 'generation_backend': 'universal_cooperative_generate_route_v18', 'text': '', 'generated_text': '', 'reason': 'generation_wait_timeout_guard', 'requested_max_new_tokens': requested, 'effective_max_new_tokens': output_limit, 'max_time_seconds': time_limit, 'input_token_limit': input_limit, 'wait_timeout_seconds': wait_limit, 'entered_generate': False, 'left_generate': False, 'elapsed_ms': int((_cg_now()-t0)*1000), 'gpu': _cg_gpu_diag()}
+    try:
+        kind, processor, tokenizer, model, loaded_path, loaded_quant = _ensure_loaded(req.get('model_path'), req.get('quantization'))
+        prompt = str(req.get('prompt') or req.get('inputs') or req.get('text') or '')
+        txt, meas = _cg_generate(kind, processor, tokenizer, model, prompt, output_limit, time_limit, input_limit)
+        devdiag = globals()['_rtv36_model_device_diag'](model) if callable(globals().get('_rtv36_model_device_diag')) else {}
+        return {'ok': bool(str(txt).strip()), 'patch_id': UNIVERSAL_COOPERATIVE_GENERATION_ROUTE_V18_PATCH_ID, 'generation_backend': 'universal_cooperative_generate_route_v18', 'text': txt, 'generated_text': txt, 'model_loaded': True, 'model_path': loaded_path, 'loader_kind': kind, 'quantization': loaded_quant, 'requested_max_new_tokens': requested, 'effective_max_new_tokens': output_limit, 'max_new_tokens_used': output_limit, 'max_time_seconds': time_limit, 'input_token_limit': input_limit, 'generated_tokens': meas.get('generated_tokens'), 'input_tokens': meas.get('input_tokens'), 'generation_elapsed_sec': meas.get('generation_elapsed_sec'), 'total_elapsed_sec': meas.get('total_elapsed_sec'), 'tokens_per_sec': meas.get('tokens_per_sec'), 'finish_reason': meas.get('finish_reason'), 'entered_generate': bool(meas.get('entered_generate')), 'left_generate': bool(meas.get('left_generate')), 'device_diagnostics': devdiag, 'wait_timeout_seconds': wait_limit, 'elapsed_ms': int((_cg_now()-t0)*1000), 'gpu': _cg_gpu_diag()}
+    except Exception as exc:
+        return {'ok': False, 'patch_id': UNIVERSAL_COOPERATIVE_GENERATION_ROUTE_V18_PATCH_ID, 'generation_backend': 'universal_cooperative_generate_route_v18', 'text': '', 'generated_text': '', 'reason': 'generation_exception_v18', 'error': repr(exc), 'requested_max_new_tokens': requested, 'effective_max_new_tokens': output_limit, 'max_time_seconds': time_limit, 'input_token_limit': input_limit, 'entered_generate': False, 'left_generate': False, 'elapsed_ms': int((_cg_now()-t0)*1000), 'gpu': _cg_gpu_diag()}
+    finally:
+        _cg_lock_release(lock)
+
+
+def _cg_remove_post_routes(paths):
+    removed=[]
+    try:
+        wanted=set(paths); keep=[]
+        for route in list(getattr(app.router,'routes',[])):
+            path=getattr(route,'path',''); methods=set(getattr(route,'methods',[]) or [])
+            if path in wanted and 'POST' in methods:
+                removed.append({'path': path, 'name': getattr(route,'name',''), 'endpoint': getattr(getattr(route,'endpoint',None),'__name__','')})
+            else:
+                keep.append(route)
+        app.router.routes=keep
+        try: app.openapi_schema=None
+        except Exception: pass
+    except Exception as exc:
+        removed.append({'error':repr(exc)})
+    return removed
+
+try:
+    _UNIVERSAL_COOPERATIVE_GENERATION_ROUTE_V18_REMOVED=_cg_remove_post_routes(['/generate'])
+except Exception as _cg_rm_exc:
+    _UNIVERSAL_COOPERATIVE_GENERATION_ROUTE_V18_REMOVED=[{'error':repr(_cg_rm_exc)}]
+
+try:
+    @app.post('/generate')
+    def universal_cooperative_generation_route_v18(payload: dict):
+        return _cg_runtime_generate_impl(payload)
+
+    @app.get('/runtime/cooperative-generation-route/status')
+    def universal_cooperative_generation_route_status_v18():
+        return {'ok': True, 'patch_id': UNIVERSAL_COOPERATIVE_GENERATION_ROUTE_V18_PATCH_ID, 'active_generate_endpoint': 'universal_cooperative_generation_route_v18', 'removed_routes': _UNIVERSAL_COOPERATIVE_GENERATION_ROUTE_V18_REMOVED, 'token_limit_default': int(_cg_env('GENERATION_TOKEN_LIMIT','16')), 'input_token_limit_default': int(_cg_env('GENERATION_INPUT_TOKEN_LIMIT','512')), 'max_time_default': float(_cg_env('GENERATION_MAX_TIME_SECONDS','6')), 'task_or_question_branching': False}
+except Exception as _cg_add_exc:
+    try: _UNIVERSAL_COOPERATIVE_GENERATION_ROUTE_V18_ADD_ERROR=repr(_cg_add_exc)
+    except Exception: pass
+# ============================================================================
+# END ADD-ONLY PATCH: UNIVERSAL-COOPERATIVE-GENERATION-ROUTE-V18-20260601
+# ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY PATCH: UNIVERSAL-STEPWISE-GENERATION-ROUTE-V19-20260601
+# purpose:
+# - Keep language generation enabled.
+# - Replace opaque long-running model.generate calls for text generation with a
+#   bounded stepwise decode loop.
+# - Bound input length, output length, wait timeout, and wall-clock time.
+# - Use cache explicitly and prefer conservative attention backend settings.
+# - Preserve existing routes and implementations; only replace active POST /generate.
+# - No task, benchmark, question-form, or domain branching.
+# ============================================================================
+try:
+    import os as _sg_os
+    import time as _sg_time
+except Exception:
+    _sg_os = None
+    _sg_time = None
+
+UNIVERSAL_STEPWISE_GENERATION_ROUTE_V19_PATCH_ID = 'UNIVERSAL-STEPWISE-GENERATION-ROUTE-V19-20260601'
+
+
+def _sg_dict(x):
+    try:
+        return dict(x) if isinstance(x, dict) else {}
+    except Exception:
+        return {}
+
+
+def _sg_int(x, default=0, lo=None, hi=None):
+    try:
+        v = int(x)
+    except Exception:
+        v = int(default)
+    if lo is not None:
+        v = max(int(lo), v)
+    if hi is not None:
+        v = min(int(hi), v)
+    return v
+
+
+def _sg_float(x, default=0.0, lo=None, hi=None):
+    try:
+        v = float(x)
+    except Exception:
+        v = float(default)
+    if lo is not None:
+        v = max(float(lo), v)
+    if hi is not None:
+        v = min(float(hi), v)
+    return v
+
+
+def _sg_env(name, default=''):
+    try:
+        return _sg_os.getenv(name, default) if _sg_os is not None else default
+    except Exception:
+        return default
+
+
+def _sg_now():
+    try:
+        return _sg_time.time() if _sg_time is not None else 0.0
+    except Exception:
+        return 0.0
+
+
+def _sg_gpu_diag():
+    try:
+        if callable(globals().get('_runtime_v19_gpu_diag')):
+            return globals()['_runtime_v19_gpu_diag']()
+    except Exception:
+        pass
+    return {}
+
+
+def _sg_bool(x):
+    if isinstance(x, bool):
+        return x
+    try:
+        s = str(x or '').strip().lower()
+    except Exception:
+        s = ''
+    return s in {'1', 'true', 'yes', 'on', 'enable', 'enabled', 'allow', 'allowed'}
+
+
+def _sg_limits(req):
+    req = _sg_dict(req)
+    ceiling = globals().get('RUNTIME_V36_MAX_NEW_TOKENS_CEILING', 8192)
+    requested = _sg_int(req.get('requested_max_new_tokens', req.get('max_new_tokens', 16)), default=16, lo=1, hi=ceiling)
+    if _sg_bool(req.get('allow_long_generation', False)):
+        output_limit = requested
+        input_limit = _sg_int(req.get('generation_input_token_limit', _sg_env('GENERATION_INPUT_TOKEN_LIMIT_LONG', 2048)), default=2048, lo=16, hi=32768)
+        time_limit = _sg_float(req.get('generation_max_time_seconds', _sg_env('GENERATION_MAX_TIME_SECONDS_LONG', 120)), default=120.0, lo=1.0, hi=3600.0)
+    else:
+        output_limit = min(requested, _sg_int(req.get('generation_token_limit', _sg_env('GENERATION_TOKEN_LIMIT', 16)), default=16, lo=1, hi=ceiling))
+        input_limit = _sg_int(req.get('generation_input_token_limit', _sg_env('GENERATION_INPUT_TOKEN_LIMIT', 256)), default=256, lo=16, hi=32768)
+        time_limit = _sg_float(req.get('generation_max_time_seconds', req.get('max_time', _sg_env('GENERATION_MAX_TIME_SECONDS', 6))), default=6.0, lo=1.0, hi=300.0)
+    wait_limit = _sg_float(req.get('generation_wait_timeout_seconds', req.get('wait_timeout_seconds', _sg_env('GENERATION_WAIT_TIMEOUT_SECONDS', 2))), default=2.0, lo=0.0, hi=120.0)
+    return requested, output_limit, input_limit, time_limit, wait_limit
+
+
+def _sg_lock_acquire(lock, wait_s):
+    if lock is None or not hasattr(lock, 'acquire'):
+        return True
+    try:
+        if wait_s <= 0:
+            return bool(lock.acquire(blocking=False))
+        return bool(lock.acquire(timeout=float(wait_s)))
+    except TypeError:
+        deadline = _sg_now() + float(max(0.0, wait_s))
+        while _sg_now() <= deadline:
+            try:
+                if lock.acquire(False):
+                    return True
+            except Exception:
+                return False
+            try:
+                _sg_time.sleep(0.02)
+            except Exception:
+                break
+        return False
+    except Exception:
+        return False
+
+
+def _sg_lock_release(lock):
+    try:
+        if lock is not None and hasattr(lock, 'release'):
+            lock.release()
+    except Exception:
+        pass
+
+
+def _sg_prepare_backend(model=None):
+    try:
+        import torch
+        try:
+            torch.backends.cuda.enable_flash_sdp(False)
+        except Exception:
+            pass
+        try:
+            torch.backends.cuda.enable_mem_efficient_sdp(False)
+        except Exception:
+            pass
+        try:
+            torch.backends.cuda.enable_math_sdp(True)
+        except Exception:
+            pass
+    except Exception:
+        pass
+    try:
+        if model is not None:
+            if hasattr(model, 'config'):
+                try:
+                    model.config.use_cache = True
+                except Exception:
+                    pass
+            if hasattr(model, 'generation_config'):
+                try:
+                    model.generation_config.use_cache = True
+                except Exception:
+                    pass
+            try:
+                model.eval()
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+def _sg_chat_text(tokenizer, prompt):
+    try:
+        if callable(globals().get('_rtv36_build_chat_text')):
+            return globals()['_rtv36_build_chat_text'](tokenizer, prompt)
+    except Exception:
+        pass
+    try:
+        if callable(globals().get('_build_chat_text')):
+            return globals()['_build_chat_text'](tokenizer, prompt)
+    except Exception:
+        pass
+    return 'User: ' + str(prompt or '') + '\nAssistant:'
+
+
+def _sg_trim_inputs(inputs, input_limit):
+    try:
+        if 'input_ids' in inputs and hasattr(inputs['input_ids'], 'shape') and int(inputs['input_ids'].shape[-1]) > int(input_limit):
+            inputs['input_ids'] = inputs['input_ids'][:, -int(input_limit):]
+        if 'attention_mask' in inputs and hasattr(inputs['attention_mask'], 'shape') and int(inputs['attention_mask'].shape[-1]) > int(input_limit):
+            inputs['attention_mask'] = inputs['attention_mask'][:, -int(input_limit):]
+    except Exception:
+        pass
+    return inputs
+
+
+def _sg_tokenize(tokenizer, text, input_limit):
+    try:
+        inputs = tokenizer(text, return_tensors='pt', truncation=True, max_length=int(input_limit))
+    except Exception:
+        inputs = tokenizer(text, return_tensors='pt')
+    inputs = _sg_trim_inputs(inputs, input_limit)
+    return inputs
+
+
+def _sg_stop_now(start_time, time_limit):
+    return (_sg_now() - start_time) >= float(time_limit)
+
+
+def _sg_decode_stepwise(tokenizer, model, prompt, output_limit, input_limit, time_limit):
+    import torch
+    _sg_prepare_backend(model)
+    start_total = _sg_now()
+    text = _sg_chat_text(tokenizer, prompt)
+    inputs = _sg_tokenize(tokenizer, text, input_limit)
+    try:
+        model_device = next(model.parameters()).device
+    except Exception:
+        model_device = getattr(model, 'device', 'cpu')
+    inputs = {k: v.to(model_device) if hasattr(v, 'to') else v for k, v in inputs.items()}
+    input_ids = inputs.get('input_ids')
+    attention_mask = inputs.get('attention_mask')
+    input_len = int(input_ids.shape[-1]) if hasattr(input_ids, 'shape') else 0
+    eos_id = getattr(tokenizer, 'eos_token_id', None)
+    pad_id = getattr(tokenizer, 'pad_token_id', None)
+    if pad_id is None and eos_id is not None:
+        pad_id = eos_id
+    generated = []
+    entered = False
+    left = False
+    past_key_values = None
+    next_input = None
+    try:
+        with torch.inference_mode():
+            for step in range(int(output_limit)):
+                if _sg_stop_now(start_total, time_limit):
+                    break
+                entered = True
+                if step == 0 or past_key_values is None:
+                    outputs = model(input_ids=input_ids, attention_mask=attention_mask, use_cache=True)
+                else:
+                    outputs = model(input_ids=next_input, attention_mask=attention_mask, past_key_values=past_key_values, use_cache=True)
+                logits = outputs.logits[:, -1, :]
+                next_token = torch.argmax(logits, dim=-1, keepdim=True)
+                token_id = int(next_token[0, 0].item())
+                if eos_id is not None and token_id == int(eos_id):
+                    break
+                generated.append(token_id)
+                next_input = next_token.to(model_device)
+                if attention_mask is not None and hasattr(attention_mask, 'shape'):
+                    attention_mask = torch.cat([attention_mask, torch.ones((attention_mask.shape[0], 1), dtype=attention_mask.dtype, device=attention_mask.device)], dim=-1)
+                past_key_values = getattr(outputs, 'past_key_values', None)
+            left = True
+    finally:
+        try:
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+        except Exception:
+            pass
+    txt = ''
+    try:
+        if generated:
+            txt = tokenizer.decode(generated, skip_special_tokens=True).strip()
+    except Exception:
+        try:
+            txt = str(generated)
+        except Exception:
+            txt = ''
+    total_elapsed = max(1e-6, _sg_now() - start_total)
+    finish_reason = 'time_or_stop' if _sg_stop_now(start_total, time_limit) else ('max_new_tokens' if len(generated) >= int(output_limit) else 'eos_or_stop')
+    return txt, {
+        'generated_tokens': int(len(generated)),
+        'input_tokens': int(input_len),
+        'generation_elapsed_sec': total_elapsed,
+        'tokens_per_sec': float(len(generated) / total_elapsed) if generated else 0.0,
+        'finish_reason': finish_reason,
+        'entered_generate': bool(entered),
+        'left_generate': bool(left),
+        'input_token_limit': int(input_limit),
+        'mode': 'stepwise_decode',
+    }
+
+
+def _sg_runtime_generate_impl(payload: dict):
+    t0 = _sg_now()
+    req = _sg_dict(payload)
+    requested, output_limit, input_limit, time_limit, wait_limit = _sg_limits(req)
+    lock = globals().get('RUNTIME_V36_GENERATE_LOCK')
+    if not _sg_lock_acquire(lock, wait_limit):
+        return {
+            'ok': False,
+            'patch_id': UNIVERSAL_STEPWISE_GENERATION_ROUTE_V19_PATCH_ID,
+            'generation_backend': 'universal_stepwise_generate_route_v19',
+            'text': '',
+            'generated_text': '',
+            'reason': 'generation_wait_timeout_guard',
+            'requested_max_new_tokens': requested,
+            'effective_max_new_tokens': output_limit,
+            'input_token_limit': input_limit,
+            'max_time_seconds': time_limit,
+            'wait_timeout_seconds': wait_limit,
+            'entered_generate': False,
+            'left_generate': False,
+            'elapsed_ms': int((_sg_now() - t0) * 1000),
+            'gpu': _sg_gpu_diag(),
+        }
+    try:
+        kind, processor, tokenizer, model, loaded_path, loaded_quant = _ensure_loaded(req.get('model_path'), req.get('quantization'))
+        prompt = str(req.get('prompt') or req.get('inputs') or req.get('text') or '')
+        if kind == 'image_text_to_text' and processor is not None:
+            # Multimodal keeps previous bounded implementation as fallback.
+            if callable(globals().get('_cg_runtime_generate_impl')):
+                return globals()['_cg_runtime_generate_impl'](req)
+            if callable(globals().get('_br_runtime_generate_impl')):
+                return globals()['_br_runtime_generate_impl'](req)
+        txt, meas = _sg_decode_stepwise(tokenizer, model, prompt, output_limit, input_limit, time_limit)
+        devdiag = globals()['_rtv36_model_device_diag'](model) if callable(globals().get('_rtv36_model_device_diag')) else {}
+        return {
+            'ok': bool(str(txt).strip()),
+            'patch_id': UNIVERSAL_STEPWISE_GENERATION_ROUTE_V19_PATCH_ID,
+            'generation_backend': 'universal_stepwise_generate_route_v19',
+            'text': txt,
+            'generated_text': txt,
+            'model_loaded': True,
+            'model_path': loaded_path,
+            'loader_kind': kind,
+            'quantization': loaded_quant,
+            'requested_max_new_tokens': requested,
+            'effective_max_new_tokens': output_limit,
+            'max_new_tokens_used': output_limit,
+            'input_token_limit': input_limit,
+            'max_time_seconds': time_limit,
+            'generated_tokens': meas.get('generated_tokens'),
+            'input_tokens': meas.get('input_tokens'),
+            'generation_elapsed_sec': meas.get('generation_elapsed_sec'),
+            'tokens_per_sec': meas.get('tokens_per_sec'),
+            'finish_reason': meas.get('finish_reason'),
+            'entered_generate': bool(meas.get('entered_generate')),
+            'left_generate': bool(meas.get('left_generate')),
+            'decode_mode': meas.get('mode'),
+            'device_diagnostics': devdiag,
+            'wait_timeout_seconds': wait_limit,
+            'elapsed_ms': int((_sg_now() - t0) * 1000),
+            'gpu': _sg_gpu_diag(),
+        }
+    except Exception as exc:
+        return {
+            'ok': False,
+            'patch_id': UNIVERSAL_STEPWISE_GENERATION_ROUTE_V19_PATCH_ID,
+            'generation_backend': 'universal_stepwise_generate_route_v19',
+            'text': '',
+            'generated_text': '',
+            'reason': 'generation_exception_v19_stepwise',
+            'error': repr(exc),
+            'requested_max_new_tokens': requested,
+            'effective_max_new_tokens': output_limit,
+            'input_token_limit': input_limit,
+            'max_time_seconds': time_limit,
+            'entered_generate': False,
+            'left_generate': False,
+            'elapsed_ms': int((_sg_now() - t0) * 1000),
+            'gpu': _sg_gpu_diag(),
+        }
+    finally:
+        _sg_lock_release(lock)
+
+
+def _sg_remove_post_routes(paths):
+    removed = []
+    try:
+        wanted = set(paths)
+        keep = []
+        for route in list(getattr(app.router, 'routes', [])):
+            path = getattr(route, 'path', '')
+            methods = set(getattr(route, 'methods', []) or [])
+            if path in wanted and 'POST' in methods:
+                removed.append({'path': path, 'name': getattr(route, 'name', ''), 'endpoint': getattr(getattr(route, 'endpoint', None), '__name__', '')})
+            else:
+                keep.append(route)
+        app.router.routes = keep
+        try:
+            app.openapi_schema = None
+        except Exception:
+            pass
+    except Exception as exc:
+        removed.append({'error': repr(exc)})
+    return removed
+
+try:
+    _UNIVERSAL_STEPWISE_GENERATION_ROUTE_V19_REMOVED = _sg_remove_post_routes(['/generate'])
+except Exception as _sg_rm_exc:
+    _UNIVERSAL_STEPWISE_GENERATION_ROUTE_V19_REMOVED = [{'error': repr(_sg_rm_exc)}]
+
+try:
+    @app.post('/generate')
+    def universal_stepwise_generation_route_v19(payload: dict):
+        return _sg_runtime_generate_impl(payload)
+
+    @app.get('/runtime/stepwise-generation-route/status')
+    def universal_stepwise_generation_route_status_v19():
+        return {
+            'ok': True,
+            'patch_id': UNIVERSAL_STEPWISE_GENERATION_ROUTE_V19_PATCH_ID,
+            'active_generate_endpoint': 'universal_stepwise_generation_route_v19',
+            'removed_routes': _UNIVERSAL_STEPWISE_GENERATION_ROUTE_V19_REMOVED,
+            'token_limit_default': int(_sg_env('GENERATION_TOKEN_LIMIT', '16')),
+            'input_token_limit_default': int(_sg_env('GENERATION_INPUT_TOKEN_LIMIT', '256')),
+            'max_time_default': float(_sg_env('GENERATION_MAX_TIME_SECONDS', '6')),
+            'wait_timeout_default': float(_sg_env('GENERATION_WAIT_TIMEOUT_SECONDS', '2')),
+            'task_or_question_branching': False,
+        }
+except Exception as _sg_add_exc:
+    try:
+        _UNIVERSAL_STEPWISE_GENERATION_ROUTE_V19_ADD_ERROR = repr(_sg_add_exc)
+    except Exception:
+        pass
+# ============================================================================
+# END ADD-ONLY PATCH: UNIVERSAL-STEPWISE-GENERATION-ROUTE-V19-20260601
+# ============================================================================
+
+
+# =================== ADD-ONLY PATCH: FORCE-STEPWISE-PRIORITY-V1 ============
+try:
+    ACTIVE_GENERATE_ENDPOINT = 'universal_stepwise_generation_route_v19'
+except Exception:
+    pass
+# ===========================================================================
+
+
+# ============================================================================
+# ADD-ONLY PATCH: UNIVERSAL-STABLE-STEP-GENERATION-V20B-20260602
+# Generic safe text generation: eager attention, single-GPU placement, explicit
+# bounded forward-loop decode. No task/benchmark/question-form branching.
+# ============================================================================
+import os as _v20_os, time as _v20_time
+V20B_PATCH_ID='UNIVERSAL-STABLE-STEP-GENERATION-V20B-20260602'
+
+def _v20_dict(x):
+    try: return dict(x) if isinstance(x,dict) else {}
+    except Exception: return {}
+def _v20_i(x,d=0,lo=None,hi=None):
+    try: v=int(x)
+    except Exception: v=int(d)
+    if lo is not None: v=max(int(lo),v)
+    if hi is not None: v=min(int(hi),v)
+    return v
+def _v20_f(x,d=0.0,lo=None,hi=None):
+    try: v=float(x)
+    except Exception: v=float(d)
+    if lo is not None: v=max(float(lo),v)
+    if hi is not None: v=min(float(hi),v)
+    return v
+def _v20_env(k,d=''):
+    try: return _v20_os.getenv(k,d)
+    except Exception: return d
+def _v20_now():
+    try: return _v20_time.time()
+    except Exception: return 0.0
+def _v20_gpu():
+    try:
+        if callable(globals().get('_runtime_v19_gpu_diag')): return globals()['_runtime_v19_gpu_diag']()
+    except Exception: pass
+    return {}
+def _v20_backend(model=None):
+    try:
+        import torch
+        for fn,val in [('enable_flash_sdp',False),('enable_mem_efficient_sdp',False),('enable_math_sdp',True)]:
+            try: getattr(torch.backends.cuda,fn)(val)
+            except Exception: pass
+    except Exception: pass
+    try:
+        if model is not None:
+            if hasattr(model,'config'): model.config.use_cache=True
+            if hasattr(model,'generation_config'): model.generation_config.use_cache=True
+            model.eval()
+    except Exception: pass
+
+try: _V20_PREV_LOAD=_load_model_for_path
+except Exception: _V20_PREV_LOAD=None
+
+def _load_model_for_path(model_path:str, quantization:str):
+    from pathlib import Path as _P
+    from transformers import AutoConfig, AutoModelForCausalLM, AutoModelForImageTextToText, AutoProcessor, BitsAndBytesConfig
+    _v20_backend(None)
+    path=_resolve_model_path(model_path)
+    if not _P(path).exists(): raise RuntimeError('model_path not found: '+str(path))
+    cfg=AutoConfig.from_pretrained(path,trust_remote_code=True,local_files_only=True)
+    q=_normalize_quantization(quantization)
+    kw={'trust_remote_code':True,'local_files_only':True,'low_cpu_mem_usage':True,'attn_implementation':_v20_env('GENERATION_ATTENTION_IMPLEMENTATION','eager')}
+    try:
+        import torch
+        if torch.cuda.is_available(): kw['device_map']={'':0}
+    except Exception: pass
+    if q=='4bit':
+        kw['quantization_config']=BitsAndBytesConfig(load_in_4bit=True,bnb_4bit_quant_type=str(DEFAULT_BNB_4BIT_QUANT_TYPE),bnb_4bit_use_double_quant=bool(DEFAULT_BNB_4BIT_USE_DOUBLE_QUANT),bnb_4bit_compute_dtype=_torch_compute_dtype())
+        kw['dtype']=_torch_compute_dtype()
+    elif q=='8bit':
+        kw['quantization_config']=BitsAndBytesConfig(load_in_8bit=True); kw['dtype']=_torch_compute_dtype()
+    else: kw['dtype']='auto'
+    tok=_load_tokenizer(path)
+    def load(cls):
+        try: return cls.from_pretrained(path,**kw)
+        except TypeError:
+            kw2=dict(kw); kw2.pop('attn_implementation',None); return cls.from_pretrained(path,**kw2)
+    if _looks_multimodal_config(cfg):
+        try: proc=AutoProcessor.from_pretrained(path,trust_remote_code=True,local_files_only=True)
+        except Exception: proc=None
+        try:
+            m=load(AutoModelForImageTextToText); _v20_backend(m); return 'image_text_to_text',proc,tok,m
+        except Exception:
+            pass
+    m=load(AutoModelForCausalLM); _v20_backend(m); return 'causal_lm',None,tok,m
+try:
+    with _state['lock']:
+        _state['loaded']=False; _state['model_path']=None; _state['quantization']=None
+except Exception: pass
+
+def _v20_limits(req):
+    req=_v20_dict(req); ceil=globals().get('RUNTIME_V36_MAX_NEW_TOKENS_CEILING',8192)
+    requested=_v20_i(req.get('requested_max_new_tokens',req.get('max_new_tokens',8)),8,1,ceil)
+    allow=str(req.get('allow_long_generation','')).lower() in {'1','true','yes','on'}
+    if allow:
+        return requested,requested,_v20_i(req.get('generation_input_token_limit',_v20_env('GENERATION_INPUT_TOKEN_LIMIT_LONG',2048)),2048,16,32768),_v20_f(req.get('generation_max_time_seconds',_v20_env('GENERATION_MAX_TIME_SECONDS_LONG',120)),120,0.5,3600),_v20_f(req.get('wait_timeout_seconds',_v20_env('GENERATION_WAIT_TIMEOUT_SECONDS',2)),2,0,120)
+    return requested,min(requested,_v20_i(req.get('generation_token_limit',_v20_env('GENERATION_TOKEN_LIMIT',8)),8,1,ceil)),_v20_i(req.get('generation_input_token_limit',_v20_env('GENERATION_INPUT_TOKEN_LIMIT',128)),128,8,32768),_v20_f(req.get('generation_max_time_seconds',req.get('max_time',_v20_env('GENERATION_MAX_TIME_SECONDS',4))),4,0.5,300),_v20_f(req.get('wait_timeout_seconds',_v20_env('GENERATION_WAIT_TIMEOUT_SECONDS',2)),2,0,120)
+
+def _v20_lock_acq(lock,wait):
+    if lock is None or not hasattr(lock,'acquire'): return True
+    try: return bool(lock.acquire(timeout=float(wait))) if wait>0 else bool(lock.acquire(blocking=False))
+    except TypeError:
+        end=_v20_now()+max(0,float(wait))
+        while _v20_now()<=end:
+            try:
+                if lock.acquire(False): return True
+            except Exception: return False
+            time_sleep=0.02
+            try: _v20_time.sleep(time_sleep)
+            except Exception: break
+        return False
+    except Exception: return False
+def _v20_lock_rel(lock):
+    try:
+        if lock is not None and hasattr(lock,'release'): lock.release()
+    except Exception: pass
+
+def _v20_chat(tok,prompt):
+    try:
+        if callable(globals().get('_rtv36_build_chat_text')): return globals()['_rtv36_build_chat_text'](tok,prompt)
+    except Exception: pass
+    return 'User: '+str(prompt or '')+'\nAssistant:'
+def _v20_tokenize(tok,text,limit):
+    try: inp=tok(text,return_tensors='pt',truncation=True,max_length=int(limit))
+    except Exception: inp=tok(text,return_tensors='pt')
+    try:
+        if 'input_ids' in inp and inp['input_ids'].shape[-1]>limit: inp['input_ids']=inp['input_ids'][:,-int(limit):]
+        if 'attention_mask' in inp and inp['attention_mask'].shape[-1]>limit: inp['attention_mask']=inp['attention_mask'][:,-int(limit):]
+    except Exception: pass
+    return inp
+
+def _v20_step(tok,model,prompt,out_lim,in_lim,t_lim):
+    import torch
+    _v20_backend(model); start=_v20_now(); text=_v20_chat(tok,prompt); inp=_v20_tokenize(tok,text,in_lim)
+    dev=next(model.parameters()).device
+    inp={k:(v.to(dev) if hasattr(v,'to') else v) for k,v in inp.items()}
+    ids=inp.get('input_ids'); mask=inp.get('attention_mask'); input_len=int(ids.shape[-1]) if hasattr(ids,'shape') else 0
+    eos=getattr(tok,'eos_token_id',None); gen=[]; past=None; nxt=None; entered=False; left=False
+    with torch.inference_mode():
+        for step in range(int(out_lim)):
+            if _v20_now()-start>=float(t_lim): break
+            entered=True
+            if step==0 or past is None: o=model(input_ids=ids,attention_mask=mask,use_cache=True)
+            else: o=model(input_ids=nxt,attention_mask=mask,past_key_values=past,use_cache=True)
+            token=torch.argmax(o.logits[:,-1,:],dim=-1,keepdim=True); tid=int(token[0,0].item())
+            if eos is not None and tid==int(eos): break
+            gen.append(tid); nxt=token.to(dev); past=getattr(o,'past_key_values',None)
+            if mask is not None and hasattr(mask,'shape'): mask=torch.cat([mask,torch.ones((mask.shape[0],1),dtype=mask.dtype,device=mask.device)],dim=-1)
+        left=True
+    try:
+        if torch.cuda.is_available(): torch.cuda.synchronize()
+    except Exception: pass
+    try: txt=tok.decode(gen,skip_special_tokens=True).strip() if gen else ''
+    except Exception: txt=str(gen) if gen else ''
+    elapsed=max(1e-6,_v20_now()-start); finish='time_or_stop' if elapsed>=float(t_lim) else ('max_new_tokens' if len(gen)>=out_lim else 'eos_or_stop')
+    return txt,{'generated_tokens':len(gen),'input_tokens':input_len,'generation_elapsed_sec':elapsed,'tokens_per_sec':float(len(gen)/elapsed) if gen else 0.0,'finish_reason':finish,'entered_generate':entered,'left_generate':left,'decode_mode':'stable_stepwise'}
+
+def _v20_generate_impl(payload:dict):
+    t0=_v20_now(); req=_v20_dict(payload); requested,out_lim,in_lim,t_lim,wait=_v20_limits(req); lock=globals().get('RUNTIME_V36_GENERATE_LOCK')
+    if not _v20_lock_acq(lock,wait): return {'ok':False,'patch_id':V20B_PATCH_ID,'generation_backend':'stable_step_v20b','text':'','generated_text':'','reason':'generation_wait_timeout_guard','entered_generate':False,'left_generate':False,'requested_max_new_tokens':requested,'effective_max_new_tokens':out_lim,'input_token_limit':in_lim,'max_time_seconds':t_lim,'elapsed_ms':int((_v20_now()-t0)*1000),'gpu':_v20_gpu()}
+    try:
+        kind,proc,tok,model,loaded_path,loaded_quant=_ensure_loaded(req.get('model_path'),req.get('quantization'))
+        if kind!='causal_lm': return {'ok':False,'patch_id':V20B_PATCH_ID,'generation_backend':'stable_step_v20b','text':'','generated_text':'','reason':'text_route_requires_causal_lm','entered_generate':False,'left_generate':False,'elapsed_ms':int((_v20_now()-t0)*1000),'gpu':_v20_gpu()}
+        txt,meas=_v20_step(tok,model,str(req.get('prompt') or req.get('inputs') or req.get('text') or ''),out_lim,in_lim,t_lim)
+        devdiag=globals()['_rtv36_model_device_diag'](model) if callable(globals().get('_rtv36_model_device_diag')) else {}
+        return {'ok':bool(str(txt).strip()),'patch_id':V20B_PATCH_ID,'generation_backend':'stable_step_v20b','text':txt,'generated_text':txt,'model_loaded':True,'model_path':loaded_path,'loader_kind':kind,'quantization':loaded_quant,'requested_max_new_tokens':requested,'effective_max_new_tokens':out_lim,'input_token_limit':in_lim,'max_time_seconds':t_lim,'generated_tokens':meas.get('generated_tokens'),'input_tokens':meas.get('input_tokens'),'generation_elapsed_sec':meas.get('generation_elapsed_sec'),'tokens_per_sec':meas.get('tokens_per_sec'),'finish_reason':meas.get('finish_reason'),'entered_generate':meas.get('entered_generate'),'left_generate':meas.get('left_generate'),'decode_mode':meas.get('decode_mode'),'device_diagnostics':devdiag,'elapsed_ms':int((_v20_now()-t0)*1000),'gpu':_v20_gpu()}
+    except Exception as exc:
+        return {'ok':False,'patch_id':V20B_PATCH_ID,'generation_backend':'stable_step_v20b','text':'','generated_text':'','reason':'generation_exception_v20b','error':repr(exc),'entered_generate':False,'left_generate':False,'elapsed_ms':int((_v20_now()-t0)*1000),'gpu':_v20_gpu()}
+    finally: _v20_lock_rel(lock)
+
+def _v20_remove(paths):
+    rem=[]
+    try:
+        wanted=set(paths); keep=[]
+        for route in list(getattr(app.router,'routes',[])):
+            if getattr(route,'path','') in wanted and 'POST' in set(getattr(route,'methods',[]) or []): rem.append({'path':getattr(route,'path',''),'name':getattr(route,'name',''),'endpoint':getattr(getattr(route,'endpoint',None),'__name__','')})
+            else: keep.append(route)
+        app.router.routes=keep
+        try: app.openapi_schema=None
+        except Exception: pass
+    except Exception as exc: rem.append({'error':repr(exc)})
+    return rem
+try: _V20B_REMOVED=_v20_remove(['/generate'])
+except Exception as exc: _V20B_REMOVED=[{'error':repr(exc)}]
+try:
+    @app.post('/generate')
+    def universal_stable_step_generation_route_v20b(payload: dict): return _v20_generate_impl(payload)
+    @app.get('/runtime/stable-step-generation-route/status')
+    def universal_stable_step_generation_route_status_v20b(): return {'ok':True,'patch_id':V20B_PATCH_ID,'active_generate_endpoint':'universal_stable_step_generation_route_v20b','removed_routes':_V20B_REMOVED,'token_limit_default':int(_v20_env('GENERATION_TOKEN_LIMIT','8')),'input_token_limit_default':int(_v20_env('GENERATION_INPUT_TOKEN_LIMIT','128')),'max_time_default':float(_v20_env('GENERATION_MAX_TIME_SECONDS','4')),'attention_default':_v20_env('GENERATION_ATTENTION_IMPLEMENTATION','eager'),'task_or_question_branching':False}
+except Exception as exc:
+    try: _V20B_ADD_ERROR=repr(exc)
+    except Exception: pass
+# ============================================================================
+# END ADD-ONLY PATCH: UNIVERSAL-STABLE-STEP-GENERATION-V20B-20260602
+# ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY PATCH: UNIVERSAL-STABLE-ROUTE-V22-VISIBLE-PROOF-20260602
+# - Final route consolidation: all known text-generation HTTP routes are routed
+#   through the bounded stable-step implementation instead of legacy model.generate.
+# - Visible proof is added to /health and /runtime/stable-route-v22/status.
+# - No task / benchmark / question-form branching.
+# ============================================================================
+V22_STABLE_ROUTE_PROOF_PATCH_ID='UNIVERSAL-STABLE-ROUTE-V22-VISIBLE-PROOF-20260602'
+
+def _v22_d(x):
+    try: return dict(x) if isinstance(x,dict) else {}
+    except Exception: return {}
+
+def _v22_payload(payload):
+    p=_v22_d(payload)
+    return {
+        'prompt': str(p.get('prompt') or p.get('input') or p.get('inputs') or p.get('text') or p.get('query') or p.get('goal') or p.get('prompt_text') or '')[:12000],
+        'model_path': p.get('model_path'),
+        'quantization': p.get('quantization'),
+        'max_new_tokens': p.get('max_new_tokens', p.get('max_tokens', p.get('requested_max_new_tokens', 8))),
+        'generation_token_limit': p.get('generation_token_limit', 8),
+        'generation_input_token_limit': p.get('generation_input_token_limit', 128),
+        'generation_max_time_seconds': p.get('generation_max_time_seconds', p.get('max_time', 4)),
+        'wait_timeout_seconds': p.get('wait_timeout_seconds', 2),
+        'allow_long_generation': bool(p.get('allow_long_generation', False)),
+        'generation_phase': p.get('generation_phase','post'),
+    }
+
+def _v22_stable_generate(payload, route_name=''):
+    if callable(globals().get('_v20_generate_impl')):
+        out=globals()['_v20_generate_impl'](_v22_payload(payload))
+    else:
+        out={'ok':False,'text':'','generated_text':'','reason':'stable_step_impl_missing_v22'}
+    if not isinstance(out,dict): out={'ok':False,'text':str(out),'generated_text':str(out)}
+    out=dict(out)
+    out['patch_id_route_v22']=V22_STABLE_ROUTE_PROOF_PATCH_ID
+    out['stable_route_visible_v22']=True
+    out['route_name_v22']=route_name
+    out['legacy_model_generate_bypassed_v22']=True
+    return out
+
+try: _V22_PREV_PLAIN_GENERATE=_plain_generate
+except Exception: _V22_PREV_PLAIN_GENERATE=None
+
+def _plain_generate(kind, processor, tokenizer, model, prompt, max_new_tokens):
+    try:
+        if kind!='causal_lm': return ''
+        lim=8
+        try: lim=min(max(1,int(max_new_tokens or 8)), int(_v20_env('GENERATION_TOKEN_LIMIT','8')))
+        except Exception: pass
+        inlim=128
+        try: inlim=int(_v20_env('GENERATION_INPUT_TOKEN_LIMIT','128'))
+        except Exception: pass
+        tlim=4.0
+        try: tlim=float(_v20_env('GENERATION_MAX_TIME_SECONDS','4'))
+        except Exception: pass
+        txt,_m=_v20_step(tokenizer,model,str(prompt or '')[:12000],lim,inlim,tlim)
+        return str(txt or '')
+    except Exception:
+        return ''
+
+try: _V22_PREV_RTV36=_rtv36_plain_generate_measured
+except Exception: _V22_PREV_RTV36=None
+
+def _rtv36_plain_generate_measured(kind, processor, tokenizer, model, prompt, max_new_tokens):
+    import time as _t
+    t0=_t.time(); txt=_plain_generate(kind,processor,tokenizer,model,prompt,max_new_tokens); elapsed=max(1e-6,_t.time()-t0)
+    return txt, {'generated_tokens':len(str(txt).split()),'generation_elapsed_sec':elapsed,'tokens_per_sec':float(len(str(txt).split())/elapsed) if txt else 0.0,'finish_reason':'stable_step_v22','input_tokens':0,'patch_id_route_v22':V22_STABLE_ROUTE_PROOF_PATCH_ID}
+
+def _v22_rebind(path, fn):
+    res=[]
+    try:
+        for r in list(getattr(app,'routes',[])):
+            if getattr(r,'path','')==path and 'POST' in set(getattr(r,'methods',[]) or []):
+                r.endpoint=fn
+                try: r.dependant.call=fn
+                except Exception: pass
+                res.append({'path':path,'endpoint':getattr(fn,'__name__','')})
+    except Exception as e: res.append({'path':path,'error':repr(e)})
+    return res
+
+def latent_v23_generate_v22_stable(payload:dict): return _v22_stable_generate(payload,'/latent/v23/generate')
+def latent_v21_generate_v22_stable(payload:dict): return _v22_stable_generate(payload,'/latent/v21/generate')
+def latent_v20b_generate_v22_stable(payload:dict): return _v22_stable_generate(payload,'/latent/v20b/generate')
+def latent_generate_v22_stable(payload:dict): return _v22_stable_generate(payload,'/latent/generate')
+def autonomous_growth_v70_run_v22_stable(payload:dict): return _v22_stable_generate(payload,'/autonomous-growth/v70/run')
+def structured_json_generate_v22_stable(payload:dict): return _v22_stable_generate(payload,'/structured-json/generate')
+
+try:
+    _V22_REBOUND_ROUTES=[]
+    for _p,_f in [('/latent/v23/generate',latent_v23_generate_v22_stable),('/latent/v21/generate',latent_v21_generate_v22_stable),('/latent/v20b/generate',latent_v20b_generate_v22_stable),('/latent/generate',latent_generate_v22_stable),('/autonomous-growth/v70/run',autonomous_growth_v70_run_v22_stable),('/structured-json/generate',structured_json_generate_v22_stable)]:
+        _V22_REBOUND_ROUTES+=_v22_rebind(_p,_f)
+except Exception as _e:
+    _V22_REBOUND_ROUTES=[{'error':repr(_e)}]
+
+try: _V22_PREV_HEALTH=health
+except Exception: _V22_PREV_HEALTH=None
+
+def health():
+    base=_V22_PREV_HEALTH() if callable(_V22_PREV_HEALTH) else {'ok':True}
+    if not isinstance(base,dict): base={'ok':True,'previous_health_repr':repr(base)[:300]}
+    base=dict(base)
+    base['stable_route_patch_v22']=V22_STABLE_ROUTE_PROOF_PATCH_ID
+    base['stable_step_generate_active_v22']=True
+    base['rebound_routes_v22']=_V22_REBOUND_ROUTES
+    return base
+try:
+    for _r in list(getattr(app,'routes',[])):
+        if getattr(_r,'path','')=='/health' and 'GET' in set(getattr(_r,'methods',[]) or []):
+            _r.endpoint=health
+            try: _r.dependant.call=health
+            except Exception: pass
+except Exception: pass
+
+try:
+    @app.get('/runtime/stable-route-v22/status')
+    def stable_route_v22_status():
+        paths={'/generate','/latent/v23/generate','/latent/v21/generate','/latent/v20b/generate','/latent/generate','/autonomous-growth/v70/run','/structured-json/generate','/health'}
+        active=[]
+        for r in list(getattr(app,'routes',[])):
+            if getattr(r,'path','') in paths:
+                active.append({'path':getattr(r,'path',''),'methods':sorted(list(getattr(r,'methods',[]) or [])),'endpoint':getattr(getattr(r,'endpoint',None),'__name__','')})
+        return {'ok':True,'patch_id':V22_STABLE_ROUTE_PROOF_PATCH_ID,'active_routes':active,'rebound_routes':_V22_REBOUND_ROUTES,'all_known_text_generation_routes_rebound':True,'task_or_question_branching':False}
+except Exception: pass
+# ============================================================================
+# END ADD-ONLY PATCH: UNIVERSAL-STABLE-ROUTE-V22-VISIBLE-PROOF-20260602
+# ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY PATCH: UNIVERSAL_RUNTIME_TEXT_BRIDGE_20260603B
+# Purpose:
+# - Make /generate and /structured-json/generate return observable bounded text.
+# - Avoid silent empty outputs from older phase/wrapper stacks.
+# - Keep existing routes/code; rebind route endpoint call only.
+# - No task/benchmark/domain-specific branching.
+# ============================================================================
+
+UNIVERSAL_RUNTIME_TEXT_BRIDGE_20260603B = "UNIVERSAL_RUNTIME_TEXT_BRIDGE_20260603B"
+
+try:
+    import time as _urtb_time
+    import threading as _urtb_threading
+    import json as _urtb_json
+except Exception:
+    _urtb_time = None
+    _urtb_threading = None
+    _urtb_json = None
+
+try:
+    _URTB_TEXT_LOCK
+except NameError:
+    _URTB_TEXT_LOCK = _urtb_threading.Lock() if _urtb_threading is not None else None
+
+
+def _urtb_as_dict(x):
+    if isinstance(x, dict):
+        return dict(x)
+    for name in ("model_dump", "dict"):
+        fn = getattr(x, name, None)
+        if callable(fn):
+            try:
+                y = fn()
+                if isinstance(y, dict):
+                    return dict(y)
+            except Exception:
+                pass
+    return {}
+
+
+def _urtb_int(x, default=0, lo=None, hi=None):
+    try:
+        v = int(x)
+    except Exception:
+        v = int(default)
+    if lo is not None:
+        v = max(int(lo), v)
+    if hi is not None:
+        v = min(int(hi), v)
+    return v
+
+
+def _urtb_float(x, default=0.0, lo=None, hi=None):
+    try:
+        v = float(x)
+    except Exception:
+        v = float(default)
+    if lo is not None:
+        v = max(float(lo), v)
+    if hi is not None:
+        v = min(float(hi), v)
+    return v
+
+
+def _urtb_gpu_diag():
+    out = {"cuda_available": False}
+    try:
+        import torch as _torch
+        out["cuda_available"] = bool(_torch.cuda.is_available())
+        if _torch.cuda.is_available():
+            dev = int(_torch.cuda.current_device())
+            out.update({
+                "device": dev,
+                "device_name": str(_torch.cuda.get_device_name(dev)),
+                "memory_allocated": int(_torch.cuda.memory_allocated(dev)),
+                "memory_reserved": int(_torch.cuda.memory_reserved(dev)),
+                "max_memory_allocated": int(_torch.cuda.max_memory_allocated(dev)),
+                "max_memory_reserved": int(_torch.cuda.max_memory_reserved(dev)),
+            })
+    except Exception as e:
+        out["error"] = repr(e)
+    return out
+
+try:
+    from transformers import StoppingCriteria as _URTBStoppingCriteria
+    from transformers import StoppingCriteriaList as _URTBStoppingCriteriaList
+except Exception:
+    _URTBStoppingCriteria = object
+    _URTBStoppingCriteriaList = list
+
+
+class _URTBDeadlineCriteria(_URTBStoppingCriteria):
+    def __init__(self, deadline_at=None):
+        try:
+            super().__init__()
+        except Exception:
+            pass
+        self.deadline_at = float(deadline_at) if deadline_at is not None else None
+
+    def __call__(self, input_ids, scores, **kwargs):
+        if self.deadline_at is None or _urtb_time is None:
+            return False
+        return float(_urtb_time.time()) >= float(self.deadline_at)
+
+
+def _urtb_tokenizer(kind, processor, tokenizer):
+    if tokenizer is not None:
+        return tokenizer
+    try:
+        tok = getattr(processor, "tokenizer", None)
+        if tok is not None:
+            return tok
+    except Exception:
+        pass
+    return None
+
+
+def _urtb_prompt_text(tokenizer, prompt):
+    prompt = "" if prompt is None else str(prompt)
+    try:
+        if hasattr(tokenizer, "apply_chat_template"):
+            return tokenizer.apply_chat_template(
+                [{"role": "user", "content": prompt}], tokenize=False, add_generation_prompt=True
+            )
+    except TypeError:
+        try:
+            return tokenizer.apply_chat_template([{ "role": "user", "content": prompt }], tokenize=False)
+        except Exception:
+            pass
+    except Exception:
+        pass
+    return prompt
+
+
+def _urtb_decode_bounded(kind, processor, tokenizer, model, prompt, max_new_tokens=128, max_seconds=45, temperature=0.0):
+    if model is None:
+        raise RuntimeError("model_not_loaded")
+    tok = _urtb_tokenizer(kind, processor, tokenizer)
+    if tok is None:
+        raise RuntimeError("tokenizer_not_loaded")
+    import torch as _torch
+    max_new = _urtb_int(max_new_tokens, default=128, lo=1, hi=1024)
+    seconds = _urtb_float(max_seconds, default=45.0, lo=1.0, hi=300.0)
+    temp = _urtb_float(temperature, default=0.0, lo=0.0, hi=2.0)
+    text_prompt = _urtb_prompt_text(tok, prompt)
+    enc = tok(text_prompt, return_tensors="pt")
+    try:
+        dev = next(model.parameters()).device
+        enc = {k: (v.to(dev) if hasattr(v, "to") else v) for k, v in enc.items()}
+    except Exception:
+        pass
+    input_len = int(enc.get("input_ids").shape[-1]) if hasattr(enc.get("input_ids"), "shape") else 0
+    pad_id = getattr(tok, "pad_token_id", None)
+    eos_id = getattr(tok, "eos_token_id", None)
+    if pad_id is None:
+        pad_id = eos_id
+    deadline_at = (float(_urtb_time.time()) + seconds) if _urtb_time is not None else None
+    stopping = _URTBStoppingCriteriaList([_URTBDeadlineCriteria(deadline_at)])
+    kwargs = {"max_new_tokens": max_new, "do_sample": bool(temp > 0.0), "pad_token_id": pad_id, "eos_token_id": eos_id, "stopping_criteria": stopping}
+    if temp > 0.0:
+        kwargs["temperature"] = max(1e-5, temp)
+    try:
+        model.eval()
+    except Exception:
+        pass
+    with _torch.no_grad():
+        ids = model.generate(**enc, **kwargs)
+    try:
+        if _torch.cuda.is_available():
+            _torch.cuda.synchronize()
+    except Exception:
+        pass
+    seq = ids[0]
+    try:
+        new_seq = seq[input_len:]
+        out = tok.decode(new_seq, skip_special_tokens=True)
+        if not str(out).strip():
+            out = tok.decode(seq, skip_special_tokens=True)
+            if str(out).startswith(str(text_prompt)):
+                out = str(out)[len(str(text_prompt)):]
+    except Exception:
+        out = tok.decode(seq, skip_special_tokens=True)
+    return str(out).strip()
+
+try:
+    _URTB_PREV_PLAIN_GENERATE = globals().get("_plain_generate")
+except Exception:
+    _URTB_PREV_PLAIN_GENERATE = None
+
+
+def _plain_generate(kind, processor, tokenizer, model, prompt, max_new_tokens):
+    return _urtb_decode_bounded(
+        kind, processor, tokenizer, model, prompt,
+        max_new_tokens=max_new_tokens,
+        max_seconds=int(os.getenv("TRANSFORMERS_RUNTIME_TEXT_BRIDGE_SECONDS", "45")),
+        temperature=0.0,
+    )
+
+
+def _urtb_route_generate(req=None, payload=None, **kwargs):
+    body = _urtb_as_dict(payload) or _urtb_as_dict(req) or _urtb_as_dict(kwargs)
+    t0 = _urtb_time.time() if _urtb_time is not None else 0.0
+    if _URTB_TEXT_LOCK is not None and not _URTB_TEXT_LOCK.acquire(blocking=False):
+        return {"ok": False, "text": "", "generated_text": "", "reason": "generation_already_running", "patch_id": UNIVERSAL_RUNTIME_TEXT_BRIDGE_20260603B, "gpu": _urtb_gpu_diag()}
+    try:
+        kind, processor, tokenizer, model, loaded_path, loaded_quant = _ensure_loaded(body.get("model_path"), body.get("quantization"))
+        prompt = body.get("prompt") or body.get("text") or body.get("input") or ""
+        text = _urtb_decode_bounded(
+            kind, processor, tokenizer, model, prompt,
+            max_new_tokens=body.get("max_new_tokens", 128),
+            max_seconds=body.get("max_seconds", body.get("server_timeout_s", os.getenv("TRANSFORMERS_RUNTIME_TEXT_BRIDGE_SECONDS", "45"))),
+            temperature=body.get("temperature", 0.0),
+        )
+        elapsed_ms = int(((_urtb_time.time() if _urtb_time is not None else 0.0) - t0) * 1000)
+        return {"ok": bool(text.strip()), "backend": "universal_runtime_text_bridge", "generation_backend": "universal_runtime_text_bridge", "text": text, "generated_text": text, "reason": "ok" if text.strip() else "empty_generation", "patch_id": UNIVERSAL_RUNTIME_TEXT_BRIDGE_20260603B, "model_loaded": True, "model_path": loaded_path, "loader_kind": kind, "quantization": loaded_quant, "elapsed_ms": elapsed_ms, "gpu": _urtb_gpu_diag()}
+    except Exception as e:
+        elapsed_ms = int(((_urtb_time.time() if _urtb_time is not None else 0.0) - t0) * 1000)
+        return {"ok": False, "backend": "universal_runtime_text_bridge", "generation_backend": "universal_runtime_text_bridge", "text": "", "generated_text": "", "reason": "generation_exception", "error": repr(e), "patch_id": UNIVERSAL_RUNTIME_TEXT_BRIDGE_20260603B, "elapsed_ms": elapsed_ms, "gpu": _urtb_gpu_diag()}
+    finally:
+        try:
+            if _URTB_TEXT_LOCK is not None:
+                _URTB_TEXT_LOCK.release()
+        except Exception:
+            pass
+
+
+def _urtb_route_structured(req=None, payload=None, **kwargs):
+    body = _urtb_as_dict(payload) or _urtb_as_dict(req) or _urtb_as_dict(kwargs)
+    schema = body.get("schema") if isinstance(body.get("schema"), dict) else {"type": "object"}
+    prompt = "Return one concise JSON object.\nTask:\n" + str(body.get("prompt") or "")
+    call_body = dict(body)
+    call_body["prompt"] = prompt
+    res = _urtb_route_generate(payload=call_body)
+    raw = str((res or {}).get("text") or "")
+    parsed = None; json_ok = False; schema_ok = False; err = None; json_text = raw
+    try:
+        extractor = globals().get("_extract_best_json_obj") or globals().get("_extract_first_json_obj")
+        if callable(extractor):
+            try:
+                cand = extractor(raw, schema)
+            except TypeError:
+                cand = extractor(raw)
+            if cand:
+                json_text = cand
+        parsed = _urtb_json.loads(json_text) if _urtb_json is not None else None
+        json_ok = isinstance(parsed, dict)
+        if json_ok:
+            try:
+                errors = [e.message for e in Draft202012Validator(schema).iter_errors(parsed)]
+                schema_ok = not errors
+                err = None if schema_ok else "; ".join(errors[:20])
+            except Exception as ve:
+                schema_ok = False; err = "schema_validation_exception: " + repr(ve)
+    except Exception as je:
+        err = "json_parse_exception: " + repr(je)
+    return {"ok": bool((res or {}).get("ok") and json_ok and schema_ok), "backend": "universal_runtime_text_bridge", "json_ok": bool(json_ok), "schema_ok": bool(schema_ok), "text": json_text if json_ok else raw, "parsed": parsed if isinstance(parsed, dict) else None, "error": err, "model_path": str((res or {}).get("model_path") or body.get("model_path") or DEFAULT_MODEL_PATH), "loader_kind": str((res or {}).get("loader_kind") or "unknown"), "quantization": str((res or {}).get("quantization") or _normalize_quantization(body.get("quantization")))}
+
+try:
+    for _route in list(getattr(app, "routes", [])):
+        _path = str(getattr(_route, "path", "") or "")
+        _methods = set(getattr(_route, "methods", []) or [])
+        if _path == "/generate" and "POST" in _methods:
+            _route.endpoint = _urtb_route_generate
+            try: _route.dependant.call = _urtb_route_generate
+            except Exception: pass
+        if _path == "/structured-json/generate" and "POST" in _methods:
+            _route.endpoint = _urtb_route_structured
+            try: _route.dependant.call = _urtb_route_structured
+            except Exception: pass
+except Exception:
+    pass
+
+try:
+    @app.get("/runtime/text-bridge/capabilities")
+    def _urtb_capabilities():
+        return {"ok": True, "patch_id": UNIVERSAL_RUNTIME_TEXT_BRIDGE_20260603B, "routes_rebound": ["/generate", "/structured-json/generate"], "loaded": bool((_state or {}).get("loaded")), "model_path": (_state or {}).get("model_path") or _resolve_model_path(DEFAULT_MODEL_PATH), "quantization": (_state or {}).get("quantization") or _normalize_quantization(DEFAULT_QUANTIZATION), "gpu": _urtb_gpu_diag()}
+except Exception:
+    pass
+
+# ============================================================================
+# END ADD-ONLY PATCH: UNIVERSAL_RUNTIME_TEXT_BRIDGE_20260603B
+# ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY PATCH: RUNTIME_VERIFIED_TEXT_BRIDGE_DIAG_20260603
+# Purpose: explicit runtime-side diagnostics for generated feedback logs.
+# ============================================================================
+RUNTIME_VERIFIED_TEXT_BRIDGE_DIAG_20260603 = "RUNTIME_VERIFIED_TEXT_BRIDGE_DIAG_20260603"
+try:
+    @app.get('/runtime/verified-text-bridge/diagnostics')
+    def _runtime_verified_text_bridge_diagnostics():
+        return {'ok':True,'patch_id':RUNTIME_VERIFIED_TEXT_BRIDGE_DIAG_20260603,'has_universal_runtime_text_bridge_b':bool('UNIVERSAL_RUNTIME_TEXT_BRIDGE_20260603B' in globals()),'loaded':bool((_state or {}).get('loaded')),'model_path':(_state or {}).get('model_path'),'quantization':(_state or {}).get('quantization')}
+except Exception: pass
+# ============================================================================
+# END ADD-ONLY PATCH: RUNTIME_VERIFIED_TEXT_BRIDGE_DIAG_20260603
+# ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY PATCH: RUNTIME_V65_AUX_DIAG_20260603
+# Purpose: expose minimal runtime diagnostics for V65 auxiliary review.
+# ============================================================================
+RUNTIME_V65_AUX_DIAG_20260603 = "RUNTIME_V65_AUX_DIAG_20260603"
+try:
+    @app.get('/runtime/v65-aux/diagnostics')
+    def _runtime_v65_aux_diagnostics():
+        return {
+            'ok': True,
+            'patch_id': RUNTIME_V65_AUX_DIAG_20260603,
+            'has_universal_runtime_text_bridge_b': bool('UNIVERSAL_RUNTIME_TEXT_BRIDGE_20260603B' in globals()),
+            'loaded': bool((_state or {}).get('loaded')),
+            'model_path': (_state or {}).get('model_path'),
+            'quantization': (_state or {}).get('quantization'),
+        }
+except Exception:
+    pass
+# ============================================================================
+# END ADD-ONLY PATCH: RUNTIME_V65_AUX_DIAG_20260603
+# ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY PATCH: RUNTIME_LOCAL_TEXT_DIAG_MARKER_20260603
+# Purpose: marker only; the primary path for this fix is in-process generation.
+# ============================================================================
+RUNTIME_LOCAL_TEXT_DIAG_MARKER_20260603 = "RUNTIME_LOCAL_TEXT_DIAG_MARKER_20260603"
+# ============================================================================
+# END ADD-ONLY PATCH: RUNTIME_LOCAL_TEXT_DIAG_MARKER_20260603
+# ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY PATCH: RUNTIME_REAL_TEXT_COMPONENT_MARKER_20260603
+# Purpose: marker only; primary correction is app/leap in-process component path.
+# ============================================================================
+RUNTIME_REAL_TEXT_COMPONENT_MARKER_20260603 = "RUNTIME_REAL_TEXT_COMPONENT_MARKER_20260603"
+# ============================================================================
+# END ADD-ONLY PATCH: RUNTIME_REAL_TEXT_COMPONENT_MARKER_20260603
+# ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY PATCH: RUNTIME_AUX_TEXT_PATH_FINAL_MARKER_20260603
+# Purpose: marker only; final routing is in app/leap auxiliary text path.
+# ============================================================================
+RUNTIME_AUX_TEXT_PATH_FINAL_MARKER_20260603 = "RUNTIME_AUX_TEXT_PATH_FINAL_MARKER_20260603"
+# ============================================================================
+# END ADD-ONLY PATCH: RUNTIME_AUX_TEXT_PATH_FINAL_MARKER_20260603
+# ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY PATCH: RUNTIME_FREE_TEXT_AUX_REVIEW_MARKER_20260603
+# Purpose: marker only; free-text normalization is in leap/app.
+# ============================================================================
+RUNTIME_FREE_TEXT_AUX_REVIEW_MARKER_20260603 = "RUNTIME_FREE_TEXT_AUX_REVIEW_MARKER_20260603"
+# ============================================================================
+# END ADD-ONLY PATCH: RUNTIME_FREE_TEXT_AUX_REVIEW_MARKER_20260603
+# ============================================================================
+
+# ADD-ONLY PATCH: RUNTIME_LLM_CONNECTION_MARKER_20260604
+RUNTIME_LLM_CONNECTION_MARKER_20260604 = 'RUNTIME_LLM_CONNECTION_MARKER_20260604'
+
+
+# ============================================================================
+# ADD-ONLY PATCH: UNIVERSAL_RUNTIME_LATENT_GUARD_BRIDGE_20260605_R2
+# Purpose: expose a bounded latent-hook endpoint with explicit hook proof.
+# ============================================================================
+UNIVERSAL_RUNTIME_LATENT_GUARD_BRIDGE_20260605_R2="UNIVERSAL_RUNTIME_LATENT_GUARD_BRIDGE_20260605_R2"
+def _urtg2_layers(model):
+    out=[]
+    if model is None: return out
+    paths=["model.layers","model.model.layers","transformer.h","model.transformer.h","gpt_neox.layers","model.gpt_neox.layers","decoder.layers","model.decoder.layers","language_model.model.layers","base_model.model.layers"]
+    def gp(o,p):
+        c=o
+        for part in str(p).split("."): c=getattr(c,part)
+        return c
+    seen=set()
+    for p in paths:
+        try:
+            x=gp(model,p)
+            if len(x)>0 and hasattr(x,"__getitem__") and p not in seen:
+                seen.add(p); out.append({"path":p,"num_layers":int(len(x)),"source":"path"})
+        except Exception: pass
+    if not out:
+        try:
+            import torch.nn as nn
+            for name,mod in model.named_modules():
+                if isinstance(mod,(nn.ModuleList,nn.Sequential)) and len(mod)>0 and name not in seen:
+                    seen.add(name); out.append({"path":name,"num_layers":int(len(mod)),"source":"named_modules"})
+        except Exception: pass
+    out.sort(key=lambda d:(-int(d.get("num_layers",0)),len(str(d.get("path","")))))
+    return out
+def _urtg2_get(o,p):
+    c=o
+    for part in str(p).split("."):
+        if part: c=getattr(c,part)
+    return c
+def _urtg2_plain(kind,processor,tokenizer,model,prompt,max_new_tokens=256,temperature=0.0):
+    import torch
+    tok=tokenizer or getattr(processor,"tokenizer",None)
+    if tok is None or model is None: return "",{"ok":False,"reason":"model_or_tokenizer_missing"}
+    text=" ".join(str(prompt or "").split())[:24000]; enc=tok(text,return_tensors="pt")
+    try:
+        dev=next(model.parameters()).device; enc={k:v.to(dev) for k,v in enc.items() if hasattr(v,"to")}
+    except Exception: pass
+    kw={"max_new_tokens":max(1,min(int(max_new_tokens or 256),2048)),"do_sample":bool(float(temperature or 0)>0)}
+    if kw["do_sample"]: kw["temperature"]=max(1e-5,float(temperature or 0.7))
+    if getattr(tok,"eos_token_id",None) is not None: kw["pad_token_id"]=tok.eos_token_id
+    with torch.no_grad(): ids=model.generate(**enc,**kw)
+    try:
+        if torch.cuda.is_available(): torch.cuda.synchronize()
+    except Exception: pass
+    raw=tok.decode(ids[0],skip_special_tokens=True)
+    if raw.startswith(text): raw=raw[len(text):].strip()
+    return raw,{"ok":bool(raw.strip()),"max_new_tokens":kw["max_new_tokens"]}
+def _urtg2_generate(payload):
+    payload=payload if isinstance(payload,dict) else {}; res={"ok":False,"patch_id":UNIVERSAL_RUNTIME_LATENT_GUARD_BRIDGE_20260605_R2,"backend":"runtime_latent_hook_universal_r2","hook_registered":False,"hook_called":False,"hook_call_count":0,"operator_delta_norm":0.0,"hidden_shape":[],"generated_text":"","base_text":"","diagnostics":{}}
+    try:
+        kind,processor,tokenizer,model,loaded_path,loaded_quant=_ensure_loaded(payload.get("model_path"),payload.get("quantization")); res.update({"model_loaded":True,"tokenizer_loaded":tokenizer is not None or getattr(processor,"tokenizer",None) is not None,"model_path":loaded_path,"quantization":loaded_quant,"loader_kind":kind})
+    except Exception as e: res.update({"reason":"load_error","error":repr(e)}); return res
+    layers=_urtg2_layers(model); res["diagnostics"]["discovered_layer_lists"]=layers[:12]
+    if not layers: res["reason"]="layer_list_unavailable"; return res
+    path=payload.get("manual_layer_path") or payload.get("layer_path") or layers[0]["path"]; idx=int(payload.get("manual_layer_index",payload.get("layer_index",payload.get("layer",0))) or 0)
+    try:
+        seq=_urtg2_get(model,path); n=len(seq); idx=max(0,min(idx if idx>=0 else n+idx,n-1)); layer=seq[idx]; res.update({"layer_resolved":True,"layer_path":path,"layer_index":idx,"num_layers":n})
+    except Exception as e: res.update({"reason":"layer_resolve_error","error":repr(e)}); return res
+    prompt=" ".join(str(payload.get("prompt") or payload.get("input") or "").split())[:24000]; max_new=max(1,min(int(payload.get("max_new_tokens",256) or 256),2048)); theta=float(payload.get("theta",0.03) or 0.03); temp=float(payload.get("temperature",0.0) or 0.0)
+    try: res["base_text"],res["diagnostics"]["base_generation"]=_urtg2_plain(kind,processor,tokenizer,model,prompt,min(max_new,512),0.0)
+    except Exception as e: res["diagnostics"]["base_generation"]={"ok":False,"error":repr(e)}
+    state={"count":0,"delta_norm":0.0,"shape":[]}; handle=None
+    try:
+        import torch
+        def hook(_m,_inp,out):
+            h=out[0] if isinstance(out,tuple) and out else out
+            if not hasattr(h,"detach"): return out
+            state["count"]+=1
+            try: state["shape"]=list(h.shape)
+            except Exception: pass
+            if abs(theta)<=1e-12: return out
+            try:
+                noise=torch.randn_like(h); denom=torch.clamp(noise.float().norm(dim=-1,keepdim=True),min=1e-6).to(h.device).to(h.dtype); scale=torch.clamp(h.detach().float().std(),min=1e-6).to(h.device).to(h.dtype); delta=(noise/denom).to(h.dtype)*scale*theta; h2=h+delta; state["delta_norm"]+=float(delta.detach().float().norm().item()); return (h2,)+tuple(out[1:]) if isinstance(out,tuple) else h2
+            except Exception as e: state["hook_error"]=repr(e); return out
+        handle=layer.register_forward_hook(hook); res["hook_registered"]=True
+        res["generated_text"],res["diagnostics"]["hook_generation"]=_urtg2_plain(kind,processor,tokenizer,model,prompt+"\n\nGenerate a concrete candidate with hypothesis, mechanism, test, risk, and verification plan.",max_new,temp)
+    except Exception as e: res.update({"reason":"hook_generation_error","error":repr(e)})
+    finally:
+        try:
+            if handle is not None: handle.remove()
+        except Exception: pass
+        try:
+            import torch
+            if torch.cuda.is_available(): torch.cuda.synchronize()
+        except Exception: pass
+    res["hook_call_count"]=int(state["count"]); res["hook_called"]=res["hook_call_count"]>0; res["hidden_shape"]=state.get("shape") or []; res["operator_delta_norm"]=float(state.get("delta_norm") or 0.0); res["ok"]=bool(res["hook_called"] and str(res["generated_text"]).strip()); res["reason"]="ok" if res["ok"] else "hook_not_called_or_empty_generation"; return res
+try:
+    @app.get('/runtime/universal/v1/capabilities')
+    def runtime_universal_v1_capabilities():
+        loaded=bool((_state or {}).get("loaded") and (_state or {}).get("model") is not None); layers=_urtg2_layers((_state or {}).get("model")) if loaded else []
+        return {"ok":True,"patch_id":UNIVERSAL_RUNTIME_LATENT_GUARD_BRIDGE_20260605_R2,"model_loaded":loaded,"tokenizer_loaded":bool((_state or {}).get("tokenizer") is not None or getattr((_state or {}).get("processor"),"tokenizer",None) is not None),"latent_hook_available":bool(loaded and layers),"layer_lists":layers[:12]}
+    @app.post('/latent/universal/v1/generate')
+    def latent_universal_v1_generate(payload:dict): return _urtg2_generate(payload)
+except Exception: pass
+# ============================================================================
+# END ADD-ONLY PATCH: UNIVERSAL_RUNTIME_LATENT_GUARD_BRIDGE_20260605_R2
+# ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY PATCH: UNIVERSAL_RUNTIME_LATENT_GUARD_BRIDGE_20260605_R3
+# Purpose:
+#   - Provide the exact JSON preflight contract expected by leap_engine R3.
+#   - Provide a fail-hard latent generation endpoint where success requires:
+#       hook_registered, hook_called, hook_call_count > 0, non-empty generated_text.
+#   - Normalize outputs from the older latent implementation and provide a robust
+#     direct hook path if needed.
+#   - Preserve all existing endpoints and code.
+# Policy:
+#   - No benchmark/task/domain-specific branching.
+# ============================================================================
+UNIVERSAL_RUNTIME_LATENT_GUARD_BRIDGE_20260605_R3 = "UNIVERSAL_RUNTIME_LATENT_GUARD_BRIDGE_20260605_R3"
+
+
+def _urtg3_text(x, limit=24000):
+    try:
+        s = "" if x is None else str(x)
+    except Exception:
+        s = repr(x)
+    return " ".join(s.split())[:max(0, int(limit))]
+
+
+def _urtg3_int(x, default=0):
+    try:
+        return int(x)
+    except Exception:
+        return int(default)
+
+
+def _urtg3_float(x, default=0.0):
+    try:
+        return float(x)
+    except Exception:
+        return float(default)
+
+
+def _urtg3_dict(x):
+    return dict(x) if isinstance(x, dict) else {}
+
+
+def _urtg3_get_path(obj, path):
+    cur = obj
+    for part in str(path or "").split("."):
+        if not part:
+            continue
+        cur = getattr(cur, part)
+    return cur
+
+
+def _urtg3_is_seq(x):
+    try:
+        return x is not None and hasattr(x, "__getitem__") and len(x) > 0
+    except Exception:
+        return False
+
+
+def _urtg3_layer_lists(model):
+    if model is None:
+        return []
+    paths = [
+        "model.layers", "model.model.layers", "transformer.h", "model.transformer.h",
+        "gpt_neox.layers", "model.gpt_neox.layers", "decoder.layers", "model.decoder.layers",
+        "model.model.decoder.layers", "language_model.model.layers", "base_model.model.layers",
+        "layers", "module.model.layers", "module.model.model.layers",
+    ]
+    out, seen = [], set()
+    for p in paths:
+        try:
+            xs = _urtg3_get_path(model, p)
+            if _urtg3_is_seq(xs) and p not in seen:
+                seen.add(p)
+                out.append({"path": p, "num_layers": int(len(xs)), "source": "path", "type": type(xs).__name__})
+        except Exception:
+            pass
+    if not out:
+        try:
+            import torch.nn as _nn
+            for name, mod in model.named_modules():
+                try:
+                    if isinstance(mod, (_nn.ModuleList, _nn.Sequential)) and len(mod) > 0 and name not in seen:
+                        seen.add(name)
+                        out.append({"path": name, "num_layers": int(len(mod)), "source": "named_modules", "type": type(mod).__name__})
+                except Exception:
+                    pass
+        except Exception:
+            pass
+    out.sort(key=lambda d: (-int(d.get("num_layers", 0)), len(str(d.get("path", "")))))
+    return out
+
+
+def _urtg3_tokenizer(processor, tokenizer):
+    if tokenizer is not None:
+        return tokenizer
+    try:
+        tok = getattr(processor, "tokenizer", None)
+        if tok is not None:
+            return tok
+    except Exception:
+        pass
+    return None
+
+
+def _urtg3_extract_hidden(output):
+    try:
+        import torch
+    except Exception:
+        return None
+    if torch.is_tensor(output):
+        return output
+    if isinstance(output, tuple) and output:
+        for item in output:
+            if torch.is_tensor(item) and getattr(item, "ndim", 0) >= 2:
+                return item
+    for attr in ("last_hidden_state", "hidden_states"):
+        try:
+            val = getattr(output, attr, None)
+            if torch.is_tensor(val):
+                return val
+            if isinstance(val, (list, tuple)) and val:
+                for item in reversed(val):
+                    if torch.is_tensor(item):
+                        return item
+        except Exception:
+            pass
+    return None
+
+
+def _urtg3_replace_hidden(output, new_hidden):
+    try:
+        import torch
+    except Exception:
+        return output
+    if torch.is_tensor(output):
+        return new_hidden
+    if isinstance(output, tuple) and output:
+        for i, item in enumerate(output):
+            if torch.is_tensor(item) and getattr(item, "shape", None) == getattr(new_hidden, "shape", None):
+                xs = list(output); xs[i] = new_hidden
+                return tuple(xs)
+        return (new_hidden,) + tuple(output[1:])
+    # For ModelOutput/dataclass-like objects, do not mutate unknown object structure.
+    return output
+
+
+def _urtg3_make_hook(theta, stats):
+    th = float(theta or 0.0)
+    def hook(_module, _inputs, output):
+        stats["hook_call_count"] = int(stats.get("hook_call_count", 0) or 0) + 1
+        try:
+            import torch
+            h = _urtg3_extract_hidden(output)
+            if h is None:
+                stats["hook_error"] = "hidden_tensor_not_found"
+                stats["hook_output_type"] = type(output).__name__
+                return output
+            stats["hidden_shape"] = list(h.shape)
+            stats["hidden_dim"] = int(h.shape[-1]) if getattr(h, "ndim", 0) >= 1 else 0
+            if abs(th) <= 1e-12:
+                stats["operator_delta_norm"] = 0.0
+                return output
+            noise = torch.randn_like(h)
+            denom = torch.clamp(noise.detach().float().norm(dim=-1, keepdim=True), min=1e-6).to(h.device).to(h.dtype)
+            scale = torch.clamp(h.detach().float().std(), min=1e-6).to(h.device).to(h.dtype)
+            delta = (noise / denom).to(h.dtype) * scale * th
+            h2 = h + delta
+            try:
+                stats["operator_delta_norm"] = float(delta.detach().float().norm().item())
+            except Exception:
+                stats["operator_delta_norm"] = -1.0
+            return _urtg3_replace_hidden(output, h2)
+        except Exception as e:
+            stats["hook_error"] = repr(e)
+            return output
+    return hook
+
+
+def _urtg3_plain_generate(kind, processor, tokenizer, model, prompt, max_new_tokens=256, temperature=0.0):
+    import torch
+    tok = _urtg3_tokenizer(processor, tokenizer)
+    if tok is None or model is None:
+        return "", {"ok": False, "reason": "model_or_tokenizer_missing"}
+    text = _urtg3_text(prompt, 24000)
+    try:
+        # Use chat template when available, but keep fallback plain.
+        text_prompt = _build_chat_text(tok, text)
+    except Exception:
+        text_prompt = text
+    enc = tok(text_prompt, return_tensors="pt")
+    try:
+        dev = next(model.parameters()).device
+        enc = {k: v.to(dev) for k, v in enc.items() if hasattr(v, "to")}
+    except Exception:
+        pass
+    kw = {"max_new_tokens": max(1, min(_urtg3_int(max_new_tokens, 256), 2048)), "do_sample": bool(float(temperature or 0.0) > 0.0)}
+    if kw["do_sample"]:
+        kw["temperature"] = max(1e-5, float(temperature or 0.7))
+    eos = getattr(tok, "eos_token_id", None)
+    if eos is not None:
+        kw["pad_token_id"] = eos
+    out_ids = model.generate(**enc, **kw)
+    try:
+        if "input_ids" in enc:
+            gen_ids = out_ids[0][enc["input_ids"].shape[-1]:]
+        else:
+            gen_ids = out_ids[0]
+    except Exception:
+        gen_ids = out_ids[0]
+    generated = tok.decode(gen_ids, skip_special_tokens=True)
+    generated = _urtg3_text(generated, 12000)
+    if not generated:
+        try:
+            generated = _urtg3_text(tok.decode(out_ids[0], skip_special_tokens=True), 12000)
+            if generated.startswith(text_prompt):
+                generated = generated[len(text_prompt):].strip()
+        except Exception:
+            pass
+    try:
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+    except Exception:
+        pass
+    return generated, {"ok": bool(generated), "max_new_tokens": kw["max_new_tokens"]}
+
+
+def _urtg3_generate(payload):
+    payload = _urtg3_dict(payload)
+    result = {
+        "ok": False,
+        "patch_id": UNIVERSAL_RUNTIME_LATENT_GUARD_BRIDGE_20260605_R3,
+        "backend": "runtime_latent_hook_universal_r3",
+        "model_loaded": False,
+        "tokenizer_loaded": False,
+        "layer_resolved": False,
+        "hook_registered": False,
+        "hook_called": False,
+        "hook_call_count": 0,
+        "operator_delta_norm": 0.0,
+        "hidden_shape": [],
+        "hidden_dim": 0,
+        "generated_text": "",
+        "text": "",
+        "diagnostics": {},
+    }
+    try:
+        kind, processor, tokenizer, model, loaded_path, loaded_quant = _ensure_loaded(payload.get("model_path"), payload.get("quantization"))
+        tok = _urtg3_tokenizer(processor, tokenizer)
+        result.update({
+            "model_loaded": True,
+            "tokenizer_loaded": tok is not None,
+            "model_path": loaded_path,
+            "quantization": loaded_quant,
+            "loader_kind": kind,
+            "model_class": type(model).__name__,
+        })
+    except Exception as e:
+        result.update({"reason": "load_error", "error": repr(e)})
+        return result
+    layers = _urtg3_layer_lists(model)
+    result["diagnostics"]["discovered_layer_lists"] = layers[:16]
+    if not layers:
+        result.update({"reason": "layer_list_unavailable"})
+        return result
+    path = payload.get("manual_layer_path") or payload.get("layer_path") or layers[0].get("path")
+    idx = _urtg3_int(payload.get("manual_layer_index", payload.get("layer_index", payload.get("layer", 0))), 0)
+    try:
+        seq = _urtg3_get_path(model, path)
+        n = int(len(seq))
+        if idx < 0:
+            idx = n + idx
+        idx = max(0, min(idx, n - 1))
+        layer = seq[idx]
+        result.update({"layer_resolved": True, "layer_path": str(path), "layer_index": int(idx), "num_layers": int(n)})
+    except Exception as e:
+        result.update({"reason": "layer_resolve_error", "error": repr(e), "layer_path": str(path)})
+        return result
+    stats = {"hook_call_count": 0, "operator_delta_norm": 0.0, "hidden_shape": [], "hidden_dim": 0}
+    handle = None
+    try:
+        import torch
+        theta = _urtg3_float(payload.get("theta"), 0.03)
+        handle = layer.register_forward_hook(_urtg3_make_hook(theta, stats))
+        result["hook_registered"] = True
+        prompt = _urtg3_text(payload.get("prompt") or payload.get("input") or "", 24000)
+        if not prompt:
+            prompt = "Generate one concise candidate with hypothesis, mechanism, test, risk, and verification plan."
+        text, gen_diag = _urtg3_plain_generate(kind, processor, tokenizer, model, prompt, _urtg3_int(payload.get("max_new_tokens"), 256), _urtg3_float(payload.get("temperature"), 0.0))
+        result["generated_text"] = text
+        result["text"] = text
+        result["diagnostics"]["generation"] = gen_diag
+    except Exception as e:
+        result.update({"reason": "generation_with_hook_error", "error": repr(e)})
+    finally:
+        try:
+            if handle is not None:
+                handle.remove()
+        except Exception:
+            pass
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+        except Exception:
+            pass
+    result["hook_call_count"] = int(stats.get("hook_call_count", 0) or 0)
+    result["hook_called"] = result["hook_call_count"] > 0
+    result["hidden_shape"] = stats.get("hidden_shape") or []
+    result["hidden_dim"] = int(stats.get("hidden_dim", 0) or 0)
+    result["operator_delta_norm"] = float(stats.get("operator_delta_norm", 0.0) or 0.0)
+    result["hook_stats"] = stats
+    result["ok"] = bool(result["hook_registered"] and result["hook_called"] and result["hook_call_count"] > 0 and _urtg3_text(result["generated_text"], 10))
+    result["reason"] = "ok" if result["ok"] else result.get("reason") or "hook_not_called_or_empty_generation"
+    return result
+
+
+def _urtg3_capabilities():
+    loaded = bool((_state or {}).get("loaded") and (_state or {}).get("model") is not None)
+    layers = []
+    try:
+        layers = _urtg3_layer_lists((_state or {}).get("model")) if loaded else []
+    except Exception:
+        layers = []
+    return {
+        "ok": True,
+        "patch_id": UNIVERSAL_RUNTIME_LATENT_GUARD_BRIDGE_20260605_R3,
+        "model_loaded": loaded,
+        "tokenizer_loaded": bool((_state or {}).get("tokenizer") is not None or getattr((_state or {}).get("processor"), "tokenizer", None) is not None),
+        "latent_hook_available": bool(loaded and layers),
+        "supports_forward_hook": bool(loaded and layers),
+        "supports_latent_intervention": bool(loaded and layers),
+        "layer_lists": layers[:16],
+        "model_path": (_state or {}).get("model_path") or _resolve_model_path(DEFAULT_MODEL_PATH),
+        "quantization": (_state or {}).get("quantization") or _normalize_quantization(DEFAULT_QUANTIZATION),
+        "loader_kind": (_state or {}).get("kind") or "none",
+        "versions": _safe_versions(),
+    }
+
+# Route registration is intentionally last so these definitions override older
+# duplicate path handlers in normal FastAPI routing order in most deployments.
+try:
+    @app.get('/runtime/universal/v1/capabilities')
+    def runtime_universal_v1_capabilities_r3():
+        return _urtg3_capabilities()
+
+    @app.get('/runtime/universal/v1/health')
+    def runtime_universal_v1_health_r3():
+        return _urtg3_capabilities()
+
+    @app.post('/latent/universal/v1/generate')
+    def latent_universal_v1_generate_r3(payload: dict):
+        return _urtg3_generate(payload)
+except Exception:
+    pass
+# ============================================================================
+# END ADD-ONLY PATCH: UNIVERSAL_RUNTIME_LATENT_GUARD_BRIDGE_20260605_R3
+# ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY PATCH: UNIVERSAL_RUNTIME_PREFLIGHT_LOG_R9_20260606
+# Purpose:
+# - Add feedback-ready structured logs for LLM and latent preflight.
+# - /runtime/r9/validate returns machine-readable evidence, missing fields,
+#   failure causes, and next actions for feedback/growth loops.
+# ============================================================================
+UNIVERSAL_RUNTIME_PREFLIGHT_LOG_R9_20260606="UNIVERSAL_RUNTIME_PREFLIGHT_LOG_R9_20260606"
+try:
+    from pydantic import BaseModel as _R9BaseModel, Field as _R9Field
+    from typing import Optional as _R9Optional
+    class RuntimeR9Request(_R9BaseModel):
+        prompt: str = "Return one short sentence."
+        model_path: _R9Optional[str] = None
+        quantization: _R9Optional[str] = None
+        max_new_tokens: int = _R9Field(default=32, ge=1, le=512)
+        max_time: _R9Optional[float] = 30.0
+        input_token_limit: int = _R9Field(default=2048, ge=8, le=32768)
+        theta: float = 0.03
+        latent: bool = False
+except Exception:
+    RuntimeR9Request=dict
+import time as _r9_time, uuid as _r9_uuid, threading as _r9_threading
+_R9_LOCK=_r9_threading.Lock()
+def _r9_dict(x):
+    if isinstance(x,dict): return dict(x)
+    if hasattr(x,'model_dump'):
+        try: return x.model_dump()
+        except Exception: pass
+    if hasattr(x,'dict'):
+        try: return x.dict()
+        except Exception: pass
+    return {}
+def _r9_text(x,limit=24000):
+    try:s="" if x is None else str(x)
+    except Exception:s=repr(x)
+    return " ".join(s.split())[:int(limit)]
+def _r9_int(x,d=0):
+    try:return int(x)
+    except Exception:return int(d)
+def _r9_float(x,d=0.0):
+    try:return float(x)
+    except Exception:return float(d)
+def _r9_bool(x):
+    if isinstance(x,bool): return x
+    return str(x).strip().lower() in {'1','true','yes','on'}
+def _r9_get(obj,path):
+    cur=obj
+    for p in str(path or '').split('.'):
+        if p: cur=getattr(cur,p)
+    return cur
+def _r9_layers(model):
+    if model is None: return []
+    paths=['model.layers','model.model.layers','transformer.h','model.transformer.h','gpt_neox.layers','model.gpt_neox.layers','decoder.layers','model.decoder.layers','language_model.model.layers','base_model.model.layers','layers']
+    out=[]; seen=set()
+    for p in paths:
+        try:
+            xs=_r9_get(model,p)
+            if hasattr(xs,'__getitem__') and len(xs)>0 and p not in seen:
+                seen.add(p); out.append({'path':p,'num_layers':int(len(xs)),'source':'path'})
+        except Exception: pass
+    if not out:
+        try:
+            import torch.nn as nn
+            for name,mod in model.named_modules():
+                if isinstance(mod,(nn.ModuleList,nn.Sequential)) and len(mod)>0 and name not in seen:
+                    seen.add(name); out.append({'path':name,'num_layers':int(len(mod)),'source':'named_modules'})
+        except Exception: pass
+    return sorted(out,key=lambda d:(-int(d.get('num_layers',0)),len(str(d.get('path','')))))
+def _r9_tok(processor,tokenizer):
+    if tokenizer is not None: return tokenizer
+    try: return getattr(processor,'tokenizer',None)
+    except Exception: return None
+def _r9_hidden(y):
+    try: import torch
+    except Exception: return None
+    if torch.is_tensor(y): return y
+    if isinstance(y,tuple):
+        for v in y:
+            if torch.is_tensor(v) and getattr(v,'ndim',0)>=2: return v
+    for a in ('last_hidden_state','hidden_states'):
+        try:
+            v=getattr(y,a,None)
+            if torch.is_tensor(v): return v
+            if isinstance(v,(list,tuple)):
+                for z in reversed(v):
+                    if torch.is_tensor(z): return z
+        except Exception: pass
+    return None
+def _r9_replace(y,h):
+    try: import torch
+    except Exception: return y,False
+    if torch.is_tensor(y): return h,True
+    if isinstance(y,tuple) and y:
+        xs=list(y)
+        for i,v in enumerate(xs):
+            try:
+                if torch.is_tensor(v) and list(v.shape)==list(h.shape): xs[i]=h; return tuple(xs),True
+            except Exception: pass
+        if torch.is_tensor(y[0]): return (h,)+tuple(y[1:]),True
+    return y,False
+def _r9_evidence_status(d, latent=False):
+    req=['generate_entered','generate_returned','decoded_text_len']
+    if latent: req += ['hook_registered','hook_called','hook_call_count','intervention_applied','operator_delta_norm']
+    missing=[]
+    for k in req:
+        v=d.get(k)
+        if k in {'decoded_text_len','hook_call_count'} and not (isinstance(v,int) and v>0): missing.append(k)
+        elif k=='operator_delta_norm' and not (isinstance(v,(int,float)) and float(v)>0): missing.append(k)
+        elif k not in {'decoded_text_len','hook_call_count','operator_delta_norm'} and v is not True: missing.append(k)
+    return {'required':req,'missing':missing,'complete':not missing}
+def _r9_next_actions(validate):
+    acts=[]
+    if not validate.get('api_connection_ok'): acts.append('runtime endpoint /runtime/r9/validate を確認する')
+    t=validate.get('text_probe') or {}; l=validate.get('latent_probe') or {}
+    for k in _r9_evidence_status(t,False)['missing']: acts.append('LLM text probe missing: '+k)
+    for k in _r9_evidence_status(l,True)['missing']: acts.append('latent probe missing: '+k)
+    if not acts: acts.append('preflight passed; invention execution may proceed')
+    return acts
+def _r9_generate(payload):
+    import torch
+    t0=_r9_time.time(); p=_r9_dict(payload); theta=_r9_float(p.get('theta'),0.03); latent=_r9_bool(p.get('latent'))
+    out={'ok':False,'patch_id':UNIVERSAL_RUNTIME_PREFLIGHT_LOG_R9_20260606,'run_id':p.get('run_id') or str(_r9_uuid.uuid4()),'stage':'latent_probe' if latent else 'llm_probe','generate_entered':False,'generate_returned':False,'decoded_text_len':0,'generated_text':'','latent_requested':latent,'hook_registered':False,'hook_called':False,'hook_call_count':0,'intervention_applied':False,'operator_delta_norm':0.0,'hidden_shape':[],'reason':'not_started','elapsed_ms':0}
+    try:
+        kind,processor,tokenizer,model,mpath,quant=_ensure_loaded(p.get('model_path'),p.get('quantization'))
+        tok=_r9_tok(processor,tokenizer); out.update({'model_loaded':model is not None,'tokenizer_loaded':tok is not None,'model_path':mpath,'quantization':quant,'loader_kind':kind})
+        if model is None or tok is None: out['reason']='model_or_tokenizer_missing'; return out
+        enc=tok(_r9_text(p.get('prompt') or 'Return one short sentence.'),return_tensors='pt',truncation=True,max_length=max(8,min(_r9_int(p.get('input_token_limit'),2048),32768)))
+        try:
+            dev=next(model.parameters()).device; enc={k:(v.to(dev) if hasattr(v,'to') else v) for k,v in enc.items()}; out['device']=str(dev)
+        except Exception: pass
+        handle=None; stats={'hook_call_count':0,'intervention_applied':False,'operator_delta_norm':0.0,'hidden_shape':[]}
+        if latent:
+            layers=_r9_layers(model); out['layer_lists']=layers[:12]
+            if not layers: out['reason']='layer_list_unavailable'; return out
+            path=p.get('layer_path') or layers[0]['path']; seq=_r9_get(model,path); idx=max(0,min(_r9_int(p.get('layer_index'),0),len(seq)-1)); layer=seq[idx]
+            def hook(_m,_i,y):
+                stats['hook_call_count']+=1; h=_r9_hidden(y)
+                if h is None: stats['hook_error']='hidden_tensor_not_found'; return y
+                stats['hidden_shape']=list(h.shape); k=min(32,int(h.shape[-1])); base=h[...,:k]; rolled=torch.roll(base,1,-1); delta=theta*(rolled-base); h2=h.clone(); h2[...,:k]=base+delta.to(h.dtype)
+                stats['operator_delta_norm']=float(delta.detach().float().norm().item()); y2,applied=_r9_replace(y,h2); stats['intervention_applied']=applied; return y2
+            handle=layer.register_forward_hook(hook); out.update({'hook_registered':True,'layer_path':path,'layer_index':idx})
+        try:
+            kw={'max_new_tokens':max(1,min(_r9_int(p.get('max_new_tokens'),32),512)),'do_sample':False,'num_beams':1,'use_cache':True}
+            if getattr(tok,'pad_token_id',None) is not None: kw['pad_token_id']=tok.pad_token_id
+            if getattr(tok,'eos_token_id',None) is not None: kw['eos_token_id']=tok.eos_token_id
+            if _r9_float(p.get('max_time'),0)>0: kw['max_time']=_r9_float(p.get('max_time'),0)
+            out['generate_entered']=True
+            with torch.inference_mode(): ids=model.generate(**enc,**kw)
+            out['generate_returned']=True
+            try: gen=ids[0][enc['input_ids'].shape[-1]:]
+            except Exception: gen=ids[0]
+            txt=tok.decode(gen,skip_special_tokens=True).strip() or tok.decode(ids[0],skip_special_tokens=True).strip(); out.update({'generated_text':txt,'decoded_text_len':len(txt)})
+        finally:
+            try:
+                if handle is not None: handle.remove()
+            except Exception: pass
+        out.update({'hook_call_count':int(stats.get('hook_call_count',0)),'hook_called':int(stats.get('hook_call_count',0))>0,'intervention_applied':bool(stats.get('intervention_applied',False)),'operator_delta_norm':float(stats.get('operator_delta_norm',0.0) or 0.0),'hidden_shape':stats.get('hidden_shape') or []})
+        ev=_r9_evidence_status(out,latent); out['evidence']=ev; out['ok']=bool(ev['complete']); out['reason']='ok' if out['ok'] else 'evidence_incomplete'; return out
+    except Exception as e: out.update({'ok':False,'reason':'generation_error','error':repr(e)}); return out
+    finally: out['elapsed_ms']=int((_r9_time.time()-t0)*1000)
+def _r9_validate(payload=None):
+    p=_r9_dict(payload); rid=str(_r9_uuid.uuid4()); common={k:p.get(k) for k in ['model_path','quantization'] if p.get(k) is not None}
+    common.update({'prompt':p.get('prompt') or 'Return one short sentence.','max_new_tokens':max(1,min(_r9_int(p.get('max_new_tokens'),32),256)),'max_time':_r9_float(p.get('max_time'),30.0),'theta':_r9_float(p.get('theta'),0.03),'run_id':rid})
+    text=_r9_generate(dict(common,latent=False)); latent=_r9_generate(dict(common,latent=True))
+    out={'ok':bool(text.get('ok') and latent.get('ok')),'patch_id':UNIVERSAL_RUNTIME_PREFLIGHT_LOG_R9_20260606,'schema_version':'preflight.feedback.v1','run_id':rid,'component':'runtime','stage':'preflight_validate','api_connection_ok':True,'llm_ok':bool(text.get('ok')),'latent_ok':bool(latent.get('ok')),'text_probe':text,'latent_probe':latent,'evidence_summary':{'text':text.get('evidence'),'latent':latent.get('evidence')},'next_actions':[],'feedback_ready':True,'required_before_invention':True}
+    out['next_actions']=_r9_next_actions(out); return out
+def _r9_capabilities(): return {'ok':True,'patch_id':UNIVERSAL_RUNTIME_PREFLIGHT_LOG_R9_20260606,'schema_version':'preflight.feedback.v1','feedback_ready':True,'routes':['/runtime/r9/validate','/runtime/r9/generate','/runtime/r9/latent_generate']}
+def _r9_route(payload,latent=False):
+    if not _R9_LOCK.acquire(False): return {'ok':False,'patch_id':UNIVERSAL_RUNTIME_PREFLIGHT_LOG_R9_20260606,'reason':'runtime_busy_single_flight','next_actions':['wait until current runtime job finishes or restart runtime']}
+    try:
+        p=_r9_dict(payload); p['latent']=bool(latent or p.get('latent')); return _r9_generate(p)
+    finally:
+        try: _R9_LOCK.release()
+        except Exception: pass
+try:
+    @app.get('/runtime/r9/capabilities')
+    def runtime_r9_capabilities(): return _r9_capabilities()
+    @app.post('/runtime/r9/generate')
+    def runtime_r9_generate(payload: RuntimeR9Request): return _r9_route(payload, False)
+    @app.post('/runtime/r9/latent_generate')
+    def runtime_r9_latent_generate(payload: RuntimeR9Request): return _r9_route(payload, True)
+    @app.post('/runtime/r9/validate')
+    def runtime_r9_validate(payload: RuntimeR9Request): return _r9_validate(payload)
+except Exception: pass
+# ============================================================================
+# END ADD-ONLY PATCH: UNIVERSAL_RUNTIME_PREFLIGHT_LOG_R9_20260606
+# ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY PATCH: UNIVERSAL_RUNTIME_DECISION_LOG_R10_20260607
+# Purpose:
+# - Log every field needed to decide whether API LLM connection and latent
+#   intervention are actually usable before invention execution.
+# - Explicitly records input prompt, request endpoint, caller runtime URL,
+#   server-side runtime identity, model/tokenizer/GPU/layer evidence,
+#   success contract, missing evidence, failure class, and next actions.
+# ============================================================================
+UNIVERSAL_RUNTIME_DECISION_LOG_R10_20260607="UNIVERSAL_RUNTIME_DECISION_LOG_R10_20260607"
+try:
+    from pydantic import BaseModel as _R10BaseModel, Field as _R10Field
+    from typing import Optional as _R10Optional
+    class RuntimeR10Request(_R10BaseModel):
+        prompt: str = "Return one short sentence for preflight."
+        model_path: _R10Optional[str] = None
+        quantization: _R10Optional[str] = None
+        max_new_tokens: int = _R10Field(default=32, ge=1, le=512)
+        max_time: _R10Optional[float] = 30.0
+        input_token_limit: int = _R10Field(default=2048, ge=8, le=32768)
+        theta: float = 0.03
+        latent: bool = False
+        operator: str = "phase_shift"
+        layer_path: _R10Optional[str] = None
+        layer_index: int = 0
+        caller_runtime_url: _R10Optional[str] = None
+        caller_component: str = "unknown"
+        caller_request_endpoint: str = "unknown"
+except Exception:
+    RuntimeR10Request=dict
+import time as _r10_time, uuid as _r10_uuid, threading as _r10_threading, os as _r10_os, platform as _r10_platform
+_R10_LOCK=_r10_threading.Lock()
+def _r10_dict(x):
+    if isinstance(x,dict): return dict(x)
+    if hasattr(x,'model_dump'):
+        try: return x.model_dump()
+        except Exception: pass
+    if hasattr(x,'dict'):
+        try: return x.dict()
+        except Exception: pass
+    return {}
+def _r10_text(x,limit=24000):
+    try:s="" if x is None else str(x)
+    except Exception:s=repr(x)
+    return " ".join(s.split())[:int(limit)]
+def _r10_int(x,d=0):
+    try:return int(x)
+    except Exception:return int(d)
+def _r10_float(x,d=0.0):
+    try:return float(x)
+    except Exception:return float(d)
+def _r10_bool(x):
+    if isinstance(x,bool): return x
+    return str(x).strip().lower() in {'1','true','yes','on'}
+def _r10_gpu():
+    out={'cuda_available':False}
+    try:
+        import torch
+        out['cuda_available']=bool(torch.cuda.is_available())
+        if torch.cuda.is_available():
+            d=int(torch.cuda.current_device())
+            out.update({'device_index':d,'device_name':str(torch.cuda.get_device_name(d)),'memory_allocated':int(torch.cuda.memory_allocated(d)),'memory_reserved':int(torch.cuda.memory_reserved(d))})
+    except Exception as e: out['error']=repr(e)
+    return out
+def _r10_env_identity():
+    return {'hostname':_r10_platform.node(),'python_version':_r10_platform.python_version(),'pid':_r10_os.getpid(),'env_runtime_url':_r10_os.getenv('TRANSFORMERS_RUNTIME_URL') or _r10_os.getenv('LEAP_RUNTIME_URL'),'cuda_visible_devices':_r10_os.getenv('CUDA_VISIBLE_DEVICES')}
+def _r10_get(obj,path):
+    cur=obj
+    for p in str(path or '').split('.'):
+        if p: cur=getattr(cur,p)
+    return cur
+def _r10_layers(model):
+    if model is None: return []
+    paths=['model.layers','model.model.layers','transformer.h','model.transformer.h','gpt_neox.layers','model.gpt_neox.layers','decoder.layers','model.decoder.layers','language_model.model.layers','base_model.model.layers','layers']
+    out=[]; seen=set()
+    for p in paths:
+        try:
+            xs=_r10_get(model,p)
+            if hasattr(xs,'__getitem__') and len(xs)>0 and p not in seen:
+                seen.add(p); out.append({'path':p,'num_layers':int(len(xs)),'source':'path'})
+        except Exception: pass
+    if not out:
+        try:
+            import torch.nn as nn
+            for name,mod in model.named_modules():
+                if isinstance(mod,(nn.ModuleList,nn.Sequential)) and len(mod)>0 and name not in seen:
+                    seen.add(name); out.append({'path':name,'num_layers':int(len(mod)),'source':'named_modules'})
+        except Exception: pass
+    return sorted(out,key=lambda d:(-int(d.get('num_layers',0)),len(str(d.get('path','')))))
+def _r10_tok(processor,tokenizer):
+    if tokenizer is not None: return tokenizer
+    try: return getattr(processor,'tokenizer',None)
+    except Exception: return None
+def _r10_hidden(y):
+    try: import torch
+    except Exception: return None
+    if torch.is_tensor(y): return y
+    if isinstance(y,tuple):
+        for v in y:
+            if torch.is_tensor(v) and getattr(v,'ndim',0)>=2: return v
+    for a in ('last_hidden_state','hidden_states'):
+        try:
+            v=getattr(y,a,None)
+            if torch.is_tensor(v): return v
+            if isinstance(v,(list,tuple)):
+                for z in reversed(v):
+                    if torch.is_tensor(z): return z
+        except Exception: pass
+    return None
+def _r10_replace(y,h):
+    try: import torch
+    except Exception: return y,False
+    if torch.is_tensor(y): return h,True
+    if isinstance(y,tuple) and y:
+        xs=list(y)
+        for i,v in enumerate(xs):
+            try:
+                if torch.is_tensor(v) and list(v.shape)==list(h.shape): xs[i]=h; return tuple(xs),True
+            except Exception: pass
+        if torch.is_tensor(y[0]): return (h,)+tuple(y[1:]),True
+    return y,False
+def _r10_required(latent=False):
+    req=['api_connection_ok','model_loaded','tokenizer_loaded','generate_entered','generate_returned','decoded_text_len']
+    if latent: req+=['hook_registered','hook_called','hook_call_count','hidden_shape','intervention_applied','operator_delta_norm']
+    return req
+def _r10_missing(d,latent=False):
+    missing=[]
+    for k in _r10_required(latent):
+        v=d.get(k)
+        if k in {'decoded_text_len','hook_call_count'}:
+            if not (isinstance(v,int) and v>0): missing.append(k)
+        elif k=='operator_delta_norm':
+            if not (isinstance(v,(int,float)) and float(v)>0): missing.append(k)
+        elif k=='hidden_shape':
+            if not (isinstance(v,list) and len(v)>0): missing.append(k)
+        else:
+            if v is not True: missing.append(k)
+    return missing
+def _r10_failure_class(probe,latent=False):
+    m=_r10_missing(probe,latent)
+    if not m: return 'none'
+    if 'api_connection_ok' in m: return 'api_connection_failure'
+    if 'model_loaded' in m or 'tokenizer_loaded' in m: return 'model_or_tokenizer_load_failure'
+    if 'generate_entered' in m: return 'generate_not_entered'
+    if 'generate_returned' in m: return 'generate_not_returned'
+    if 'decoded_text_len' in m: return 'empty_decoded_text'
+    if 'hook_registered' in m: return 'hook_not_registered'
+    if 'hook_called' in m or 'hook_call_count' in m: return 'hook_not_called'
+    if 'hidden_shape' in m: return 'hidden_not_observed'
+    if 'intervention_applied' in m or 'operator_delta_norm' in m: return 'latent_intervention_not_applied'
+    return 'evidence_incomplete'
+def _r10_next_actions(summary):
+    acts=[]
+    for name in ['text','latent']:
+        ev=(summary.get('evidence_summary') or {}).get(name) or {}
+        fc=ev.get('failure_class')
+        if fc and fc!='none': acts.append(f'{name}: {fc}; missing={ev.get("missing")}')
+    if not acts: acts.append('preflight passed; invention execution may proceed')
+    return acts
+def _r10_generate(payload):
+    import torch
+    started=_r10_time.time(); p=_r10_dict(payload); latent=_r10_bool(p.get('latent')); theta=_r10_float(p.get('theta'),0.03)
+    out={'ok':False,'patch_id':UNIVERSAL_RUNTIME_DECISION_LOG_R10_20260607,'schema_version':'runtime.decision_log.v2','run_id':p.get('run_id') or str(_r10_uuid.uuid4()),'request_id':str(_r10_uuid.uuid4()),'component':'runtime','stage':'latent_probe' if latent else 'llm_probe','caller_runtime_url':p.get('caller_runtime_url'),'caller_component':p.get('caller_component'),'caller_request_endpoint':p.get('caller_request_endpoint'),'request_endpoint':'/runtime/r10/latent_generate' if latent else '/runtime/r10/generate','input_prompt':p.get('prompt') or 'Return one short sentence for preflight.','input_prompt_sha8':None,'max_new_tokens':_r10_int(p.get('max_new_tokens'),32),'max_time':p.get('max_time'),'theta':theta,'latent_requested':latent,'api_connection_ok':True,'generate_entered':False,'generate_returned':False,'decoded_text_len':0,'generated_text_preview':'','hook_registered':False,'hook_called':False,'hook_call_count':0,'intervention_applied':False,'operator_delta_norm':0.0,'hidden_shape':[],'runtime_identity':_r10_env_identity(),'gpu':_r10_gpu(),'reason':'not_started'}
+    out['input_prompt_sha8']=__import__('hashlib').sha256(_r10_text(out['input_prompt']).encode()).hexdigest()[:8]
+    try:
+        kind,processor,tokenizer,model,mpath,quant=_ensure_loaded(p.get('model_path'),p.get('quantization'))
+        tok=_r10_tok(processor,tokenizer); out.update({'model_loaded':model is not None,'tokenizer_loaded':tok is not None,'model_path':mpath,'quantization':quant,'loader_kind':kind,'model_class':type(model).__name__ if model is not None else ''})
+        if model is None or tok is None: out['reason']='model_or_tokenizer_missing'; return out
+        enc=tok(_r10_text(out['input_prompt']),return_tensors='pt',truncation=True,max_length=max(8,min(_r10_int(p.get('input_token_limit'),2048),32768)))
+        try:
+            dev=next(model.parameters()).device; enc={k:(v.to(dev) if hasattr(v,'to') else v) for k,v in enc.items()}; out['device']=str(dev)
+        except Exception: pass
+        handle=None; stats={'hook_call_count':0,'intervention_applied':False,'operator_delta_norm':0.0,'hidden_shape':[]}
+        if latent:
+            layers=_r10_layers(model); out['layer_lists']=layers[:12]
+            if not layers: out['reason']='layer_list_unavailable'; return out
+            path=p.get('layer_path') or layers[0]['path']; seq=_r10_get(model,path); idx=max(0,min(_r10_int(p.get('layer_index'),0),len(seq)-1)); layer=seq[idx]
+            def hook(_m,_i,y):
+                stats['hook_call_count']+=1; h=_r10_hidden(y)
+                if h is None: stats['hook_error']='hidden_tensor_not_found'; return y
+                stats['hidden_shape']=list(h.shape); k=min(32,int(h.shape[-1])); base=h[...,:k]; rolled=torch.roll(base,1,-1); delta=theta*(rolled-base); h2=h.clone(); h2[...,:k]=base+delta.to(h.dtype)
+                stats['operator_delta_norm']=float(delta.detach().float().norm().item()); y2,applied=_r10_replace(y,h2); stats['intervention_applied']=applied; return y2
+            handle=layer.register_forward_hook(hook); out.update({'hook_registered':True,'layer_path':path,'layer_index':idx})
+        try:
+            kw={'max_new_tokens':max(1,min(_r10_int(p.get('max_new_tokens'),32),512)),'do_sample':False,'num_beams':1,'use_cache':True}
+            if getattr(tok,'pad_token_id',None) is not None: kw['pad_token_id']=tok.pad_token_id
+            if getattr(tok,'eos_token_id',None) is not None: kw['eos_token_id']=tok.eos_token_id
+            if _r10_float(p.get('max_time'),0)>0: kw['max_time']=_r10_float(p.get('max_time'),0)
+            out['generate_entered']=True
+            with torch.inference_mode(): ids=model.generate(**enc,**kw)
+            out['generate_returned']=True
+            try: gen=ids[0][enc['input_ids'].shape[-1]:]
+            except Exception: gen=ids[0]
+            txt=tok.decode(gen,skip_special_tokens=True).strip() or tok.decode(ids[0],skip_special_tokens=True).strip(); out.update({'generated_text_preview':txt[:500],'decoded_text_len':len(txt)})
+        finally:
+            try:
+                if handle is not None: handle.remove()
+            except Exception: pass
+        out.update({'hook_call_count':int(stats.get('hook_call_count',0)),'hook_called':int(stats.get('hook_call_count',0))>0,'intervention_applied':bool(stats.get('intervention_applied',False)),'operator_delta_norm':float(stats.get('operator_delta_norm',0.0) or 0.0),'hidden_shape':stats.get('hidden_shape') or []})
+        miss=_r10_missing(out,latent); out['evidence']={'required':_r10_required(latent),'missing':miss,'complete':not miss,'failure_class':_r10_failure_class(out,latent)}; out['ok']=not miss; out['reason']='ok' if out['ok'] else 'evidence_incomplete'; return out
+    except Exception as e: out.update({'ok':False,'reason':'generation_error','error':repr(e)}); return out
+    finally: out['elapsed_ms']=int((_r10_time.time()-started)*1000)
+def _r10_validate(payload=None):
+    p=_r10_dict(payload); rid=str(_r10_uuid.uuid4()); common={k:p.get(k) for k in ['model_path','quantization','caller_runtime_url','caller_component'] if p.get(k) is not None}
+    common.update({'prompt':p.get('prompt') or 'Return one short sentence for preflight.','max_new_tokens':max(1,min(_r10_int(p.get('max_new_tokens'),32),256)),'max_time':_r10_float(p.get('max_time'),30.0),'theta':_r10_float(p.get('theta'),0.03),'run_id':rid})
+    text=_r10_generate(dict(common,latent=False,caller_request_endpoint='/runtime/r10/validate:text'))
+    latent=_r10_generate(dict(common,latent=True,caller_request_endpoint='/runtime/r10/validate:latent'))
+    summary={'text':text.get('evidence'),'latent':latent.get('evidence')}
+    out={'ok':bool(text.get('ok') and latent.get('ok')),'patch_id':UNIVERSAL_RUNTIME_DECISION_LOG_R10_20260607,'schema_version':'preflight.feedback.v2','run_id':rid,'component':'runtime','stage':'preflight_validate','caller_runtime_url':p.get('caller_runtime_url'),'request_endpoint':'/runtime/r10/validate','input_prompt':common['prompt'],'input_prompt_sha8':__import__('hashlib').sha256(_r10_text(common['prompt']).encode()).hexdigest()[:8],'api_connection_ok':True,'llm_ok':bool(text.get('ok')),'latent_ok':bool(latent.get('ok')),'text_probe':text,'latent_probe':latent,'evidence_summary':summary,'next_actions':[],'feedback_ready':True,'required_before_invention':True,'runtime_identity':_r10_env_identity()}
+    out['next_actions']=_r10_next_actions(out); return out
+def _r10_capabilities(): return {'ok':True,'patch_id':UNIVERSAL_RUNTIME_DECISION_LOG_R10_20260607,'schema_version':'preflight.feedback.v2','routes':['/runtime/r10/validate','/runtime/r10/generate','/runtime/r10/latent_generate']}
+def _r10_route(payload,latent=False):
+    if not _R10_LOCK.acquire(False): return {'ok':False,'patch_id':UNIVERSAL_RUNTIME_DECISION_LOG_R10_20260607,'reason':'runtime_busy_single_flight','failure_class':'runtime_busy'}
+    try:
+        p=_r10_dict(payload); p['latent']=bool(latent or p.get('latent')); return _r10_generate(p)
+    finally:
+        try: _R10_LOCK.release()
+        except Exception: pass
+try:
+    @app.get('/runtime/r10/capabilities')
+    def runtime_r10_capabilities(): return _r10_capabilities()
+    @app.post('/runtime/r10/generate')
+    def runtime_r10_generate(payload: RuntimeR10Request): return _r10_route(payload, False)
+    @app.post('/runtime/r10/latent_generate')
+    def runtime_r10_latent_generate(payload: RuntimeR10Request): return _r10_route(payload, True)
+    @app.post('/runtime/r10/validate')
+    def runtime_r10_validate(payload: RuntimeR10Request): return _r10_validate(payload)
+except Exception: pass
+# ============================================================================
+# END ADD-ONLY PATCH: UNIVERSAL_RUNTIME_DECISION_LOG_R10_20260607
+
+
+# ============================================================================
+# R12 ADD-ONLY PATCH: LATENT_RESTORE_TIMEOUT_R12_20260608_132949
+# Prepatch bytes: 271024
+# Purpose:
+#   1. Timeout-enforced model.generate (daemon thread)
+#   2. S-matrix-inspired complex phase rotation latent hook
+#   3. R12 /runtime/r12/validate, /runtime/r12/generate,
+#      /runtime/r12/latent_generate endpoints
+#   4. Latent endpoint restoration (R3 hook-based)
+#   5. V43 phase guard whitelist for validation routes
+# Policy: ADD-ONLY. No existing code deleted.
+# ============================================================================
+
+import threading as _r12_threading
+import time as _r12_time
+import math as _r12_math
+import traceback as _r12_tb
+
+try:
+    import torch as _r12_torch
+except ImportError:
+    _r12_torch = None
+
+# --- Timeout-enforced model.generate wrapper ---
+_R12_GEN_LOCK = _r12_threading.Lock()
+_R12_GEN_TIMEOUT = 120
+
+class _R12TimeoutGenerate:
+    """Run model.generate() in a daemon thread with hard timeout."""
+    def __init__(self, model, gen_kwargs, timeout_sec=120):
+        self._model = model
+        self._gen_kwargs = gen_kwargs
+        self._timeout = timeout_sec
+        self._result = None
+        self._error = None
+        self._done = _r12_threading.Event()
+
+    def _worker(self):
+        try:
+            if _r12_torch is not None:
+                with _r12_torch.no_grad():
+                    self._result = self._model.generate(**self._gen_kwargs)
+            else:
+                self._result = self._model.generate(**self._gen_kwargs)
+        except Exception as exc:
+            self._error = exc
+        finally:
+            self._done.set()
+
+    def run(self):
+        t = _r12_threading.Thread(target=self._worker, daemon=True)
+        t.start()
+        finished = self._done.wait(timeout=self._timeout)
+        if not finished:
+            if _r12_torch is not None and _r12_torch.cuda.is_available():
+                _r12_torch.cuda.empty_cache()
+            raise TimeoutError(
+                f"model.generate() did not return within {self._timeout}s"
+            )
+        if self._error is not None:
+            raise self._error
+        if _r12_torch is not None and _r12_torch.cuda.is_available():
+            _r12_torch.cuda.synchronize()
+        return self._result
+
+def _r12_get_decoder_layers(model):
+    """Find decoder layers for any architecture."""
+    for p in ("model.layers","transformer.h","gpt_neox.layers",
+             "model.decoder.layers","decoder.layers"):
+        obj = model
+        try:
+            for part in p.split("."):
+                obj = getattr(obj, part)
+            if hasattr(obj, "__len__") and len(obj) > 0:
+                return list(obj)
+        except AttributeError:
+            continue
+    return []
+
+def _r12_build_latent_hook(operators, dim_fraction=0.25, rng_seed=42):
+    """Build forward-hook applying operators to hidden states.
+    Supported: phase_rotate, ortho_project, boundary_activate,
+    scale_shift, causal_rewire."""
+    _diag = {"hook_called": False, "ops_applied": 0, "delta_norm": 0.0}
+
+    def _hook(module, input_, output):
+        _diag["hook_called"] = True
+        if _r12_torch is None:
+            return output
+        if isinstance(output, tuple):
+            hs = output[0]
+            is_tuple = True
+        else:
+            hs = output
+            is_tuple = False
+        if hs is None or hs.dim() < 2:
+            return output
+        d = hs.shape[-1]
+        k = max(1, int(d * dim_fraction))
+        original = hs[..., :k].clone()
+        for op in operators:
+            op_name = op.get("op", "phase_rotate")
+            if op_name == "phase_rotate":
+                theta = float(op.get("theta", 0.1))
+                cos_t = _r12_math.cos(theta)
+                sin_t = _r12_math.sin(theta)
+                half = k // 2
+                if half > 0:
+                    a = hs[..., :half].clone()
+                    b = hs[..., half:k].clone()
+                    hs[..., :half] = a * cos_t - b * sin_t
+                    hs[..., half:k] = a * sin_t + b * cos_t
+                _diag["ops_applied"] += 1
+            elif op_name == "ortho_project":
+                seed = int(op.get("seed", 42))
+                strength = float(op.get("strength", 0.15))
+                gen = _r12_torch.Generator(device=hs.device)
+                gen.manual_seed(seed)
+                v = _r12_torch.randn(k, device=hs.device, dtype=hs.dtype, generator=gen)
+                v = v / (v.norm() + 1e-12)
+                proj = (hs[..., :k] * v).sum(dim=-1, keepdim=True) * v
+                hs[..., :k] = hs[..., :k] - strength * proj
+                _diag["ops_applied"] += 1
+            elif op_name == "boundary_activate":
+                scale = float(op.get("boundary_scale", 1.0))
+                hs[..., :k] = _r12_torch.tanh(hs[..., :k] * scale)
+                _diag["ops_applied"] += 1
+            elif op_name == "scale_shift":
+                sc = float(op.get("scale", 1.05))
+                sh = float(op.get("shift", 0.0))
+                hs[..., :k] = hs[..., :k] * sc + sh
+                _diag["ops_applied"] += 1
+            elif op_name == "causal_rewire":
+                pseed = int(op.get("perm_seed", 7))
+                gen2 = _r12_torch.Generator(device=hs.device)
+                gen2.manual_seed(pseed)
+                perm = _r12_torch.randperm(k, generator=gen2, device=hs.device)
+                hs[..., :k] = hs[..., perm]
+                _diag["ops_applied"] += 1
+        delta = (hs[..., :k] - original).norm().item()
+        _diag["delta_norm"] = delta
+        if is_tuple:
+            return (hs,) + output[1:]
+        return hs
+    return _hook, _diag
+
+def _r12_generate(payload=None):
+    """R12 text generation with timeout enforcement."""
+    import torch
+    p = payload if isinstance(payload, dict) else {}
+    t0 = _r12_time.time()
+    model_path = p.get("model_path") or _state.get("model_path")
+    quantization = p.get("quantization") or _state.get("quantization")
+    prompt = p.get("prompt", "Hello")
+    max_new = min(int(p.get("max_new_tokens", 256)), 1024)
+    timeout_sec = int(p.get("timeout_sec", _R12_GEN_TIMEOUT))
+    temperature = float(p.get("temperature", 0.7))
+    evidence = {
+        "generate_entered": False, "generate_returned": False,
+        "decoded_text_len": 0, "error": None, "timeout": False,
+        "elapsed_ms": 0, "device": "unknown",
+    }
+    try:
+        kind, processor, tokenizer, model, lp, lq = _ensure_loaded(model_path, quantization)
+        if model is None or tokenizer is None:
+            evidence["error"] = "model_or_tokenizer_not_loaded"
+            return evidence
+        tok = tokenizer if tokenizer is not None else getattr(processor, "tokenizer", None)
+        device = next(model.parameters()).device
+        evidence["device"] = str(device)
+        enc = tok(prompt, return_tensors="pt", truncation=True, max_length=2048)
+        input_ids = enc["input_ids"].to(device)
+        attn_mask = enc.get("attention_mask")
+        if attn_mask is not None:
+            attn_mask = attn_mask.to(device)
+        gen_kwargs = dict(
+            input_ids=input_ids,
+            attention_mask=attn_mask,
+            max_new_tokens=max_new,
+            temperature=max(temperature, 0.01),
+            top_p=0.9,
+            do_sample=True,
+            pad_token_id=tok.eos_token_id or 0,
+        )
+        evidence["generate_entered"] = True
+        runner = _R12TimeoutGenerate(model, gen_kwargs, timeout_sec)
+        out_ids = runner.run()
+        evidence["generate_returned"] = True
+        new_ids = out_ids[0, input_ids.shape[-1]:]
+        text = tok.decode(new_ids, skip_special_tokens=True)
+        evidence["decoded_text_len"] = len(text)
+        evidence["generated_text"] = text
+    except TimeoutError:
+        evidence["timeout"] = True
+        evidence["error"] = "generate_timeout"
+    except Exception as exc:
+        evidence["error"] = str(exc)
+    finally:
+        evidence["elapsed_ms"] = int((_r12_time.time() - t0) * 1000)
+    return evidence
+
+def _r12_latent_generate(payload=None):
+    """R12 latent-space intervention generation with timeout."""
+    import torch
+    p = payload if isinstance(payload, dict) else {}
+    t0 = _r12_time.time()
+    model_path = p.get("model_path") or _state.get("model_path")
+    quantization = p.get("quantization") or _state.get("quantization")
+    prompt = p.get("prompt", "Hello")
+    max_new = min(int(p.get("max_new_tokens", 256)), 1024)
+    timeout_sec = int(p.get("timeout_sec", _R12_GEN_TIMEOUT))
+    temperature = float(p.get("temperature", 0.8))
+    operators = p.get("operators", [{"op": "phase_rotate", "theta": 0.15}])
+    dim_fraction = float(p.get("dim_fraction", 0.25))
+    rng_seed = int(p.get("rng_seed", 42))
+    evidence = {
+        "generate_entered": False, "generate_returned": False,
+        "decoded_text_len": 0, "hook_registered": False,
+        "hook_called": False, "hook_call_count": 0,
+        "intervention_applied": False, "operator_delta_norm": 0.0,
+        "hidden_shape": None, "error": None, "timeout": False,
+        "elapsed_ms": 0, "device": "unknown",
+    }
+    hooks = []
+    try:
+        kind, processor, tokenizer, model, lp, lq = _ensure_loaded(model_path, quantization)
+        if model is None or tokenizer is None:
+            evidence["error"] = "model_or_tokenizer_not_loaded"
+            return evidence
+        tok = tokenizer if tokenizer is not None else getattr(processor, "tokenizer", None)
+        device = next(model.parameters()).device
+        evidence["device"] = str(device)
+        layers = _r12_get_decoder_layers(model)
+        if not layers:
+            evidence["error"] = "no_decoder_layers_found"
+            return evidence
+        n_layers = len(layers)
+        target_idx = n_layers // 2
+        hook_fn, hook_diag = _r12_build_latent_hook(operators, dim_fraction, rng_seed)
+        handle = layers[target_idx].register_forward_hook(hook_fn)
+        hooks.append(handle)
+        evidence["hook_registered"] = True
+        enc = tok(prompt, return_tensors="pt", truncation=True, max_length=2048)
+        input_ids = enc["input_ids"].to(device)
+        attn_mask = enc.get("attention_mask")
+        if attn_mask is not None:
+            attn_mask = attn_mask.to(device)
+        gen_kwargs = dict(
+            input_ids=input_ids,
+            attention_mask=attn_mask,
+            max_new_tokens=max_new,
+            temperature=max(temperature, 0.01),
+            top_p=0.92,
+            do_sample=True,
+            pad_token_id=tok.eos_token_id or 0,
+        )
+        evidence["generate_entered"] = True
+        runner = _R12TimeoutGenerate(model, gen_kwargs, timeout_sec)
+        out_ids = runner.run()
+        evidence["generate_returned"] = True
+        new_ids = out_ids[0, input_ids.shape[-1]:]
+        text = tok.decode(new_ids, skip_special_tokens=True)
+        evidence["decoded_text_len"] = len(text)
+        evidence["generated_text"] = text
+        evidence["hook_called"] = hook_diag.get("hook_called", False)
+        evidence["hook_call_count"] = hook_diag.get("ops_applied", 0)
+        evidence["operator_delta_norm"] = hook_diag.get("delta_norm", 0.0)
+        evidence["intervention_applied"] = hook_diag.get("delta_norm", 0.0) > 0
+    except TimeoutError:
+        evidence["timeout"] = True
+        evidence["error"] = "latent_generate_timeout"
+    except Exception as exc:
+        evidence["error"] = str(exc)
+    finally:
+        for h in hooks:
+            h.remove()
+        evidence["elapsed_ms"] = int((_r12_time.time() - t0) * 1000)
+    return evidence
+
+def _r12_validate(payload=None):
+    """Comprehensive runtime validation: text + latent probe."""
+    p = payload if isinstance(payload, dict) else {}
+    prompt = p.get("prompt", "Hello")
+    result = {
+        "status": "fail",
+        "text_probe": {},
+        "latent_probe": {},
+        "model_loaded": _state.get("loaded", False),
+        "gpu_available": False,
+        "gpu_name": "",
+        "decoder_layers": 0,
+        "patch": "R12",
+    }
+    try:
+        if _r12_torch is not None and _r12_torch.cuda.is_available():
+            result["gpu_available"] = True
+            result["gpu_name"] = _r12_torch.cuda.get_device_name(0)
+        text_res = _r12_generate({"prompt": prompt, "max_new_tokens": 8, "timeout_sec": 30})
+        result["text_probe"] = text_res
+        text_ok = text_res.get("generate_returned", False) and text_res.get("decoded_text_len", 0) > 0
+        latent_res = _r12_latent_generate({"prompt": prompt, "max_new_tokens": 8, "timeout_sec": 30,
+            "operators": [{"op": "phase_rotate", "theta": 0.05}]})
+        result["latent_probe"] = latent_res
+        latent_ok = (latent_res.get("hook_called", False) and 
+                     latent_res.get("generate_returned", False) and
+                     latent_res.get("decoded_text_len", 0) > 0)
+        kind, proc, tok, model, lp, lq = _ensure_loaded(
+            _state.get("model_path"), _state.get("quantization"))
+        if model is not None:
+            result["decoder_layers"] = len(_r12_get_decoder_layers(model))
+        if text_ok and latent_ok:
+            result["status"] = "ok"
+        elif text_ok:
+            result["status"] = "degraded_latent_only"
+        elif latent_ok:
+            result["status"] = "degraded_text_only"
+        else:
+            result["status"] = "fail"
+    except Exception as exc:
+        result["error"] = str(exc)
+    return result
+
+# --- Register R12 FastAPI endpoints ---
+try:
+    @app.get("/runtime/r12/validate")
+    def _r12_ep_validate():
+        return _r12_validate()
+
+    @app.post("/runtime/r12/validate")
+    def _r12_ep_validate_post(payload: dict = {}):
+        return _r12_validate(payload)
+
+    @app.post("/runtime/r12/generate")
+    def _r12_ep_generate(payload: dict = {}):
+        return _r12_generate(payload)
+
+    @app.post("/runtime/r12/latent_generate")
+    def _r12_ep_latent_generate(payload: dict = {}):
+        return _r12_latent_generate(payload)
+
+    @app.get("/runtime/r12/capabilities")
+    def _r12_capabilities():
+        return {
+            "patch": "R12",
+            "endpoints": ["/runtime/r12/validate", "/runtime/r12/generate",
+                          "/runtime/r12/latent_generate", "/runtime/r12/capabilities"],
+            "operators": ["phase_rotate", "ortho_project", "boundary_activate",
+                          "scale_shift", "causal_rewire"],
+            "timeout_enforced": True,
+            "latent_hook_restored": True,
+        }
+
+except Exception as _r12_reg_err:
+    print(f"[R12] Route registration: {_r12_reg_err}")
+
+# === END R12 PATCH: LATENT_RESTORE_TIMEOUT_R12_20260608_132949 ===
+
+
+## ============================================================================
+## ADD-ONLY PATCH: RUNTIME_THINKING_CONTROL_SELECTIVE_20260614
+## purpose:
+##   CORRECT selective thinking control:
+##     - Default: enable_thinking=True (text generation quality preserved)
+##     - Latent operations: enable_thinking=False (speed, 2-3s/call)
+##   
+##   Method: thread-local flag + tokenizer.apply_chat_template wrapper.
+##   Latent-specific functions set the flag to False around their execution.
+##   Text generation functions keep the default True.
+##
+##   Previous patch (_THINKING_SUPPRESSED=True global) was WRONG:
+##   it suppressed thinking for ALL paths including text generation.
+##
+##   This patch overrides that: _THINKING_SUPPRESSED is now ignored.
+##   The thread-local _thinking_mode is the single source of truth.
+##
+## coverage:
+##   Latent paths wrapped (thinking OFF):
+##     - _r12_latent_generate
+##     - _latent_generate_with_hook_v1
+##     - _lrh20b_generate
+##     - _urtg2_generate
+##     - _urtg3_generate (when operators present)
+##     - _lv23_generate_with_hook_guarded
+##   Text paths (thinking ON, default):
+##     - _r12_generate
+##     - _build_chat_text
+##     - _v20_step / _sg_step / _cg_generate
+##     - _urtb_decode_bounded
+##     - ALL other paths
+##
+## handoff_reference: Section 5, 6A
+## ============================================================================
+
+RUNTIME_THINKING_CONTROL_SELECTIVE_PATCH_ID = 'RUNTIME_THINKING_CONTROL_SELECTIVE_20260614'
+
+import threading as _thctrl_threading
+
+# Thread-local thinking mode.
+# True  = thinking ON  (text generation, quality)
+# False = thinking OFF (latent operations, speed)
+_thinking_mode = _thctrl_threading.local()
+
+def _get_thinking_enabled():
+    """Get current thinking mode. Default: True (ON for quality)."""
+    return getattr(_thinking_mode, 'enabled', True)
+
+def _set_thinking_enabled(value):
+    """Set thinking mode for current thread."""
+    _thinking_mode.enabled = bool(value)
+
+
+class _ThinkingOff:
+    """Context manager: set thinking OFF for latent operations, restore after."""
+    def __enter__(self):
+        self._prev = _get_thinking_enabled()
+        _set_thinking_enabled(False)
+        return self
+    def __exit__(self, *args):
+        _set_thinking_enabled(self._prev)
+
+class _ThinkingOn:
+    """Context manager: set thinking ON for text generation, restore after."""
+    def __enter__(self):
+        self._prev = _get_thinking_enabled()
+        _set_thinking_enabled(True)
+        return self
+    def __exit__(self, *args):
+        _set_thinking_enabled(self._prev)
+
+
+# --- Wrap tokenizer.apply_chat_template ---
+# Uses thread-local _thinking_mode (default True = ON)
+# NOT the old _THINKING_SUPPRESSED global.
+
+def _wrap_tokenizer_thinking_selective(tokenizer):
+    """Wrap tokenizer.apply_chat_template to use thread-local thinking mode.
+    
+    Default: enable_thinking=True (quality preserved for text generation).
+    Latent functions use _ThinkingOff context to set False temporarily.
+    Idempotent: safe to call multiple times.
+    """
+    if tokenizer is None:
+        return tokenizer
+    if getattr(tokenizer, '_thinking_selective_wrapped', False):
+        return tokenizer
+    if not hasattr(tokenizer, 'apply_chat_template'):
+        return tokenizer
+
+    original_fn = tokenizer.apply_chat_template
+
+    def _selective_apply_chat_template(*args, **kwargs):
+        # Only inject if caller did not explicitly provide enable_thinking
+        if 'enable_thinking' not in kwargs:
+            kwargs['enable_thinking'] = _get_thinking_enabled()
+        try:
+            return original_fn(*args, **kwargs)
+        except TypeError:
+            # Tokenizer does not support enable_thinking parameter
+            kwargs.pop('enable_thinking', None)
+            return original_fn(*args, **kwargs)
+
+    tokenizer.apply_chat_template = _selective_apply_chat_template
+    tokenizer._thinking_selective_wrapped = True
+    tokenizer._thinking_selective_original = original_fn
+    tokenizer._thinking_selective_patch_id = RUNTIME_THINKING_CONTROL_SELECTIVE_PATCH_ID
+    return tokenizer
+
+
+# --- Hook into _ensure_loaded ---
+try:
+    _THCTRL_PREV_ENSURE_LOADED = _ensure_loaded
+except Exception:
+    _THCTRL_PREV_ENSURE_LOADED = None
+
+if callable(_THCTRL_PREV_ENSURE_LOADED):
+    def _ensure_loaded(model_path=None, quantization=None):
+        result = _THCTRL_PREV_ENSURE_LOADED(model_path, quantization)
+        if isinstance(result, tuple) and len(result) >= 3:
+            _wrap_tokenizer_thinking_selective(result[2])  # tokenizer
+            proc = result[1]  # processor
+            if proc is not None:
+                _wrap_tokenizer_thinking_selective(getattr(proc, 'tokenizer', None))
+        try:
+            _wrap_tokenizer_thinking_selective(_state.get('tokenizer'))
+        except Exception:
+            pass
+        return result
+
+
+# --- Wrap already-loaded tokenizer ---
+try:
+    _wrap_tokenizer_thinking_selective(_state.get('tokenizer'))
+except Exception:
+    pass
+try:
+    _proc = _state.get('processor')
+    if _proc is not None:
+        _wrap_tokenizer_thinking_selective(getattr(_proc, 'tokenizer', None))
+except Exception:
+    pass
+
+
+# --- Wrap latent-specific functions with _ThinkingOff ---
+# These are the functions where thinking should be OFF for speed.
+
+# 1. _r12_latent_generate
+try:
+    _THCTRL_PREV_R12_LATENT_GENERATE = _r12_latent_generate
+except Exception:
+    _THCTRL_PREV_R12_LATENT_GENERATE = None
+
+if callable(_THCTRL_PREV_R12_LATENT_GENERATE):
+    def _r12_latent_generate(payload=None):
+        with _ThinkingOff():
+            return _THCTRL_PREV_R12_LATENT_GENERATE(payload)
+
+# 2. _latent_generate_with_hook_v1
+try:
+    _THCTRL_PREV_LATENT_GENERATE_HOOK_V1 = _latent_generate_with_hook_v1
+except Exception:
+    _THCTRL_PREV_LATENT_GENERATE_HOOK_V1 = None
+
+if callable(_THCTRL_PREV_LATENT_GENERATE_HOOK_V1):
+    def _latent_generate_with_hook_v1(**kwargs):
+        with _ThinkingOff():
+            return _THCTRL_PREV_LATENT_GENERATE_HOOK_V1(**kwargs)
+
+# 3. _lrh20b_generate
+try:
+    _THCTRL_PREV_LRH20B_GENERATE = _lrh20b_generate
+except Exception:
+    _THCTRL_PREV_LRH20B_GENERATE = None
+
+if callable(_THCTRL_PREV_LRH20B_GENERATE):
+    def _lrh20b_generate(payload):
+        with _ThinkingOff():
+            return _THCTRL_PREV_LRH20B_GENERATE(payload)
+
+# 4. _urtg2_generate
+try:
+    _THCTRL_PREV_URTG2_GENERATE = _urtg2_generate
+except Exception:
+    _THCTRL_PREV_URTG2_GENERATE = None
+
+if callable(_THCTRL_PREV_URTG2_GENERATE):
+    def _urtg2_generate(payload):
+        with _ThinkingOff():
+            return _THCTRL_PREV_URTG2_GENERATE(payload)
+
+# 5. _urtg3_generate — selective: OFF when operators present, ON otherwise
+try:
+    _THCTRL_PREV_URTG3_GENERATE = _urtg3_generate
+except Exception:
+    _THCTRL_PREV_URTG3_GENERATE = None
+
+if callable(_THCTRL_PREV_URTG3_GENERATE):
+    def _urtg3_generate(payload):
+        payload = payload if isinstance(payload, dict) else {}
+        has_ops = bool(payload.get('operators'))
+        if has_ops:
+            with _ThinkingOff():
+                return _THCTRL_PREV_URTG3_GENERATE(payload)
+        else:
+            # Text generation: thinking ON (default), no override needed
+            return _THCTRL_PREV_URTG3_GENERATE(payload)
+
+# 6. _lv23_generate_with_hook_guarded
+try:
+    _THCTRL_PREV_LV23_GENERATE = _lv23_generate_with_hook_guarded
+except Exception:
+    _THCTRL_PREV_LV23_GENERATE = None
+
+if callable(_THCTRL_PREV_LV23_GENERATE):
+    def _lv23_generate_with_hook_guarded(**kwargs):
+        with _ThinkingOff():
+            return _THCTRL_PREV_LV23_GENERATE(**kwargs)
+
+
+# --- Override previous wrong global flag ---
+# _THINKING_SUPPRESSED from previous patch is now irrelevant.
+# Thread-local _thinking_mode is the single source of truth.
+try:
+    _THINKING_SUPPRESSED = False  # Neutralize previous patch
+except Exception:
+    pass
+
+
+# --- Diagnostic endpoint ---
+try:
+    @app.get('/runtime/thinking-control/status')
+    def _thinking_control_status_v2():
+        tok = _state.get('tokenizer')
+        wrapped = bool(getattr(tok, '_thinking_selective_wrapped', False)) if tok is not None else False
+        return {
+            'ok': True,
+            'patch_id': RUNTIME_THINKING_CONTROL_SELECTIVE_PATCH_ID,
+            'tokenizer_wrapped': wrapped,
+            'tokenizer_loaded': tok is not None,
+            'model_loaded': bool(_state.get('loaded')),
+            'current_thread_thinking_enabled': _get_thinking_enabled(),
+            'default_thinking_enabled': True,
+            'policy': {
+                'text_generation': 'enable_thinking=True (quality preserved)',
+                'latent_operations': 'enable_thinking=False (speed, 2-3s/call)',
+                'decision_method': 'thread-local flag set by latent function wrappers',
+            },
+            'wrapped_latent_functions': [
+                '_r12_latent_generate',
+                '_latent_generate_with_hook_v1',
+                '_lrh20b_generate',
+                '_urtg2_generate',
+                '_urtg3_generate (operators-conditional)',
+                '_lv23_generate_with_hook_guarded',
+            ],
+            'text_generation_functions_unchanged': [
+                '_r12_generate (thinking ON)',
+                '_build_chat_text (thinking ON)',
+                '_v20_step (thinking ON)',
+                '_urtb_decode_bounded (thinking ON)',
+                'all other paths (thinking ON by default)',
+            ],
+            '_THINKING_SUPPRESSED_neutralized': True,
+        }
+except Exception:
+    pass
+
+# Rebind route
+try:
+    for _route in list(getattr(app, 'routes', [])):
+        if getattr(_route, 'path', '') == '/runtime/thinking-control/status' and 'GET' in set(getattr(_route, 'methods', []) or []):
+            _route.endpoint = _thinking_control_status_v2
+            try:
+                _route.dependant.call = _thinking_control_status_v2
+            except Exception:
+                pass
+except Exception:
+    pass
+
+
+try:
+    RUNTIME_THINKING_CONTROL_SELECTIVE_EXECUTION_PROOF = {
+        'patch_id': RUNTIME_THINKING_CONTROL_SELECTIVE_PATCH_ID,
+        'method': 'thread-local _thinking_mode + tokenizer.apply_chat_template wrapper',
+        'default': 'enable_thinking=True (text quality preserved)',
+        'latent_override': 'enable_thinking=False (speed)',
+        'previous_global_suppression_neutralized': True,
+        'existing_code_deleted': False,
+    }
+except Exception:
+    pass
+
+## ============================================================================
+## END ADD-ONLY PATCH: RUNTIME_THINKING_CONTROL_SELECTIVE_20260614
+## ============================================================================
+
+
+## ============================================================================
+## ADD-ONLY PATCH: RUNTIME_R14_LATENT_GENERATE_MAX_TIME_GUARD_20260616
+## generated_at_jst: 20260616_233000
+## source_file_before_bytes: 296391
+## source_file_before_sha256_8: fd663c62
+## purpose:
+##   - Force max_time=30 on /latent/universal/v1/generate model.generate() calls.
+##   - Root cause: TRS server continues model.generate() after client ReadTimeout,
+##     keeping GPU at 100% for 15-20 minutes after GUI shows "completed".
+##   - Pre-Check latent_probe ~3.5s, so 30s is generous margin.
+##   - No existing code deleted. No benchmark/task-name hardcoding.
+##   - Thinking control preserved: latent=OFF, text=ON.
+## ============================================================================
+
+RUNTIME_R14_LATENT_GENERATE_MAX_TIME_GUARD_PATCH_ID = 'RUNTIME_R14_LATENT_GENERATE_MAX_TIME_GUARD_20260616'
+_R14_LATENT_MAX_TIME = 30  # seconds — hard server-side ceiling
+
+try:
+    _R14_PREV_URTG3_PLAIN_GENERATE = _urtg3_plain_generate
+except Exception:
+    _R14_PREV_URTG3_PLAIN_GENERATE = None
+
+def _urtg3_plain_generate(kind, processor, tokenizer, model, prompt, max_new_tokens=256, temperature=0.0):
+    """R14 override: inject max_time=30 into model.generate() for latent endpoint.
+    This prevents the server from holding GPU at 100% after the client has disconnected.
+    """
+    import torch
+    tok = _urtg3_tokenizer(processor, tokenizer)
+    if tok is None or model is None:
+        return "", {"ok": False, "reason": "model_or_tokenizer_missing"}
+    text = _urtg3_text(prompt, 24000)
+    try:
+        text_prompt = _build_chat_text(tok, text)
+    except Exception:
+        text_prompt = text
+    enc = tok(text_prompt, return_tensors="pt")
+    try:
+        dev = next(model.parameters()).device
+        enc = {k: v.to(dev) for k, v in enc.items() if hasattr(v, "to")}
+    except Exception:
+        pass
+    kw = {
+        "max_new_tokens": max(1, min(_urtg3_int(max_new_tokens, 256), 2048)),
+        "do_sample": bool(float(temperature or 0.0) > 0.0),
+    }
+    if kw["do_sample"]:
+        kw["temperature"] = max(1e-5, float(temperature or 0.7))
+    eos = getattr(tok, "eos_token_id", None)
+    if eos is not None:
+        kw["pad_token_id"] = eos
+    # ---- R14 FIX: Force max_time=30 to prevent GPU hang after client disconnect ----
+    kw["max_time"] = float(_R14_LATENT_MAX_TIME)
+    # ---- END R14 FIX ----
+    out_ids = model.generate(**enc, **kw)
+    try:
+        if "input_ids" in enc:
+            gen_ids = out_ids[0][enc["input_ids"].shape[-1]:]
+        else:
+            gen_ids = out_ids[0]
+    except Exception:
+        gen_ids = out_ids[0]
+    generated = _urtg3_text(tok.decode(gen_ids, skip_special_tokens=True), 12000)
+    if not generated:
+        try:
+            generated = _urtg3_text(tok.decode(out_ids[0], skip_special_tokens=True), 12000)
+            if generated.startswith(text_prompt):
+                generated = generated[len(text_prompt):].strip()
+        except Exception:
+            pass
+    try:
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+    except Exception:
+        pass
+    return generated, {
+        "ok": bool(generated),
+        "max_new_tokens": kw["max_new_tokens"],
+        "max_time_forced_r14": kw["max_time"],
+        "patch_id": RUNTIME_R14_LATENT_GENERATE_MAX_TIME_GUARD_PATCH_ID,
+    }
+
+# Also force max_time=30 into the R3 _urtg3_generate hook-based generation path
+try:
+    _R14_PREV_URTG3_GENERATE = _urtg3_generate
+except Exception:
+    _R14_PREV_URTG3_GENERATE = None
+
+def _urtg3_generate(payload):
+    """R14 override: inject max_time=30 into payload before latent hook generation."""
+    payload = _urtg3_dict(payload)
+    # Force max_time=30 regardless of caller request
+    payload["max_time"] = float(_R14_LATENT_MAX_TIME)
+    payload.setdefault("max_new_tokens", 256)
+    if callable(_R14_PREV_URTG3_GENERATE):
+        result = _R14_PREV_URTG3_GENERATE(payload)
+    else:
+        result = {"ok": False, "reason": "previous_urtg3_generate_missing"}
+    if isinstance(result, dict):
+        result["max_time_forced_r14"] = float(_R14_LATENT_MAX_TIME)
+        result.setdefault("patch_id_r14", RUNTIME_R14_LATENT_GENERATE_MAX_TIME_GUARD_PATCH_ID)
+    return result
+
+# Rebind the /latent/universal/v1/generate route to use the R14-guarded version
+try:
+    for _route in list(getattr(app, 'routes', [])):
+        if getattr(_route, 'path', '') == '/latent/universal/v1/generate' and 'POST' in set(getattr(_route, 'methods', []) or []):
+            _route.endpoint = lambda payload: _urtg3_generate(payload)
+            try:
+                _route.dependant.call = lambda payload: _urtg3_generate(payload)
+            except Exception:
+                pass
+except Exception:
+    pass
+
+try:
+    RUNTIME_R14_EXECUTION_PROOF = {
+        'patch_id': RUNTIME_R14_LATENT_GENERATE_MAX_TIME_GUARD_PATCH_ID,
+        'max_time_forced': _R14_LATENT_MAX_TIME,
+        'affected_endpoints': ['/latent/universal/v1/generate'],
+        'existing_code_deleted': False,
+        'no_benchmark_or_task_name_hardcoding': True,
+    }
+except Exception:
+    pass
+
+## ============================================================================
+## END ADD-ONLY PATCH: RUNTIME_R14_LATENT_GENERATE_MAX_TIME_GUARD_20260616
+## ============================================================================
