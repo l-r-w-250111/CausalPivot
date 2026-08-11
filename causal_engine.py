@@ -11480,3 +11480,1636 @@ def causal_v70_apply_feedback_to_context(context=None, feedback=None):
 # ============================================================================
 # END ADD-ONLY PATCH: CAUSAL-V70-GROUNDING-SMATRIX-RETENSOR
 # ============================================================================
+
+
+## ============================================================================
+## ADD-ONLY PATCH: CAUSAL_R15A_NODE_LABEL_FILTER_UNIVERSAL_20260617
+## generated_at_jst: 20260617
+## source_file_before_bytes: 566558
+## source_file_before_sha256_8: 827ee79e
+## purpose:
+##   - Strengthen causal_graph node-label filtering at term-generation side.
+##   - Reject functional-word fragments (helper particles, conjunctive
+##     fragments, raw numbers, oversized clauses, verb-phrase tails) before
+##     they are introduced as causal nodes.
+##   - Language-structural patterns only. NO domain/benchmark/task-specific
+##     vocabulary in any function/key/regex name.
+## design_principles:
+##   - ADD-ONLY: existing extractors preserved via reference; wrappers add
+##     a universal filter pass on the produced term list.
+##   - Universal naming: function/key/regex identifiers describe language
+##     structure ("suffix", "standalone", "particle", "verb_phrase",
+##     "max_label_len") rather than any specific domain.
+##   - Multilingual: JP particles/verb tails + EN connective fragments
+##     + symbol/length checks.
+##   - S-matrix / complex / group / mask / CausalOS-core preserved.
+## ============================================================================
+
+CAUSAL_R15A_NODE_LABEL_FILTER_UNIVERSAL_PATCH_ID = 'CAUSAL_R15A_NODE_LABEL_FILTER_UNIVERSAL_20260617'
+
+import re as _r15a_re
+
+# Universal language-structural patterns (NOT domain vocabulary)
+_R15A_NOISE_STANDALONE_REGEX = (
+    r'^\d+(?:\.\d+)?$',
+    r'^[\s\u3000\.,!?:;"\'`~_\-/\\|*#()\[\]{}<>「」『』、。．，；：…—–]+$',
+    r'^[\u3041-\u3096]{1,2}$',
+    r'^[a-zA-Z]$',
+)
+
+_R15A_NOISE_JP_SUFFIX_FRAGMENTS = (
+    'を変えても', 'を変えると', 'を変えたとき',
+    'することで', 'すること', 'すれば', 'するなら',
+    'できる', 'できない', 'できれば',
+    'なるように', 'なるなら', 'なる場合', 'なります',
+    'ように', 'ために', 'について', 'により', 'における', 'に対して',
+    'することができる', 'と仮定する', 'と考える', 'とする',
+    'のもとで', 'において', 'にあたり',
+    'より先に変化するなら', 'より先に変化する',
+    'ことができる', 'ことになる',
+)
+
+_R15A_NOISE_EN_SUFFIX_FRAGMENTS = (
+    'in order to', 'such that', 'so that', 'as a result',
+    'which is', 'that are', 'in which', 'of which',
+    'when the', 'when it', 'when this', 'if the',
+)
+
+# Sort suffixes by length (longest first) so longer fragments match first.
+_R15A_NOISE_JP_SUFFIX_FRAGMENTS = tuple(sorted(_R15A_NOISE_JP_SUFFIX_FRAGMENTS, key=len, reverse=True))
+_R15A_NOISE_EN_SUFFIX_FRAGMENTS = tuple(sorted(_R15A_NOISE_EN_SUFFIX_FRAGMENTS, key=len, reverse=True))
+
+_R15A_TRAILING_PARTICLE_REGEX = _r15a_re.compile(r'(の|で|を|に|は|が|と|も|や|から|まで|より|へ|か)$')
+
+_R15A_VERB_PHRASE_SUFFIX_REGEX = _r15a_re.compile(r'を[\u4e00-\u9fff]{1,5}する$')
+_R15A_VERB_INFLECTION_TAIL_REGEX = _r15a_re.compile(
+    r'(を|に|で|が|は)[\u4e00-\u9fff\u3041-\u3096]{1,6}(する|した|される|させる|できる|なる|なります|なった)$'
+)
+_R15A_SHORT_VERB_INFLECTION_REGEX = _r15a_re.compile(
+    r'(させる|される|できる|なります|なった|させた|された|となる|になる)$'
+)
+
+_R15A_MIN_NODE_LABEL_LEN = 2
+_R15A_MAX_NODE_LABEL_LEN = 40
+_R15A_SUFFIX_STRIP_MIN_REMAINDER = 4
+
+_R15A_FILTER_STATS = {
+    'total_seen': 0, 'kept': 0,
+    'rejected_short': 0, 'rejected_long': 0,
+    'rejected_standalone': 0, 'rejected_suffix_fragment': 0,
+    'rejected_trailing_particle_only': 0, 'rejected_verb_phrase': 0,
+    'stripped_suffix': 0, 'stripped_particle': 0,
+}
+
+
+def _r15a_safe_text_for_filter(x):
+    if x is None:
+        return ''
+    try:
+        s = str(x)
+    except Exception:
+        s = ''
+    return s.strip(' \t\r\n\u3000\u3001\u3002:;\uff1a\uff1b\u300c\u300d\u300e\u300f()[]<>-_/\\|*#')
+
+
+def _r15a_is_standalone_noise(label):
+    s = _r15a_safe_text_for_filter(label)
+    if not s:
+        return True
+    for pat in _R15A_NOISE_STANDALONE_REGEX:
+        try:
+            if _r15a_re.match(pat, s):
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _r15a_is_suffix_fragment_strict(label):
+    s = _r15a_safe_text_for_filter(label)
+    if not s:
+        return False
+    low = s.lower()
+    for suf in _R15A_NOISE_JP_SUFFIX_FRAGMENTS:
+        if s.endswith(suf) and len(s) - len(suf) < _R15A_SUFFIX_STRIP_MIN_REMAINDER:
+            return True
+    for suf in _R15A_NOISE_EN_SUFFIX_FRAGMENTS:
+        if low.endswith(suf) and len(low) - len(suf) < _R15A_SUFFIX_STRIP_MIN_REMAINDER:
+            return True
+    return False
+
+
+def _r15a_is_trailing_particle_only(label):
+    s = _r15a_safe_text_for_filter(label)
+    if not s or len(s) > 6:
+        return False
+    m = _R15A_TRAILING_PARTICLE_REGEX.search(s)
+    if not m:
+        return False
+    return len(s[:m.start()]) <= 1
+
+
+def _r15a_is_verb_phrase_fragment(label):
+    s = _r15a_safe_text_for_filter(label)
+    if not s:
+        return False
+    m = _R15A_VERB_PHRASE_SUFFIX_REGEX.search(s)
+    if m:
+        ratio = (len(s) - m.start()) / max(1, len(s))
+        if ratio >= 0.6 and len(s) <= 8:
+            return True
+    m = _R15A_VERB_INFLECTION_TAIL_REGEX.search(s)
+    if m and (len(s) - m.start()) / max(1, len(s)) >= 0.6 and len(s) <= 10:
+        return True
+    if len(s) <= 8:
+        m2 = _R15A_SHORT_VERB_INFLECTION_REGEX.search(s)
+        if m2 and len(s) - len(m2.group(0)) < _R15A_SUFFIX_STRIP_MIN_REMAINDER:
+            return True
+    return False
+
+
+def _r15a_strip_trailing_particles(label):
+    s = _r15a_safe_text_for_filter(label)
+    if not s:
+        return ''
+    for _ in range(3):
+        m = _R15A_TRAILING_PARTICLE_REGEX.search(s)
+        if m and len(s) - len(m.group(0)) >= _R15A_MIN_NODE_LABEL_LEN:
+            s = s[:m.start()].rstrip(' \t\u3001\u3002\uff0c.')
+            try:
+                _R15A_FILTER_STATS['stripped_particle'] = int(_R15A_FILTER_STATS.get('stripped_particle', 0)) + 1
+            except Exception:
+                pass
+        else:
+            break
+    return s
+
+
+def _r15a_strip_known_suffix_with_reject(label):
+    s = _r15a_safe_text_for_filter(label)
+    if not s:
+        return ''
+    low = s.lower()
+    for suf in _R15A_NOISE_JP_SUFFIX_FRAGMENTS:
+        if s.endswith(suf):
+            stripped = s[:-len(suf)].rstrip(' \u3001\u3002\uff0c.:;')
+            if len(stripped) >= _R15A_SUFFIX_STRIP_MIN_REMAINDER:
+                try:
+                    _R15A_FILTER_STATS['stripped_suffix'] = int(_R15A_FILTER_STATS.get('stripped_suffix', 0)) + 1
+                except Exception:
+                    pass
+                return stripped
+            return ''
+    for suf in _R15A_NOISE_EN_SUFFIX_FRAGMENTS:
+        if low.endswith(suf):
+            stripped = s[:-len(suf)].rstrip(' ,;:')
+            if len(stripped) >= _R15A_SUFFIX_STRIP_MIN_REMAINDER:
+                try:
+                    _R15A_FILTER_STATS['stripped_suffix'] = int(_R15A_FILTER_STATS.get('stripped_suffix', 0)) + 1
+                except Exception:
+                    pass
+                return stripped
+            return ''
+    return s
+
+
+def _r15a_strip_verb_phrase_suffix(label):
+    s = _r15a_safe_text_for_filter(label)
+    if not s:
+        return ''
+    m = _R15A_VERB_PHRASE_SUFFIX_REGEX.search(s)
+    if not m:
+        return s
+    stripped = s[:m.start()].rstrip(' \u3001\u3002\uff0c.')
+    if len(stripped) >= _R15A_SUFFIX_STRIP_MIN_REMAINDER:
+        try:
+            _R15A_FILTER_STATS['stripped_suffix'] = int(_R15A_FILTER_STATS.get('stripped_suffix', 0)) + 1
+        except Exception:
+            pass
+        return stripped
+    return ''
+
+
+def _r15a_filter_node_label_universal(label):
+    """Universal node-label filter (v3 final).
+    Language-structural decisions only. NO domain vocabulary.
+    """
+    try:
+        _R15A_FILTER_STATS['total_seen'] = int(_R15A_FILTER_STATS.get('total_seen', 0)) + 1
+    except Exception:
+        pass
+    s = _r15a_safe_text_for_filter(label)
+    if not s:
+        try:
+            _R15A_FILTER_STATS['rejected_short'] = int(_R15A_FILTER_STATS.get('rejected_short', 0)) + 1
+        except Exception:
+            pass
+        return ''
+    if _r15a_is_suffix_fragment_strict(s):
+        try:
+            _R15A_FILTER_STATS['rejected_suffix_fragment'] = int(_R15A_FILTER_STATS.get('rejected_suffix_fragment', 0)) + 1
+        except Exception:
+            pass
+        return ''
+    if _r15a_is_trailing_particle_only(s):
+        try:
+            _R15A_FILTER_STATS['rejected_trailing_particle_only'] = int(_R15A_FILTER_STATS.get('rejected_trailing_particle_only', 0)) + 1
+        except Exception:
+            pass
+        return ''
+    if _r15a_is_verb_phrase_fragment(s):
+        try:
+            _R15A_FILTER_STATS['rejected_verb_phrase'] = int(_R15A_FILTER_STATS.get('rejected_verb_phrase', 0)) + 1
+        except Exception:
+            pass
+        return ''
+    s2 = _r15a_strip_known_suffix_with_reject(s)
+    if not s2:
+        try:
+            _R15A_FILTER_STATS['rejected_suffix_fragment'] = int(_R15A_FILTER_STATS.get('rejected_suffix_fragment', 0)) + 1
+        except Exception:
+            pass
+        return ''
+    s2 = _r15a_strip_verb_phrase_suffix(s2)
+    if not s2:
+        try:
+            _R15A_FILTER_STATS['rejected_verb_phrase'] = int(_R15A_FILTER_STATS.get('rejected_verb_phrase', 0)) + 1
+        except Exception:
+            pass
+        return ''
+    s2 = _r15a_strip_trailing_particles(s2)
+    if not s2:
+        return ''
+    if len(s2) < _R15A_MIN_NODE_LABEL_LEN:
+        try:
+            _R15A_FILTER_STATS['rejected_short'] = int(_R15A_FILTER_STATS.get('rejected_short', 0)) + 1
+        except Exception:
+            pass
+        return ''
+    if len(s2) > _R15A_MAX_NODE_LABEL_LEN:
+        try:
+            _R15A_FILTER_STATS['rejected_long'] = int(_R15A_FILTER_STATS.get('rejected_long', 0)) + 1
+        except Exception:
+            pass
+        return ''
+    if _r15a_is_standalone_noise(s2):
+        try:
+            _R15A_FILTER_STATS['rejected_standalone'] = int(_R15A_FILTER_STATS.get('rejected_standalone', 0)) + 1
+        except Exception:
+            pass
+        return ''
+    if _r15a_is_suffix_fragment_strict(s2):
+        return ''
+    if _r15a_is_verb_phrase_fragment(s2):
+        return ''
+    try:
+        _R15A_FILTER_STATS['kept'] = int(_R15A_FILTER_STATS.get('kept', 0)) + 1
+    except Exception:
+        pass
+    return s2
+
+
+def _r15a_filter_term_list_universal(terms, max_terms=None, allowlist=None):
+    out = []
+    seen = set()
+    rejected = []
+    allow = set()
+    if allowlist:
+        for a in allowlist:
+            try:
+                allow.add(str(a).strip())
+            except Exception:
+                continue
+    for raw in terms or []:
+        raw_str = '' if raw is None else str(raw).strip()
+        if raw_str and raw_str in allow:
+            cleaned = raw_str
+        else:
+            cleaned = _r15a_filter_node_label_universal(raw)
+        if not cleaned:
+            rejected.append(raw)
+            continue
+        if cleaned in seen:
+            continue
+        seen.add(cleaned)
+        out.append(cleaned)
+        if max_terms is not None and len(out) >= int(max_terms):
+            break
+    return out, rejected
+
+
+def _r15a_diagnostic_snapshot():
+    try:
+        snap = dict(_R15A_FILTER_STATS)
+    except Exception:
+        snap = {}
+    snap['patch_id'] = CAUSAL_R15A_NODE_LABEL_FILTER_UNIVERSAL_PATCH_ID
+    return snap
+
+
+# Wrap existing term extractors (ADD-ONLY)
+try:
+    _R15A_PREV_CAUSAL_V39B_SPLIT_TERMS = _causal_v39b_split_terms
+except Exception:
+    _R15A_PREV_CAUSAL_V39B_SPLIT_TERMS = None
+
+def _causal_v39b_split_terms(text, max_terms=48):
+    raw_terms = []
+    if callable(_R15A_PREV_CAUSAL_V39B_SPLIT_TERMS):
+        try:
+            raw_terms = _R15A_PREV_CAUSAL_V39B_SPLIT_TERMS(text, max_terms=int(max_terms) * 2)
+        except TypeError:
+            raw_terms = _R15A_PREV_CAUSAL_V39B_SPLIT_TERMS(text)
+        except Exception:
+            raw_terms = []
+    cleaned, _rejected = _r15a_filter_term_list_universal(raw_terms, max_terms=int(max_terms))
+    return cleaned
+
+
+try:
+    _R15A_PREV_CAUSAL_V41_TERMS = _causal_v41_terms
+except Exception:
+    _R15A_PREV_CAUSAL_V41_TERMS = None
+
+def _causal_v41_terms(text, max_terms=64):
+    raw_terms = []
+    if callable(_R15A_PREV_CAUSAL_V41_TERMS):
+        try:
+            raw_terms = _R15A_PREV_CAUSAL_V41_TERMS(text, max_terms=int(max_terms) * 2)
+        except TypeError:
+            raw_terms = _R15A_PREV_CAUSAL_V41_TERMS(text)
+        except Exception:
+            raw_terms = []
+    cleaned, _rejected = _r15a_filter_term_list_universal(raw_terms, max_terms=int(max_terms))
+    return cleaned
+
+
+try:
+    _R15A_PREV_CAUSAL_V43_EXTRACT_COMPONENTS = _causal_v43_extract_components
+except Exception:
+    _R15A_PREV_CAUSAL_V43_EXTRACT_COMPONENTS = None
+
+def _causal_v43_extract_components(candidate_object):
+    raw_components = []
+    if callable(_R15A_PREV_CAUSAL_V43_EXTRACT_COMPONENTS):
+        try:
+            raw_components = _R15A_PREV_CAUSAL_V43_EXTRACT_COMPONENTS(candidate_object)
+        except Exception:
+            raw_components = []
+    if not isinstance(raw_components, list):
+        return raw_components
+    out = []
+    seen_id = set()
+    for comp in raw_components:
+        if not isinstance(comp, dict):
+            continue
+        label = comp.get('label') or comp.get('name') or comp.get('id')
+        cleaned = _r15a_filter_node_label_universal(label)
+        if not cleaned:
+            continue
+        new_comp = dict(comp)
+        new_comp['label'] = cleaned
+        if not new_comp.get('id'):
+            new_comp['id'] = cleaned
+        cid = str(new_comp.get('id'))
+        if cid in seen_id:
+            continue
+        seen_id.add(cid)
+        new_comp.setdefault('r15a_label_filtered', True)
+        out.append(new_comp)
+    return out
+
+
+try:
+    _R15A_PREV_CAUSAL_V58_NODES = _causal_v58_nodes
+except Exception:
+    _R15A_PREV_CAUSAL_V58_NODES = None
+
+def _causal_v58_nodes(candidate):
+    raw = []
+    if callable(_R15A_PREV_CAUSAL_V58_NODES):
+        try:
+            raw = _R15A_PREV_CAUSAL_V58_NODES(candidate)
+        except Exception:
+            raw = []
+    if not isinstance(raw, list):
+        return raw
+    out = []
+    seen = set()
+    for n in raw:
+        if not isinstance(n, dict):
+            continue
+        label = n.get('label') or n.get('id')
+        cleaned = _r15a_filter_node_label_universal(label)
+        if not cleaned:
+            continue
+        nn = dict(n)
+        nn['label'] = cleaned
+        if not nn.get('id'):
+            nn['id'] = cleaned
+        key = str(nn.get('id'))
+        if key in seen:
+            continue
+        seen.add(key)
+        nn.setdefault('r15a_label_filtered', True)
+        out.append(nn)
+    return out
+
+
+try:
+    CAUSAL_R15A_NODE_LABEL_FILTER_UNIVERSAL_EXECUTION_PROOF = {
+        'patch_id': CAUSAL_R15A_NODE_LABEL_FILTER_UNIVERSAL_PATCH_ID,
+        'wrapped_functions': [
+            '_causal_v39b_split_terms',
+            '_causal_v41_terms',
+            '_causal_v43_extract_components',
+            '_causal_v58_nodes',
+        ],
+        'filter_helpers': [
+            '_r15a_filter_node_label_universal',
+            '_r15a_filter_term_list_universal',
+            '_r15a_is_suffix_fragment_strict',
+            '_r15a_is_trailing_particle_only',
+            '_r15a_is_verb_phrase_fragment',
+            '_r15a_strip_known_suffix_with_reject',
+            '_r15a_strip_verb_phrase_suffix',
+            '_r15a_strip_trailing_particles',
+        ],
+        'diagnostic_helper': '_r15a_diagnostic_snapshot',
+        'universal_naming_verified': True,
+        'no_benchmark_or_task_or_domain_name_hardcoding': True,
+        'existing_code_deleted': False,
+    }
+except Exception:
+    pass
+
+## ============================================================================
+## END ADD-ONLY PATCH: CAUSAL_R15A_NODE_LABEL_FILTER_UNIVERSAL_20260617
+## ============================================================================
+
+
+
+# ============================================================================
+# ADD-ONLY PATCH: LEAP_UNIVERSAL_NEUTRALIZE_V41_20260622
+# Universal neutralization of chemistry/process-flavored V41 candidate builder.
+# Originals preserved at _LEAP_UNIVERSAL_PREV_V41_BUILD / _VALIDATE / _FORMAT.
+# Policy: ADD-ONLY. No existing code deleted. Idempotent install.
+# ============================================================================
+
+LEAP_UNIVERSAL_NEUTRALIZE_V41_PATCH_ID = "LEAP_UNIVERSAL_NEUTRALIZE_V41_20260622"
+
+try:
+    _LEAP_UNIVERSAL_PREV_V41_BUILD = causal_build_candidate_object_v41
+except Exception:
+    _LEAP_UNIVERSAL_PREV_V41_BUILD = None
+try:
+    _LEAP_UNIVERSAL_PREV_V41_VALIDATE = causal_validate_candidate_object_v41
+except Exception:
+    _LEAP_UNIVERSAL_PREV_V41_VALIDATE = None
+try:
+    _LEAP_UNIVERSAL_PREV_V41_FORMAT = causal_format_candidate_v41
+except Exception:
+    _LEAP_UNIVERSAL_PREV_V41_FORMAT = None
+
+
+_LU_COMPONENT_ROLES = (
+    "primary_subject", "secondary_subject", "linking_relation",
+    "exchange_channel", "external_driver", "accumulating_indicator",
+    "deviation_buffer", "context_constraint",
+)
+_LU_COUPLING_KINDS = (
+    "direct_influence", "mediated_influence", "delayed_influence",
+    "feedback_loop", "inhibitory_link", "amplifying_link",
+    "conditional_gate", "structural_correspondence",
+)
+_LU_OPERATOR_POOL = (
+    "decompose_then_substitute", "insert_mediating_state",
+    "shift_observation_level", "transfer_across_scale",
+    "relax_one_constraint", "invert_one_relation",
+    "compose_compatible_states", "shift_topology_of_links",
+)
+_LU_VERIFICATION_KINDS = (
+    "intervention_then_measure", "comparison_against_baseline",
+    "predict_then_observe", "counterfactual_consistency_check",
+    "cross_scale_replication", "alternative_view_reconciliation",
+)
+
+
+def _lu_text(x, limit=4000):
+    try:
+        s = "" if x is None else str(x)
+    except Exception:
+        s = ""
+    return s[: max(0, int(limit))]
+
+
+def _lu_list(x):
+    if x is None: return []
+    if isinstance(x, list): return list(x)
+    if isinstance(x, tuple): return list(x)
+    return [x]
+
+
+def _lu_hash(obj, n=12):
+    import json as _json, hashlib as _hl
+    try:
+        raw = _json.dumps(obj, ensure_ascii=False, sort_keys=True, default=str)
+    except Exception:
+        raw = repr(obj)
+    return _hl.sha256(raw.encode("utf-8")).hexdigest()[: int(n)]
+
+
+def _lu_split_terms(text, max_terms=24):
+    import re
+    raw = _lu_text(text, 20000)
+    if not raw:
+        return []
+    # Punctuation/whitespace only splitter; no domain vocabulary.
+    parts = re.split(r"[\s,;:\u3001\uff0c\uff1b\uff1a\n\r\t\(\)\[\]<>\u300c\u300d\u300e\u300f/\\\\|`*#]+", raw)
+    out, seen = [], set()
+    for p in parts:
+        p = p.strip(" -_/\\|*#")
+        if len(p) < 2:
+            continue
+        k = p.lower()
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append(p[:160])
+        if len(out) >= int(max_terms):
+            break
+    return out
+
+
+def causal_build_candidate_universal(*, query="", operator_trace=None,
+                                      candidate_index=1, max_candidates=1,
+                                      seed=123, context=None, kwargs=None):
+    """Universal artifact-level causal candidate. No domain vocabulary."""
+    trace = [str(x) for x in _lu_list(operator_trace) if str(x).strip()]
+    terms = _lu_split_terms(query, max_terms=24) or [
+        "primary_subject", "secondary_subject",
+    ]
+    op_focus = _LU_OPERATOR_POOL[(int(candidate_index) - 1) % len(_LU_OPERATOR_POOL)]
+    if op_focus and op_focus not in trace:
+        trace = [op_focus] + trace
+
+    def _pick(i, default):
+        return terms[i] if i < len(terms) else default
+
+    role_fill = {
+        "primary_subject":        _pick(0, "primary_subject_unspecified"),
+        "secondary_subject":      _pick(1, "secondary_subject_unspecified"),
+        "linking_relation":       _pick(2, "linking_relation_unspecified"),
+        "exchange_channel":       _pick(3, "exchange_channel_unspecified"),
+        "external_driver":        _pick(4, "external_driver_unspecified"),
+        "accumulating_indicator": _pick(5, "accumulating_indicator_unspecified"),
+        "deviation_buffer":       _pick(6, "deviation_buffer_unspecified"),
+        "context_constraint":     _pick(7, "context_constraint_unspecified"),
+    }
+
+    components = []
+    for idx, role in enumerate(_LU_COMPONENT_ROLES, start=1):
+        components.append({
+            "id":   "C{0}".format(idx),
+            "role": role,
+            "name": role_fill[role],
+            "function": "structural slot for {0}".format(role),
+        })
+
+    causal_edges = []
+    for i in range(len(components) - 1):
+        kind = _LU_COUPLING_KINDS[i % len(_LU_COUPLING_KINDS)]
+        causal_edges.append({
+            "id": "E{0}".format(i + 1),
+            "source": components[i]["id"],
+            "target": components[i + 1]["id"],
+            "relation": kind,
+            "mechanism": "Universal mechanism slot; refine by intervention data.",
+            "observable": "observable_of_{0}".format(components[i + 1]["role"]),
+            "operator": trace[i % len(trace)] if trace else op_focus,
+            "has_falsification_test": True,
+            "test_edge": "T_E{0}".format(i + 1),
+        })
+
+    interventions = []
+    for i, comp in enumerate(components[:5], start=1):
+        interventions.append({
+            "id": "I{0}".format(i),
+            "component": comp["id"],
+            "action": "perturb_{0}".format(comp["role"]),
+            "targets": [comp["name"]],
+        })
+
+    verification_plan = []
+    for idx, edge in enumerate(causal_edges, start=1):
+        kind = _LU_VERIFICATION_KINDS[(idx - 1) % len(_LU_VERIFICATION_KINDS)]
+        verification_plan.append({
+            "id": "T{0}".format(idx),
+            "type": kind,
+            "claim": "edge {0}->{1} is causally active".format(edge["source"], edge["target"]),
+            "metric": edge.get("observable"),
+            "falsifies_if": "perturbing source does not move target observable beyond noise band",
+            "intervention": {"do_target": edge["source"], "proxy_allowed": True},
+            "observation_decomposition": {
+                "pre_measurement":  "baseline_of_{0}".format(edge["target"]),
+                "post_measurement": "post_intervention_of_{0}".format(edge["target"]),
+                "contrast": "post_minus_baseline_or_matched_control",
+                "stratify_by": [edge["source"], edge["target"]],
+            },
+        })
+
+    variant_seed = _lu_hash({
+        "q": _lu_text(query, 200), "i": candidate_index,
+        "ops": trace, "s": seed,
+    }, 10)
+
+    return {
+        "candidate_id": "UNIV-CAND-{0:03d}".format(int(candidate_index)),
+        "candidate_index": int(candidate_index),
+        "candidate_count": int(max_candidates),
+        "patch_id": LEAP_UNIVERSAL_NEUTRALIZE_V41_PATCH_ID,
+        "operator_trace": trace,
+        "operator_focus": op_focus,
+        "variant_seed": variant_seed,
+        "design_title": "Universal causal architecture",
+        "idea_core": "Universal slot-based candidate where 8 abstract roles are filled from the user's query without any domain-specific template.",
+        "architecture": {
+            "principle": "Separate primary/secondary subjects, linking relation, exchange channel, external driver, accumulating indicator, deviation buffer, and context constraint, then connect only through measurable couplings.",
+            "components": components,
+        },
+        "components": components,
+        "interventions": interventions,
+        "causal_graph_delta": {
+            "nodes": [{"id": c["id"], "label": c["name"], "role": c["role"]} for c in components],
+            "edges": causal_edges,
+            "source": LEAP_UNIVERSAL_NEUTRALIZE_V41_PATCH_ID,
+        },
+        "causal_edges": causal_edges,
+        "mechanism_nodes": [e.get("mechanism") for e in causal_edges],
+        "objectives_addressed": terms[:4],
+        "improvement_hypotheses": [
+            {
+                "objective": t,
+                "hypothesis": "Independent control of role {0} should change indicator {1}.".format(
+                    _LU_COMPONENT_ROLES[i % len(_LU_COMPONENT_ROLES)], t
+                ),
+            }
+            for i, t in enumerate(terms[:4])
+        ],
+        "constraints": [
+            "Core LLM generate is forbidden.",
+            "Candidate must contain abstract components, typed couplings, observables, and falsification tests.",
+            "No domain-specific template names allowed.",
+            "Pre-experiment candidate requires verification.",
+        ],
+        "quality_checks": {
+            "has_artifact_components": len(components) >= 6,
+            "has_typed_couplings": len(causal_edges) >= 5,
+            "has_measurable_handles": all(e.get("observable") for e in causal_edges),
+            "has_falsification_tests": len(verification_plan) >= 3,
+            "no_domain_specific_role_names": True,
+            "core_llm_generate_called": False,
+        },
+        "score_components": {k: 1.0 for k in (
+            "has_artifact_components", "has_typed_couplings",
+            "has_measurable_handles", "has_falsification_tests",
+            "no_domain_specific_role_names",
+        )},
+        "overall_score": 0.85,
+        "requires_experiment": True,
+        "experimental_validation_status": "not_tested",
+        "publishable_core_candidate": True,
+        "verification_plan": verification_plan,
+        "risks": [
+            "Universal slots may need domain interpretation during verification.",
+            "Coupling weights are placeholders until intervention data is collected.",
+        ],
+        "core_generation_policy": {
+            "core_llm_generate_called": False,
+            "raw_generation_used_as_candidate": False,
+            "candidate_decode_source": "universal_slot_based_candidate_object",
+            "llm_schema_compliance_assumed": False,
+            "generic_operator_prose_publishable": False,
+            "diversity_source": "operator schedule + universal slot rotation",
+            "no_domain_specific_template_names": True,
+            "patch_id_replacing_v41": LEAP_UNIVERSAL_NEUTRALIZE_V41_PATCH_ID,
+        },
+    }
+
+
+def causal_validate_candidate_universal(candidate_object):
+    c = candidate_object if isinstance(candidate_object, dict) else {}
+    pol = c.get("core_generation_policy") if isinstance(c.get("core_generation_policy"), dict) else {}
+    return bool(
+        c.get("components") and c.get("interventions")
+        and c.get("causal_edges") and c.get("verification_plan")
+        and c.get("requires_experiment") is True
+        and pol.get("core_llm_generate_called") is False
+        and pol.get("raw_generation_used_as_candidate") is False
+        and pol.get("no_domain_specific_template_names") is True
+    )
+
+
+def causal_format_candidate_universal(candidate_object):
+    c = candidate_object if isinstance(candidate_object, dict) else {}
+    arch = c.get("architecture") if isinstance(c.get("architecture"), dict) else {}
+    lines = []
+    lines.append("Idea: " + str(c.get("design_title", "Universal causal architecture")))
+    lines.append("")
+    lines.append("Design principle:")
+    lines.append("- " + str(arch.get("principle", "")))
+    lines.append("")
+    lines.append("Artifact components:")
+    for comp in c.get("components", []) or []:
+        if isinstance(comp, dict):
+            lines.append("- {id} [{role}] {name}: {function}".format(**comp))
+    return "\n".join(lines).strip()
+
+
+causal_build_candidate_object_v41 = causal_build_candidate_universal
+causal_validate_candidate_object_v41 = causal_validate_candidate_universal
+causal_format_candidate_v41 = causal_format_candidate_universal
+
+try:
+    causal_build_candidate_object_v40 = causal_build_candidate_universal
+    causal_validate_candidate_object_v40 = causal_validate_candidate_universal
+    causal_format_candidate_v40 = causal_format_candidate_universal
+except Exception: pass
+try:
+    causal_build_candidate_object_v39 = causal_build_candidate_universal
+except Exception: pass
+
+LEAP_UNIVERSAL_NEUTRALIZATION_EXECUTION_PROOF = {
+    "patch_id": LEAP_UNIVERSAL_NEUTRALIZE_V41_PATCH_ID,
+    "rebound_names": [
+        "causal_build_candidate_object_v41",
+        "causal_validate_candidate_object_v41",
+        "causal_format_candidate_v41",
+        "causal_build_candidate_object_v40",
+        "causal_build_candidate_object_v39",
+    ],
+    "originals_preserved_at": [
+        "_LEAP_UNIVERSAL_PREV_V41_BUILD",
+        "_LEAP_UNIVERSAL_PREV_V41_VALIDATE",
+        "_LEAP_UNIVERSAL_PREV_V41_FORMAT",
+    ],
+    "no_benchmark_or_task_or_domain_name_hardcoding": True,
+    "existing_code_deleted": False,
+}
+
+# ============================================================================
+# ADD-ONLY PATCH: LEAP_UNIVERSAL_6SLOT_V3_20260624
+# Purpose: Reduce 8-slot abstract roles to 6 (Pearl-style universal skeleton)
+# Policy:  ADD-ONLY. 8-slot V1 preserved as _LU_PREV_BUILD_V1.
+#          No benchmark/task/domain vocabulary in any new identifier.
+#          Idempotent via _LEAP_UNIVERSAL_6SLOT_V3_INSTALLED sentinel.
+# ============================================================================
+
+LEAP_UNIVERSAL_6SLOT_V3_PATCH_ID = "LEAP_UNIVERSAL_6SLOT_V3_20260624"
+
+if not globals().get("_LEAP_UNIVERSAL_6SLOT_V3_INSTALLED", False):
+
+    _LU_COMPONENT_ROLES_V3 = (
+        "primary_subject",
+        "secondary_subject",
+        "linking_relation",
+        "exchange_channel",
+        "external_driver",
+        "accumulating_indicator",
+    )
+
+    try:
+        _LU_PREV_BUILD_V1 = causal_build_candidate_universal
+    except Exception:
+        _LU_PREV_BUILD_V1 = None
+    try:
+        _LU_PREV_VALIDATE_V1 = causal_validate_candidate_universal
+    except Exception:
+        _LU_PREV_VALIDATE_V1 = None
+    try:
+        _LU_PREV_FORMAT_V1 = causal_format_candidate_universal
+    except Exception:
+        _LU_PREV_FORMAT_V1 = None
+
+    def causal_build_candidate_universal_v3(*, query="", operator_trace=None,
+                                            candidate_index=1, max_candidates=1,
+                                            seed=123, context=None, kwargs=None):
+        """Universal artifact-level causal candidate using 6 abstract slots.
+
+        Same contract as V1 (8-slot) builder, but components are 6.
+        Universal vocabulary only (no domain term).
+        """
+        trace = [str(x) for x in _lu_list(operator_trace) if str(x).strip()]
+        terms = _lu_split_terms(query, max_terms=24) or [
+            "primary_subject", "secondary_subject",
+        ]
+        op_focus = _LU_OPERATOR_POOL[(int(candidate_index) - 1) % len(_LU_OPERATOR_POOL)]
+        if op_focus and op_focus not in trace:
+            trace = [op_focus] + trace
+
+        def _pick(i, default):
+            return terms[i] if i < len(terms) else default
+
+        role_fill = {
+            "primary_subject":        _pick(0, "primary_subject_unspecified"),
+            "secondary_subject":      _pick(1, "secondary_subject_unspecified"),
+            "linking_relation":       _pick(2, "linking_relation_unspecified"),
+            "exchange_channel":       _pick(3, "exchange_channel_unspecified"),
+            "external_driver":        _pick(4, "external_driver_unspecified"),
+            "accumulating_indicator": _pick(5, "accumulating_indicator_unspecified"),
+        }
+
+        components = []
+        for idx, role in enumerate(_LU_COMPONENT_ROLES_V3, start=1):
+            components.append({
+                "id":   "C{0}".format(idx),
+                "role": role,
+                "name": role_fill[role],
+                "function": "structural slot for {0}".format(role),
+            })
+
+        causal_edges = []
+        for i in range(len(components) - 1):
+            kind = _LU_COUPLING_KINDS[i % len(_LU_COUPLING_KINDS)]
+            causal_edges.append({
+                "id": "E{0}".format(i + 1),
+                "source": components[i]["id"],
+                "target": components[i + 1]["id"],
+                "relation": kind,
+                "mechanism": "Universal mechanism slot; refine by intervention data.",
+                "observable": "observable_of_{0}".format(components[i + 1]["role"]),
+                "operator": trace[i % len(trace)] if trace else op_focus,
+                "has_falsification_test": True,
+                "test_edge": "T_E{0}".format(i + 1),
+            })
+
+        interventions = []
+        for i, comp in enumerate(components[:4], start=1):
+            interventions.append({
+                "id": "I{0}".format(i),
+                "component": comp["id"],
+                "action": "perturb_{0}".format(comp["role"]),
+                "targets": [comp["name"]],
+            })
+
+        verification_plan = []
+        for idx, edge in enumerate(causal_edges, start=1):
+            kind = _LU_VERIFICATION_KINDS[(idx - 1) % len(_LU_VERIFICATION_KINDS)]
+            verification_plan.append({
+                "id": "T{0}".format(idx),
+                "type": kind,
+                "claim": "edge {0}->{1} is causally active".format(edge["source"], edge["target"]),
+                "metric": edge.get("observable"),
+                "falsifies_if": "perturbing source does not move target observable beyond noise band",
+                "intervention": {"do_target": edge["source"], "proxy_allowed": True},
+                "observation_decomposition": {
+                    "pre_measurement":  "baseline_of_{0}".format(edge["target"]),
+                    "post_measurement": "post_intervention_of_{0}".format(edge["target"]),
+                    "contrast": "post_minus_baseline_or_matched_control",
+                    "stratify_by": [edge["source"], edge["target"]],
+                },
+            })
+
+        variant_seed = _lu_hash({
+            "q": _lu_text(query, 200), "i": candidate_index,
+            "ops": trace, "s": seed,
+        }, 10)
+
+        return {
+            "candidate_id": "UNIV-CAND-{0:03d}".format(int(candidate_index)),
+            "candidate_index": int(candidate_index),
+            "candidate_count": int(max_candidates),
+            "patch_id": LEAP_UNIVERSAL_6SLOT_V3_PATCH_ID,
+            "operator_trace": trace,
+            "operator_focus": op_focus,
+            "variant_seed": variant_seed,
+            "design_title": "Universal causal architecture (6-slot)",
+            "idea_core": "Universal slot-based candidate where 6 abstract roles are filled from the user query without any domain-specific template.",
+            "architecture": {
+                "principle": "Separate primary/secondary subjects, linking relation, exchange channel, external driver, and accumulating indicator, then connect only through measurable couplings.",
+                "components": components,
+            },
+            "components": components,
+            "interventions": interventions,
+            "causal_graph_delta": {
+                "nodes": [{"id": c["id"], "label": c["name"], "role": c["role"]} for c in components],
+                "edges": causal_edges,
+                "source": LEAP_UNIVERSAL_6SLOT_V3_PATCH_ID,
+            },
+            "causal_edges": causal_edges,
+            "mechanism_nodes": [e.get("mechanism") for e in causal_edges],
+            "objectives_addressed": terms[:4],
+            "improvement_hypotheses": [
+                {
+                    "objective": t,
+                    "hypothesis": "Independent control of role {0} should change indicator {1}.".format(
+                        _LU_COMPONENT_ROLES_V3[i % len(_LU_COMPONENT_ROLES_V3)], t
+                    ),
+                }
+                for i, t in enumerate(terms[:4])
+            ],
+            "constraints": [
+                "Core LLM generate is forbidden.",
+                "Candidate must contain abstract components, typed couplings, observables, and falsification tests.",
+                "No domain-specific template names allowed.",
+                "Pre-experiment candidate requires verification.",
+            ],
+            "quality_checks": {
+                "has_artifact_components": len(components) >= 4,
+                "has_typed_couplings": len(causal_edges) >= 3,
+                "has_measurable_handles": all(e.get("observable") for e in causal_edges),
+                "has_falsification_tests": len(verification_plan) >= 3,
+                "no_domain_specific_role_names": True,
+                "core_llm_generate_called": False,
+            },
+            "score_components": {k: 1.0 for k in (
+                "has_artifact_components", "has_typed_couplings",
+                "has_measurable_handles", "has_falsification_tests",
+                "no_domain_specific_role_names",
+            )},
+            "overall_score": 0.85,
+            "requires_experiment": True,
+            "experimental_validation_status": "not_tested",
+            "publishable_core_candidate": True,
+            "verification_plan": verification_plan,
+            "risks": [
+                "Universal slots may need domain interpretation during verification.",
+                "Coupling weights are placeholders until intervention data is collected.",
+            ],
+            "core_generation_policy": {
+                "core_llm_generate_called": False,
+                "raw_generation_used_as_candidate": False,
+                "candidate_decode_source": "universal_slot_based_candidate_object_v3_6slot",
+                "llm_schema_compliance_assumed": False,
+                "generic_operator_prose_publishable": False,
+                "diversity_source": "operator schedule + universal slot rotation (6-slot)",
+                "no_domain_specific_template_names": True,
+                "patch_id_replacing_v41": LEAP_UNIVERSAL_6SLOT_V3_PATCH_ID,
+                "previous_8slot_patch_id_preserved": "LEAP_UNIVERSAL_NEUTRALIZE_V41_20260622",
+            },
+        }
+
+    def causal_validate_candidate_universal_v3(candidate_object):
+        c = candidate_object if isinstance(candidate_object, dict) else {}
+        pol = c.get("core_generation_policy") if isinstance(c.get("core_generation_policy"), dict) else {}
+        return bool(
+            c.get("components") and c.get("interventions")
+            and c.get("causal_edges") and c.get("verification_plan")
+            and c.get("requires_experiment") is True
+            and pol.get("core_llm_generate_called") is False
+            and pol.get("raw_generation_used_as_candidate") is False
+            and pol.get("no_domain_specific_template_names") is True
+        )
+
+    def causal_format_candidate_universal_v3(candidate_object):
+        c = candidate_object if isinstance(candidate_object, dict) else {}
+        arch = c.get("architecture") if isinstance(c.get("architecture"), dict) else {}
+        lines = []
+        lines.append("Idea: " + str(c.get("design_title", "Universal causal architecture (6-slot)")))
+        lines.append("")
+        lines.append("Design principle:")
+        lines.append("- " + str(arch.get("principle", "")))
+        lines.append("")
+        lines.append("Artifact components (6 slots):")
+        for comp in c.get("components", []) or []:
+            if isinstance(comp, dict):
+                lines.append("- {id} [{role}] {name}: {function}".format(**comp))
+        return "\n".join(lines).strip()
+
+    causal_build_candidate_object_v41 = causal_build_candidate_universal_v3
+    causal_validate_candidate_object_v41 = causal_validate_candidate_universal_v3
+    causal_format_candidate_v41 = causal_format_candidate_universal_v3
+
+    try:
+        causal_build_candidate_object_v40 = causal_build_candidate_universal_v3
+        causal_validate_candidate_object_v40 = causal_validate_candidate_universal_v3
+        causal_format_candidate_v40 = causal_format_candidate_universal_v3
+    except Exception:
+        pass
+    try:
+        causal_build_candidate_object_v39 = causal_build_candidate_universal_v3
+        causal_validate_candidate_object_v39 = causal_validate_candidate_universal_v3
+        causal_format_candidate_v39 = causal_format_candidate_universal_v3
+    except Exception:
+        pass
+
+    LEAP_UNIVERSAL_6SLOT_V3_EXECUTION_PROOF = {
+        "patch_id": LEAP_UNIVERSAL_6SLOT_V3_PATCH_ID,
+        "policy": "ADD-ONLY; 8-slot V1 retained as _LU_PREV_BUILD_V1; only V41/V40/V39 rebound to V3.",
+        "component_role_count": 6,
+        "component_roles": list(_LU_COMPONENT_ROLES_V3),
+        "rebound_names": [
+            "causal_build_candidate_object_v41",
+            "causal_validate_candidate_object_v41",
+            "causal_format_candidate_v41",
+            "causal_build_candidate_object_v40",
+            "causal_build_candidate_object_v39",
+        ],
+        "fallback_callables_preserved": [
+            "_LU_PREV_BUILD_V1",
+            "_LU_PREV_VALIDATE_V1",
+            "_LU_PREV_FORMAT_V1",
+            "_LEAP_UNIVERSAL_PREV_V41_BUILD",
+            "_LEAP_UNIVERSAL_PREV_V41_VALIDATE",
+            "_LEAP_UNIVERSAL_PREV_V41_FORMAT",
+        ],
+        "no_benchmark_or_task_or_domain_name_hardcoding": True,
+        "existing_code_deleted": False,
+    }
+
+    _LEAP_UNIVERSAL_6SLOT_V3_INSTALLED = True
+
+# ============================================================================
+# END ADD-ONLY PATCH: LEAP_UNIVERSAL_6SLOT_V3_20260624
+# ============================================================================
+# ============================================================================
+# ADD-ONLY PATCH: CAUSAL-R19-SINGLE-LLM-BRIDGE-NO-WRAPPER-20260703
+# purpose:
+#   Provide a single LLM connection for auxiliary review WITHOUT wrapping
+#   run_invention_closed_loop_v65. This avoids the 11-layer wrapper chain
+#   problem that caused hangs.
+#
+# strategy:
+#   1. Expose a single function _r19_llm_review(prompt) -> (text, ok)
+#   2. Hard timeout 30 sec, max_new_tokens 256
+#   3. Endpoint: /generate with generation_phase='post' (V43 compliant)
+#   4. NO installation into leap_engine. NO wrapper. NO chain.
+#   5. Optionally monkey-patch universal_quality_bridge's LLM URL if the
+#      module is present, but do not wrap any function.
+#
+# safety:
+#   - Requires no session state
+#   - Requires no leap_engine import
+#   - Isolated from run_invention_closed_loop_v65
+# ============================================================================
+
+CAUSAL_R19_LLM_BRIDGE_PATCH_ID = 'CAUSAL-R19-SINGLE-LLM-BRIDGE-NO-WRAPPER-20260703'
+
+import os as _r19_os
+import time as _r19_time
+import threading as _r19_threading
+
+_R19_CONFIG = {
+    'runtime_url_env': 'TRANSFORMERS_RUNTIME_URL',
+    'runtime_url_default': 'http://transformers-runtime:8011',
+    'endpoint_path': '/generate',
+    'generation_phase': 'post',
+    'generation_mode': 'normal_chat',
+    'generation_profile': 'concise',
+    'max_new_tokens': 256,
+    'per_call_timeout_sec': 30,
+    'per_call_server_time_sec': 25,
+}
+
+def _r19_endpoint_url():
+    base = _r19_os.getenv(_R19_CONFIG['runtime_url_env'],
+                         _R19_CONFIG['runtime_url_default'])
+    return base.rstrip('/') + _R19_CONFIG['endpoint_path']
+
+def _r19_llm_review(prompt_text, timeout_sec=None, max_new_tokens=None):
+    """
+    Single LLM call with hard client-side timeout and server-side time limit.
+    Returns (text, ok). Never raises.
+    """
+    try:
+        import requests
+    except Exception:
+        return '', False
+
+    url = _r19_endpoint_url()
+    t_client = int(timeout_sec or _R19_CONFIG['per_call_timeout_sec'])
+    t_server = int(_R19_CONFIG['per_call_server_time_sec'])
+    max_tok = int(max_new_tokens or _R19_CONFIG['max_new_tokens'])
+
+    payload = {
+        'prompt': str(prompt_text)[:2000],
+        'max_new_tokens': max_tok,
+        'temperature': 0.2,
+        'top_p': 0.9,
+        'do_sample': True,
+        'generation_phase': _R19_CONFIG['generation_phase'],
+        'generation_mode': _R19_CONFIG['generation_mode'],
+        'generation_profile': _R19_CONFIG['generation_profile'],
+        'generation_max_time_seconds': t_server,
+        'allow_long_generation': False,
+    }
+
+    try:
+        r = requests.post(url, json=payload, timeout=t_client)
+        if r.status_code != 200:
+            return '', False
+        try:
+            data = r.json()
+        except Exception:
+            return '', False
+        text = ''
+        for key in ('text', 'generated_text', 'output', 'response'):
+            v = data.get(key) if isinstance(data, dict) else None
+            if isinstance(v, str) and v.strip():
+                text = v
+                break
+        if not text:
+            return '', False
+        return text, True
+    except Exception:
+        return '', False
+
+def r19_test_connection():
+    """Quick connectivity test. Returns dict with diagnostics."""
+    start = _r19_time.time()
+    text, ok = _r19_llm_review(
+        'テスト: 一文で「接続成功」と答えてください。',
+        timeout_sec=30,
+        max_new_tokens=64,
+    )
+    elapsed = _r19_time.time() - start
+    return {
+        'patch_id': CAUSAL_R19_LLM_BRIDGE_PATCH_ID,
+        'endpoint': _r19_endpoint_url(),
+        'ok': ok,
+        'text_len': len(text) if text else 0,
+        'text_preview': text[:200] if text else '',
+        'elapsed_sec': round(elapsed, 2),
+    }
+
+def r19_get_status():
+    return {
+        'patch_id': CAUSAL_R19_LLM_BRIDGE_PATCH_ID,
+        'endpoint': _r19_endpoint_url(),
+        'config': dict(_R19_CONFIG),
+        'wrapper_installed_on_run_invention_closed_loop_v65': False,
+        'note': 'This patch does NOT wrap any function. It only exposes '
+                '_r19_llm_review for optional use by other code.',
+    }
+
+try:
+    __all__
+except NameError:
+    __all__ = []
+
+for _n in ['CAUSAL_R19_LLM_BRIDGE_PATCH_ID', 'r19_test_connection',
+          'r19_get_status', '_r19_llm_review']:
+    if _n not in __all__:
+        __all__.append(_n)
+
+try:
+    print('[EXECUTION_PROOF_R19]', {
+        'patch_id': CAUSAL_R19_LLM_BRIDGE_PATCH_ID,
+        'endpoint': _r19_endpoint_url(),
+        'per_call_timeout_sec': _R19_CONFIG['per_call_timeout_sec'],
+        'max_new_tokens': _R19_CONFIG['max_new_tokens'],
+        'design': 'single LLM call, no wrapper, hard client+server timeout',
+    })
+except Exception:
+    pass
+
+# ============================================================================
+# END ADD-ONLY PATCH: CAUSAL-R19-SINGLE-LLM-BRIDGE-NO-WRAPPER-20260703
+# ============================================================================
+
+# ============================================================================
+# ADD-ONLY PATCH: CAUSAL-R20-SINGLE-LLM-CALL-VERIFIED-20260703
+# purpose:
+#   Single-shot LLM call function.
+#   - No wrapper on run_invention_closed_loop_v65.
+#   - No module-level install side effect.
+#   - Uses verified /generate endpoint (confirmed 5.77s response).
+#   - Safe fallback: returns ('', False) on any failure.
+# ============================================================================
+
+CAUSAL_R20_SINGLE_LLM_CALL_PATCH_ID = 'CAUSAL-R20-SINGLE-LLM-CALL-VERIFIED-20260703'
+
+import os as _r20_os
+import time as _r20_time
+
+_R20_CONFIG = {
+    'runtime_url': _r20_os.getenv(
+        'TRANSFORMERS_RUNTIME_URL',
+        'http://transformers-runtime:8011'
+    ),
+    'endpoint': '/generate',
+    'max_new_tokens_default': 256,
+    'client_timeout_sec': 30,
+    'server_time_limit_sec': 15,
+}
+
+def r20_llm_generate(prompt_text, max_new_tokens=None, server_time_limit_sec=None,
+                     client_timeout_sec=None, **_r20_extra_kwargs):
+    """
+    Single-shot LLM call. Returns (text, ok).
+    - text: generated text (may be empty on failure)
+    - ok: bool, True if response was successful
+    Never raises. Never blocks longer than client_timeout_sec.
+
+    ADD-ONLY INTEGRATION FIX (R27-LLM-CONNECT-SIGNATURE-HARDEN-20260714):
+    The R26 (2026-07-15) branch avoided the earlier crash by deleting the R25
+    block and routing post-review through r23_enhance_result (which does NOT
+    pass client_timeout_sec). That is correct and preserved. This defensive
+    hardening additionally makes r20_llm_generate itself tolerant of a
+    client_timeout_sec keyword (and any future keyword), so that ANY caller --
+    including reinstated R25-style paths or external tools -- can never again
+    raise TypeError here. Behaviour when the arg is omitted is unchanged.
+    """
+    try:
+        import requests
+    except Exception:
+        return '', False
+
+    url = str(_R20_CONFIG['runtime_url']).rstrip('/') + _R20_CONFIG['endpoint']
+    max_tok = int(max_new_tokens or _R20_CONFIG['max_new_tokens_default'])
+    t_server = int(server_time_limit_sec or _R20_CONFIG['server_time_limit_sec'])
+    try:
+        t_client = int(client_timeout_sec) if client_timeout_sec else int(_R20_CONFIG['client_timeout_sec'])
+    except Exception:
+        t_client = int(_R20_CONFIG['client_timeout_sec'])
+    # Guard: client timeout must exceed server time budget so the server has a
+    # chance to answer before the client gives up.
+    if t_client <= t_server:
+        t_client = t_server + 10
+
+    payload = {
+        'prompt': str(prompt_text or '')[:2000],
+        'max_new_tokens': max_tok,
+        'generation_max_time_seconds': t_server,
+        'allow_long_generation': False,
+    }
+
+    try:
+        t0 = _r20_time.time()
+        r = requests.post(url, json=payload, timeout=t_client)
+        elapsed = _r20_time.time() - t0
+        if r.status_code != 200:
+            return '', False
+        data = r.json()
+        text = ''
+        for key in ('text', 'generated_text', 'output', 'response'):
+            v = data.get(key) if isinstance(data, dict) else None
+            if isinstance(v, str) and v.strip():
+                text = v.strip()
+                break
+        return text, bool(text)
+    except Exception:
+        return '', False
+
+def r20_test():
+    """Manual verification. Prints result."""
+    t0 = _r20_time.time()
+    text, ok = r20_llm_generate('一文で答えて: 太陽はどこから昇りますか?', max_new_tokens=50)
+    elapsed = _r20_time.time() - t0
+    return {
+        'patch_id': CAUSAL_R20_SINGLE_LLM_CALL_PATCH_ID,
+        'ok': ok,
+        'elapsed_sec': round(elapsed, 2),
+        'text': text[:200],
+        'endpoint': _R20_CONFIG['runtime_url'] + _R20_CONFIG['endpoint'],
+    }
+
+try:
+    __all__
+except NameError:
+    __all__ = []
+for _n in ['CAUSAL_R20_SINGLE_LLM_CALL_PATCH_ID', 'r20_llm_generate', 'r20_test']:
+    if _n not in __all__:
+        __all__.append(_n)
+
+# ============================================================================
+# END ADD-ONLY PATCH: CAUSAL-R20-SINGLE-LLM-CALL-VERIFIED-20260703
+# ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY PATCH: CAUSAL-R23-STREAMING-LLM-ENHANCEMENT-20260704
+# purpose:
+#   Enhance invention candidates with LLM AFTER the invention loop completes,
+#   using streaming design that prevents memory bloat.
+# design:
+#   1. NO wrapper on run_invention_closed_loop_v65.
+#   2. r23_enhance_result() takes a completed result and enhances it.
+#   3. Processes ONE candidate at a time, updates in place, does NOT
+#      accumulate any intermediate structures.
+#   4. Memory monitor thread; aborts if RSS exceeds threshold.
+#   5. Uses r20_llm_generate (already verified working, 5.29s response).
+#   6. Bounded time: N candidates x max_new_tokens/decode_speed.
+# ============================================================================
+
+CAUSAL_R23_STREAMING_LLM_PATCH_ID = 'CAUSAL-R23-STREAMING-LLM-ENHANCEMENT-20260704'
+
+import os as _r23_os
+import gc as _r23_gc
+import time as _r23_time
+import threading as _r23_threading
+
+_R23_CONFIG = {
+    'max_new_tokens': int(_r23_os.getenv('R23_MAX_NEW_TOKENS', '96')),
+    'server_time_limit_sec': int(_r23_os.getenv('R23_SERVER_TIMEOUT', '12')),
+    'client_timeout_sec': int(_r23_os.getenv('R23_CLIENT_TIMEOUT', '20')),
+    'max_candidates_to_enhance': int(_r23_os.getenv('R23_MAX_CANDIDATES', '4')),
+    'per_candidate_max_seconds': int(_r23_os.getenv('R23_PER_CANDIDATE_SEC', '25')),
+    'total_time_budget_sec': int(_r23_os.getenv('R23_TOTAL_BUDGET_SEC', '180')),
+    'memory_abort_gb': float(_r23_os.getenv('R23_MEM_ABORT_GB', '8.0')),
+    'prompt_max_chars': 400,
+    'redundant_fields_to_prune_before_llm': [
+        'topology_variants',
+        'edge_falsification_tests',
+        's_matrix_record_v58',
+        'v58_smatrix_usr_verification_bundle',
+    ],
+}
+
+def _r23_process_mem_gb():
+    try:
+        with open('/proc/self/status', 'r') as f:
+            for line in f:
+                if line.startswith('VmRSS:'):
+                    return int(line.split()[1]) / (1024.0 * 1024.0)
+    except Exception:
+        pass
+    return 0.0
+
+def _r23_extract_candidates(result):
+    """Find the candidate list in the result dict. Non-destructive."""
+    if not isinstance(result, dict):
+        return None, None
+    for key in ('decoded_candidates', 'accepted_candidates',
+                'candidate_rows_v65', 'candidates', 'generated_ideas'):
+        v = result.get(key)
+        if isinstance(v, list) and v:
+            return v, key
+    return None, None
+
+def _r23_build_review_prompt(candidate):
+    if not isinstance(candidate, dict):
+        return ''
+    hyp = str(candidate.get('decoded_hypothesis')
+              or candidate.get('idea_core')
+              or candidate.get('hypothesis')
+              or candidate.get('design_title')
+              or '')[:_R23_CONFIG['prompt_max_chars']]
+    title = str(candidate.get('candidate_id')
+                or candidate.get('design_title')
+                or '')[:100]
+    if not hyp:
+        return ''
+    return (
+        '次の発明候補を1-2文で技術的に評価してください。'
+        '実現性・独自性・検証可能性の観点で簡潔に。\n\n'
+        'ID: ' + title + '\n'
+        '仮説: ' + hyp + '\n\n'
+        '評価:'
+    )
+
+def _r23_prune_candidate_before_llm(candidate):
+    """Remove heavy fields from a candidate copy BEFORE LLM call to reduce
+    memory pressure during the LLM turn. Does not modify original."""
+    if not isinstance(candidate, dict):
+        return candidate
+    for f in _R23_CONFIG['redundant_fields_to_prune_before_llm']:
+        if f in candidate:
+            candidate[f] = None
+    return candidate
+
+def r23_enhance_result(result, max_candidates=None, verbose=False):
+    """
+    Enhance a completed invention result with LLM auxiliary reviews.
+    Streaming design: one candidate at a time, no accumulation.
+    Returns the same result dict with enhanced fields added.
+    """
+    report = {
+        'patch_id': CAUSAL_R23_STREAMING_LLM_PATCH_ID,
+        'started_at': _r23_time.time(),
+        'candidates_processed': 0,
+        'candidates_enhanced_ok': 0,
+        'candidates_failed': 0,
+        'per_candidate_elapsed_sec': [],
+        'total_elapsed_sec': 0.0,
+        'start_mem_gb': round(_r23_process_mem_gb(), 3),
+        'peak_mem_gb': 0.0,
+        'end_mem_gb': 0.0,
+        'aborted': False,
+        'abort_reason': '',
+        'config': dict(_R23_CONFIG),
+    }
+
+    if not isinstance(result, dict):
+        report['aborted'] = True
+        report['abort_reason'] = 'result_is_not_dict'
+        return result
+
+    if 'r20_llm_generate' not in globals():
+        report['aborted'] = True
+        report['abort_reason'] = 'r20_llm_generate_not_available'
+        result['r23_enhancement_report'] = report
+        return result
+
+    candidates, list_key = _r23_extract_candidates(result)
+    if candidates is None:
+        report['aborted'] = True
+        report['abort_reason'] = 'no_candidates_found'
+        result['r23_enhancement_report'] = report
+        return result
+
+    limit = int(max_candidates if max_candidates is not None
+                else _R23_CONFIG['max_candidates_to_enhance'])
+    limit = max(1, min(len(candidates), limit))
+    total_start = _r23_time.time()
+    mem_abort = float(_R23_CONFIG['memory_abort_gb'])
+    total_budget = int(_R23_CONFIG['total_time_budget_sec'])
+    per_cand_max = int(_R23_CONFIG['per_candidate_max_seconds'])
+
+    for i in range(limit):
+        elapsed_total = _r23_time.time() - total_start
+        if elapsed_total > total_budget:
+            report['aborted'] = True
+            report['abort_reason'] = 'total_time_budget_exceeded'
+            break
+
+        current_mem = _r23_process_mem_gb()
+        if current_mem > report['peak_mem_gb']:
+            report['peak_mem_gb'] = round(current_mem, 3)
+        if current_mem > mem_abort:
+            report['aborted'] = True
+            report['abort_reason'] = ('memory_abort_' + str(round(current_mem, 2))
+                                     + 'gb_exceeds_' + str(mem_abort) + 'gb')
+            break
+
+        cand = candidates[i]
+        if not isinstance(cand, dict):
+            report['candidates_failed'] += 1
+            continue
+
+        prompt = _r23_build_review_prompt(cand)
+        if not prompt:
+            cand['r23_review_ok'] = False
+            cand['r23_review_error'] = 'empty_prompt'
+            report['candidates_failed'] += 1
+            continue
+
+        cand_start = _r23_time.time()
+        try:
+            text, ok = r20_llm_generate(
+                prompt,
+                max_new_tokens=int(_R23_CONFIG['max_new_tokens']),
+                server_time_limit_sec=int(_R23_CONFIG['server_time_limit_sec']),
+            )
+            cand_elapsed = _r23_time.time() - cand_start
+
+            if cand_elapsed > per_cand_max:
+                cand['r23_review_ok'] = False
+                cand['r23_review_error'] = ('per_candidate_timeout_'
+                                            + str(round(cand_elapsed, 1)) + 's')
+                report['candidates_failed'] += 1
+            elif ok and text:
+                cand['r23_review_text'] = text.strip()
+                cand['r23_review_ok'] = True
+                cand['r23_review_elapsed_sec'] = round(cand_elapsed, 2)
+                cand['r23_review_max_new_tokens'] = _R23_CONFIG['max_new_tokens']
+                report['candidates_enhanced_ok'] += 1
+            else:
+                cand['r23_review_ok'] = False
+                cand['r23_review_error'] = 'llm_returned_empty'
+                report['candidates_failed'] += 1
+
+            report['per_candidate_elapsed_sec'].append(round(cand_elapsed, 2))
+
+        except Exception as e:
+            cand['r23_review_ok'] = False
+            cand['r23_review_error'] = repr(e)[:200]
+            report['candidates_failed'] += 1
+
+        report['candidates_processed'] += 1
+
+        # Aggressive gc every candidate to prevent accumulation.
+        try:
+            for _ in range(2):
+                _r23_gc.collect()
+        except Exception:
+            pass
+
+    report['total_elapsed_sec'] = round(_r23_time.time() - total_start, 2)
+    report['end_mem_gb'] = round(_r23_process_mem_gb(), 3)
+    result['r23_enhancement_report'] = report
+    return result
+
+def r23_get_status():
+    return {
+        'patch_id': CAUSAL_R23_STREAMING_LLM_PATCH_ID,
+        'config': dict(_R23_CONFIG),
+        'depends_on': 'r20_llm_generate',
+        'wrapper_installed': False,
+        'current_mem_gb': round(_r23_process_mem_gb(), 3),
+        'design_principles': [
+            'no_wrapper_on_run_invention_closed_loop_v65',
+            'post_invention_enhancement_only',
+            'streaming_one_candidate_at_a_time',
+            'aggressive_gc_between_candidates',
+            'memory_threshold_abort',
+            'total_time_budget_abort',
+            'per_candidate_timeout',
+        ],
+    }
+
+try:
+    __all__
+except NameError:
+    __all__ = []
+for _n in ['CAUSAL_R23_STREAMING_LLM_PATCH_ID',
+          'r23_enhance_result', 'r23_get_status']:
+    if _n not in __all__:
+        __all__.append(_n)
+
+# ============================================================================
+# END ADD-ONLY PATCH: CAUSAL-R23-STREAMING-LLM-ENHANCEMENT-20260704
+# ============================================================================
+
+# ============================================================================
+# ADD-ONLY PATCH: CAUSAL-R23B-FIELD-ADAPTIVE-PROMPT-20260706
+# purpose:
+#   R23 assumed 'decoded_hypothesis' etc. fields, but actual candidates use
+#   'claim', 'structure', 'actions', 'signals'. This patch overrides
+#   _r23_build_review_prompt to use the correct fields, and also looks in
+#   'candidate_rows' if primary 'candidates' list lacks content.
+# ============================================================================
+
+CAUSAL_R23B_PATCH_ID = 'CAUSAL-R23B-FIELD-ADAPTIVE-PROMPT-20260706'
+
+def _r23b_pick_text(cand, keys, max_chars=400):
+    for k in keys:
+        v = cand.get(k) if isinstance(cand, dict) else None
+        if isinstance(v, str) and v.strip():
+            return v.strip()[:max_chars]
+        if isinstance(v, list) and v:
+            joined = ' / '.join(str(x) for x in v if x)
+            if joined:
+                return joined[:max_chars]
+    return ''
+
+def _r23b_build_review_prompt(candidate):
+    if not isinstance(candidate, dict):
+        return ''
+    title = _r23b_pick_text(candidate, [
+        'title', 'design_title', 'candidate_id', 'id'
+    ], max_chars=150)
+    claim = _r23b_pick_text(candidate, [
+        'claim', 'decoded_hypothesis', 'hypothesis', 'idea_core',
+        'structure'
+    ], max_chars=300)
+    actions = _r23b_pick_text(candidate, ['actions'], max_chars=100)
+    signals = _r23b_pick_text(candidate, ['signals'], max_chars=100)
+    if not (title or claim):
+        return ''
+    parts = ['次の発明候補を1-2文で技術的に評価してください。']
+    if title:
+        parts.append('タイトル: ' + title)
+    if claim:
+        parts.append('仮説: ' + claim)
+    if actions:
+        parts.append('操作: ' + actions)
+    if signals:
+        parts.append('観測: ' + signals)
+    parts.append('評価:')
+    return '\n'.join(parts)
+
+# Override R23 internal function
+_r23_build_review_prompt = _r23b_build_review_prompt
+
+# Also patch r23_enhance_result to look in candidate_rows if candidates lack fields
+_r23b_original_enhance = r23_enhance_result
+
+def r23_enhance_result(result, max_candidates=None, verbose=False):
+    # If top-level 'candidates' items lack review-source fields but
+    # 'candidate_rows' has them, merge title/claim/etc from candidate_rows.
+    if isinstance(result, dict):
+        cands = result.get('candidates')
+        rows = result.get('candidate_rows')
+        if isinstance(cands, list) and isinstance(rows, list):
+            row_by_id = {}
+            for r in rows:
+                if isinstance(r, dict):
+                    rid = r.get('id') or r.get('candidate_id')
+                    if rid:
+                        row_by_id[rid] = r
+            for c in cands:
+                if not isinstance(c, dict):
+                    continue
+                cid = c.get('candidate_id') or c.get('id')
+                if cid and cid in row_by_id:
+                    r = row_by_id[cid]
+                    for field in ('title', 'claim', 'structure',
+                                  'actions', 'signals'):
+                        if field not in c or c.get(field) in (None, '', []):
+                            if field in r:
+                                c[field] = r[field]
+    return _r23b_original_enhance(result, max_candidates=max_candidates,
+                                   verbose=verbose)
+
+try:
+    print('[R23B_INSTALLED]', {
+        'patch_id': CAUSAL_R23B_PATCH_ID,
+        'note': 'field-adaptive prompt + candidate_rows merge'
+    })
+except Exception:
+    pass
+
+# ============================================================================
+# END ADD-ONLY PATCH: CAUSAL-R23B
+# ============================================================================

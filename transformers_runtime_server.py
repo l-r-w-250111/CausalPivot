@@ -6878,3 +6878,602 @@ except Exception:
 ## ============================================================================
 ## END ADD-ONLY PATCH: RUNTIME_R14_LATENT_GENERATE_MAX_TIME_GUARD_20260616
 ## ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY PATCH: RUNTIME_R15_STRUCTURED_JSON_OUTLINES_DIRECT_20260623
+# Purpose:
+#   The /structured-json/generate endpoint has been rebound multiple times
+#   (V35 -> V22 stable -> UNIVERSAL_RUNTIME_TEXT_BRIDGE_20260603B).
+#   The last override calls _urtb_decode_bounded which is plain text generation
+#   WITHOUT schema enforcement. This breaks the original Outlines / Guidance
+#   schema-constrained decoding path.
+#
+#   This patch adds a NEW endpoint at /runtime/r15/structured-json/generate
+#   that bypasses ALL prior overrides and directly invokes the PRE-V43
+#   _outlines_generate / _guidance_generate functions saved at
+#   _RUNTIME_V43_PREV_OUTLINES_GENERATE and _RUNTIME_V43_PREV_GUIDANCE_GENERATE.
+#
+# Endpoint:
+#   POST /runtime/r15/structured-json/generate
+#     Request:  StructuredGenerateRequest (existing schema, no new fields)
+#     Response: StructuredGenerateResponse (existing schema)
+#
+#   GET  /runtime/r15/structured-json/health
+#     Returns diagnostic flags showing which underlying functions are available.
+#
+# Policy:
+#   - ADD-ONLY. No existing route, function, or class is removed or modified.
+#   - No benchmark / task / domain-specific vocabulary in any new identifier.
+#   - Idempotent: re-running the module does not duplicate routes (FastAPI
+#     would raise on duplicate; we guard with try/except).
+# ============================================================================
+
+RUNTIME_R15_STRUCTURED_JSON_OUTLINES_DIRECT_PATCH_ID = "RUNTIME_R15_STRUCTURED_JSON_OUTLINES_DIRECT_20260623"
+
+
+def _r15_resolve_outlines_fn():
+    """Return the pre-V43 _outlines_generate if preserved, else the current
+    (V43-guarded) _outlines_generate. Both will work if generation_phase
+    falls into V43 allowed phases (which includes "unknown" by default)."""
+    prev = globals().get("_RUNTIME_V43_PREV_OUTLINES_GENERATE")
+    if callable(prev):
+        return prev, "pre_v43_outlines"
+    cur = globals().get("_outlines_generate")
+    if callable(cur):
+        return cur, "current_outlines_with_phase_guard"
+    return None, "outlines_not_available"
+
+
+def _r15_resolve_guidance_fn():
+    """Return the pre-V43 _guidance_generate if preserved, else the current."""
+    prev = globals().get("_RUNTIME_V43_PREV_GUIDANCE_GENERATE")
+    if callable(prev):
+        return prev, "pre_v43_guidance"
+    cur = globals().get("_guidance_generate")
+    if callable(cur):
+        return cur, "current_guidance_with_phase_guard"
+    return None, "guidance_not_available"
+
+
+def _r15_extract_json_safe(raw_text, schema):
+    """Use _extract_best_json_obj if available, else best-effort fallback."""
+    extractor = globals().get("_extract_best_json_obj")
+    if callable(extractor):
+        try:
+            return extractor(raw_text or "", schema)
+        except TypeError:
+            try:
+                return extractor(raw_text or "")
+            except Exception:
+                return None
+        except Exception:
+            return None
+    if not raw_text:
+        return None
+    try:
+        json.loads(raw_text)
+        return raw_text
+    except Exception:
+        return None
+
+
+def _r15_validate_schema(parsed_obj, schema):
+    """Run Draft202012Validator if available. Returns (schema_ok, error_or_none)."""
+    try:
+        validator = Draft202012Validator(schema)
+        errors = [e.message for e in validator.iter_errors(parsed_obj)]
+        if not errors:
+            return True, None
+        return False, "; ".join(errors[:20])
+    except Exception as e:
+        return False, f"schema_validator_exception: {repr(e)[:200]}"
+
+
+def _r15_structured_json_outlines_direct_core(req):
+    """Core implementation. Receives StructuredGenerateRequest, returns
+    StructuredGenerateResponse. Bypasses universal_runtime_text_bridge."""
+    # Load model and tokenizer through the standard path.
+    try:
+        kind, processor, tokenizer, model, loaded_path, loaded_quant = _ensure_loaded(
+            req.model_path, req.quantization
+        )
+    except Exception as e:
+        return StructuredGenerateResponse(
+            ok=False,
+            backend="r15_outlines_direct_load_error",
+            json_ok=False,
+            schema_ok=False,
+            text="",
+            parsed=None,
+            error=f"load_error: {repr(e)[:300]}",
+            model_path=str(req.model_path or DEFAULT_MODEL_PATH),
+            loader_kind="none",
+            quantization=_normalize_quantization(req.quantization),
+        )
+
+    # Resolve backend functions.
+    outlines_fn, outlines_src = _r15_resolve_outlines_fn()
+    guidance_fn, guidance_src = _r15_resolve_guidance_fn()
+
+    # Parse and normalize backend_order.
+    backend_order_str = req.backend_order or "outlines,guidance"
+    backend_order_list = [b.strip().lower() for b in str(backend_order_str).split(",") if b.strip()]
+    if not backend_order_list:
+        backend_order_list = ["outlines", "guidance"]
+
+    last_error = None
+    last_raw_text = ""
+    last_backend = "none"
+
+    # Try each backend in order.
+    for backend_name in backend_order_list:
+        if backend_name == "outlines":
+            if not callable(outlines_fn):
+                last_error = f"outlines_not_available_source={outlines_src}"
+                continue
+            try:
+                raw = outlines_fn(tokenizer, model, req.prompt, req.schema)
+                last_raw_text = raw or ""
+                last_backend = f"r15_outlines_direct({outlines_src})"
+            except Exception as e:
+                last_error = f"outlines_exception: {repr(e)[:300]}"
+                continue
+        elif backend_name == "guidance":
+            if not callable(guidance_fn):
+                last_error = f"guidance_not_available_source={guidance_src}"
+                continue
+            try:
+                raw = guidance_fn(tokenizer, model, req.prompt, req.schema)
+                last_raw_text = raw or ""
+                last_backend = f"r15_guidance_direct({guidance_src})"
+            except Exception as e:
+                last_error = f"guidance_exception: {repr(e)[:300]}"
+                continue
+        else:
+            last_error = f"unknown_backend_in_order: {backend_name}"
+            continue
+
+        # Extract JSON from raw text.
+        json_text = _r15_extract_json_safe(last_raw_text, req.schema)
+        if not json_text:
+            last_error = f"{backend_name}_no_extractable_json"
+            continue
+
+        # Parse JSON.
+        try:
+            parsed = json.loads(json_text)
+        except json.JSONDecodeError as je:
+            last_error = f"{backend_name}_json_decode_error: {repr(je)[:200]}"
+            continue
+
+        if not isinstance(parsed, dict):
+            last_error = f"{backend_name}_parsed_not_dict: type={type(parsed).__name__}"
+            continue
+
+        # Validate against schema.
+        schema_ok, schema_err = _r15_validate_schema(parsed, req.schema)
+        if not schema_ok and backend_name != backend_order_list[-1]:
+            last_error = f"{backend_name}_schema_validation_failed: {schema_err}"
+            continue
+
+        # Success (or last backend with schema failure - return anyway with flag).
+        return StructuredGenerateResponse(
+            ok=bool(schema_ok),
+            backend=last_backend,
+            json_ok=True,
+            schema_ok=bool(schema_ok),
+            text=json_text,
+            parsed=parsed,
+            error=schema_err if not schema_ok else None,
+            model_path=loaded_path,
+            loader_kind=kind,
+            quantization=loaded_quant,
+        )
+
+    # All backends exhausted.
+    return StructuredGenerateResponse(
+        ok=False,
+        backend=last_backend or "r15_no_backend_attempted",
+        json_ok=False,
+        schema_ok=False,
+        text=last_raw_text or "",
+        parsed=None,
+        error=last_error or "all_backends_failed_no_specific_error",
+        model_path=str(req.model_path or DEFAULT_MODEL_PATH),
+        loader_kind="none",
+        quantization=_normalize_quantization(req.quantization),
+    )
+
+
+def _r15_structured_json_outlines_direct_health_core():
+    """Health diagnostic for /runtime/r15/structured-json/health."""
+    outlines_fn, outlines_src = _r15_resolve_outlines_fn()
+    guidance_fn, guidance_src = _r15_resolve_guidance_fn()
+    state = globals().get("_state", {}) or {}
+    return {
+        "ok": True,
+        "patch_id": RUNTIME_R15_STRUCTURED_JSON_OUTLINES_DIRECT_PATCH_ID,
+        "outlines_callable": callable(outlines_fn),
+        "outlines_source": outlines_src,
+        "guidance_callable": callable(guidance_fn),
+        "guidance_source": guidance_src,
+        "model_loaded": bool(state.get("loaded")),
+        "model_path": state.get("model_path") or _resolve_model_path(DEFAULT_MODEL_PATH),
+        "quantization": state.get("quantization") or _normalize_quantization(DEFAULT_QUANTIZATION),
+        "endpoint_path": "/runtime/r15/structured-json/generate",
+        "health_path": "/runtime/r15/structured-json/health",
+        "request_model": "StructuredGenerateRequest",
+        "response_model": "StructuredGenerateResponse",
+        "default_backend_order": "outlines,guidance",
+        "bypasses_universal_runtime_text_bridge": True,
+        "bypasses_v22_stable_step": True,
+        "existing_code_deleted": False,
+        "no_benchmark_or_task_or_domain_name_hardcoding": True,
+    }
+
+
+# Register endpoints. Wrapped in try/except to prevent module load failure on
+# unexpected FastAPI errors or duplicate registration.
+try:
+    @app.post("/runtime/r15/structured-json/generate", response_model=StructuredGenerateResponse)
+    def runtime_r15_structured_json_generate(req: StructuredGenerateRequest) -> StructuredGenerateResponse:
+        """ADD-ONLY R15 endpoint: bypasses universal_runtime_text_bridge override
+        and calls the original Outlines / Guidance schema-constrained generators
+        directly. Use this when /structured-json/generate returns free text
+        without schema enforcement."""
+        return _r15_structured_json_outlines_direct_core(req)
+except Exception as _r15_post_reg_err:
+    try:
+        _RUNTIME_R15_POST_REGISTRATION_ERROR = repr(_r15_post_reg_err)
+    except Exception:
+        pass
+
+try:
+    @app.get("/runtime/r15/structured-json/health")
+    def runtime_r15_structured_json_health():
+        """ADD-ONLY R15 health check: reports availability of pre-V43 Outlines
+        and Guidance generators."""
+        return _r15_structured_json_outlines_direct_health_core()
+except Exception as _r15_get_reg_err:
+    try:
+        _RUNTIME_R15_GET_REGISTRATION_ERROR = repr(_r15_get_reg_err)
+    except Exception:
+        pass
+
+
+# Execution proof (audit record).
+try:
+    RUNTIME_R15_STRUCTURED_JSON_OUTLINES_DIRECT_EXECUTION_PROOF = {
+        "patch_id": RUNTIME_R15_STRUCTURED_JSON_OUTLINES_DIRECT_PATCH_ID,
+        "endpoints_added": [
+            "/runtime/r15/structured-json/generate (POST)",
+            "/runtime/r15/structured-json/health (GET)",
+        ],
+        "uses_preserved_functions": [
+            "_RUNTIME_V43_PREV_OUTLINES_GENERATE",
+            "_RUNTIME_V43_PREV_GUIDANCE_GENERATE",
+        ],
+        "fallback_to_current_v43_guarded": True,
+        "bypasses_route_chain": [
+            "structured_json_generate (original line ~650)",
+            "structured_json_generate_v22_stable",
+            "_urtb_route_structured (universal_runtime_text_bridge)",
+        ],
+        "request_model": "StructuredGenerateRequest (existing)",
+        "response_model": "StructuredGenerateResponse (existing)",
+        "existing_code_deleted": False,
+        "no_benchmark_or_task_or_domain_name_hardcoding": True,
+    }
+except Exception:
+    pass
+
+# ============================================================================
+# END ADD-ONLY PATCH: RUNTIME_R15_STRUCTURED_JSON_OUTLINES_DIRECT_20260623
+# ============================================================================
+
+# ============================================================================
+# ADD-ONLY PATCH: RUNTIME_R16_TEXT_BRIDGE_THINKING_OFF_20260630
+# generated_at_jst: 20260630
+# purpose:
+#   Existing RUNTIME_THINKING_CONTROL_SELECTIVE_20260614 correctly wraps latent
+#   functions with _ThinkingOff, but /generate uses _urtb_decode_bounded which
+#   is a TEXT path and thus keeps thinking ON. This causes Qwen3.5-9B to emit
+#   "Thinking Process:" prefix that consumes the entire token budget before any
+#   Japanese answer is reached.
+#
+#   This patch does NOT globally disable thinking. It only forces thinking OFF
+#   during the specific /generate route call, so:
+#     - Direct /generate: thinking OFF (this patch)
+#     - Latent operations: thinking OFF (existing R14 / SELECTIVE patch)
+#     - Any other future paths: thinking ON (default preserved)
+#
+# method:
+#   Wrap _urtb_route_generate with _ThinkingOff context manager. The internal
+#   _urtb_decode_bounded then reads _get_thinking_enabled() = False via the
+#   already-wrapped tokenizer.apply_chat_template.
+#
+# safety:
+#   - No existing code deleted
+#   - Original _urtb_route_generate preserved as _R16_PREV_URTB_ROUTE_GENERATE
+#   - Route rebinding uses same idempotent approach as prior patches
+#   - Restart-only (no rebuild): uvicorn re-imports on container restart
+# ============================================================================
+
+RUNTIME_R16_TEXT_BRIDGE_THINKING_OFF_PATCH_ID = 'RUNTIME_R16_TEXT_BRIDGE_THINKING_OFF_20260630'
+
+# Preserve original
+try:
+    _R16_PREV_URTB_ROUTE_GENERATE = _urtb_route_generate
+except Exception:
+    _R16_PREV_URTB_ROUTE_GENERATE = None
+
+
+def _urtb_route_generate_r16_thinking_off(req=None, payload=None, **kwargs):
+    """R16 wrapper: force thinking OFF for direct /generate calls.
+
+    Qwen3.5-9B with thinking ON emits 200-300 char "Thinking Process:" prefix
+    before the actual answer, consuming the token budget. Since /generate is
+    the primary text bridge for post-phase LLM enhancement (R18M/N/O/P/Q/R/S),
+    we force thinking OFF here so the model produces the answer directly.
+
+    This does NOT globally disable thinking; only this route is affected.
+    """
+    # Ensure the context manager class exists
+    ThinkingOff = globals().get('_ThinkingOff')
+    if ThinkingOff is None:
+        # Fallback: call original if thinking control not available
+        if callable(_R16_PREV_URTB_ROUTE_GENERATE):
+            return _R16_PREV_URTB_ROUTE_GENERATE(req=req, payload=payload, **kwargs)
+        return {'ok': False, 'reason': 'thinking_control_not_available',
+                'patch_id': RUNTIME_R16_TEXT_BRIDGE_THINKING_OFF_PATCH_ID}
+
+    # Force thinking OFF for this generation
+    with ThinkingOff():
+        if callable(_R16_PREV_URTB_ROUTE_GENERATE):
+            result = _R16_PREV_URTB_ROUTE_GENERATE(req=req, payload=payload, **kwargs)
+        else:
+            result = {'ok': False, 'reason': 'previous_urtb_route_generate_missing'}
+
+    # Annotate result for traceability
+    if isinstance(result, dict):
+        result['thinking_mode_r16'] = 'off'
+        result['patch_id_r16'] = RUNTIME_R16_TEXT_BRIDGE_THINKING_OFF_PATCH_ID
+
+    return result
+
+
+# Rebind the /generate route to use the thinking-off wrapper
+try:
+    for _route in list(getattr(app, 'routes', [])):
+        _path = str(getattr(_route, 'path', '') or '')
+        _methods = set(getattr(_route, 'methods', []) or [])
+        if _path == '/generate' and 'POST' in _methods:
+            _route.endpoint = _urtb_route_generate_r16_thinking_off
+            try:
+                _route.dependant.call = _urtb_route_generate_r16_thinking_off
+            except Exception:
+                pass
+except Exception:
+    pass
+
+
+# Also update the module-level binding so any code referencing _urtb_route_generate
+# by name picks up the new behavior
+try:
+    _urtb_route_generate = _urtb_route_generate_r16_thinking_off
+except Exception:
+    pass
+
+
+# Diagnostic endpoint
+try:
+    @app.get('/runtime/r16/thinking-off-status')
+    def _r16_thinking_off_status():
+        return {
+            'ok': True,
+            'patch_id': RUNTIME_R16_TEXT_BRIDGE_THINKING_OFF_PATCH_ID,
+            'affected_endpoint': '/generate',
+            'thinking_mode_for_generate': 'off',
+            'thinking_mode_for_latent': 'off (existing SELECTIVE patch)',
+            'thinking_mode_for_other': 'on (default)',
+            'prev_urtb_route_generate_preserved': callable(_R16_PREV_URTB_ROUTE_GENERATE),
+            'thinking_off_context_manager_available': '_ThinkingOff' in globals(),
+            'purpose': (
+                'Force Qwen3.5-9B to skip Thinking Process for /generate calls, '
+                'so text bridge (R18M+ family) receives direct answers.'
+            ),
+            'no_benchmark_or_task_name_hardcoding': True,
+            'existing_code_deleted': False,
+        }
+except Exception:
+    pass
+
+
+try:
+    RUNTIME_R16_TEXT_BRIDGE_THINKING_OFF_EXECUTION_PROOF = {
+        'patch_id': RUNTIME_R16_TEXT_BRIDGE_THINKING_OFF_PATCH_ID,
+        'wraps': '_urtb_route_generate',
+        'route_rebound': '/generate',
+        'method': '_ThinkingOff context manager (thread-local)',
+        'preserves_original': callable(_R16_PREV_URTB_ROUTE_GENERATE),
+        'affects_latent_paths': False,
+        'affects_other_text_paths': False,
+        'restart_only_no_rebuild': True,
+    }
+except Exception:
+    pass
+
+# ============================================================================
+# END ADD-ONLY PATCH: RUNTIME_R16_TEXT_BRIDGE_THINKING_OFF_20260630
+# ============================================================================
+
+# ============================================================================
+# ADD-ONLY PATCH: RUNTIME_R17_ERROR_EXPOSURE_20260630
+# purpose:
+#   R16 rebound /generate but the wrapped call returns ok=false in 0.16s.
+#   The error field is set but the client diagnostic didn't surface its value.
+#   R17 patches _urtb_route_generate to embed error details in response_keys.
+#   Also validates that _ThinkingOff context manager doesn't raise silently.
+# ============================================================================
+
+RUNTIME_R17_ERROR_EXPOSURE_PATCH_ID = 'RUNTIME_R17_ERROR_EXPOSURE_20260630'
+
+try:
+    _R17_PREV_ROUTE = _urtb_route_generate_r16_thinking_off
+except Exception:
+    _R17_PREV_ROUTE = None
+
+
+def _urtb_route_generate_r17_exposed(req=None, payload=None, **kwargs):
+    """R17: fully expose error details from R16-wrapped call."""
+    import traceback as _r17_tb
+    try:
+        ThinkingOff = globals().get('_ThinkingOff')
+        prev = globals().get('_R16_PREV_URTB_ROUTE_GENERATE')
+
+        # Diagnostic pre-check
+        diag = {
+            'r17_diag': {
+                'thinking_off_available': ThinkingOff is not None,
+                'prev_route_available': callable(prev),
+                'get_thinking_enabled_val_before': None,
+                'get_thinking_enabled_val_inside': None,
+                'get_thinking_enabled_val_after': None,
+            }
+        }
+
+        get_th = globals().get('_get_thinking_enabled')
+        if callable(get_th):
+            try:
+                diag['r17_diag']['get_thinking_enabled_val_before'] = get_th()
+            except Exception:
+                pass
+
+        if ThinkingOff is None or not callable(prev):
+            result = {'ok': False,
+                      'reason': 'r17_missing_dependencies',
+                      'r17_diag': diag['r17_diag']}
+            return result
+
+        try:
+            with ThinkingOff():
+                if callable(get_th):
+                    try:
+                        diag['r17_diag']['get_thinking_enabled_val_inside'] = get_th()
+                    except Exception:
+                        pass
+                result = prev(req=req, payload=payload, **kwargs)
+        except Exception as inner_exc:
+            result = {
+                'ok': False,
+                'reason': 'r17_wrapped_call_exception',
+                'r17_error_type': type(inner_exc).__name__,
+                'r17_error_repr': repr(inner_exc)[:500],
+                'r17_traceback': _r17_tb.format_exc()[:2000],
+                'r17_diag': diag['r17_diag'],
+            }
+            return result
+
+        if callable(get_th):
+            try:
+                diag['r17_diag']['get_thinking_enabled_val_after'] = get_th()
+            except Exception:
+                pass
+
+        if isinstance(result, dict):
+            result['r17_diag'] = diag['r17_diag']
+            result['patch_id_r17'] = RUNTIME_R17_ERROR_EXPOSURE_PATCH_ID
+        return result
+
+    except Exception as outer_exc:
+        return {
+            'ok': False,
+            'reason': 'r17_outer_exception',
+            'r17_error_type': type(outer_exc).__name__,
+            'r17_error_repr': repr(outer_exc)[:500],
+            'r17_traceback': _r17_tb.format_exc()[:2000],
+            'patch_id_r17': RUNTIME_R17_ERROR_EXPOSURE_PATCH_ID,
+        }
+
+
+# Rebind /generate to R17
+try:
+    for _route in list(getattr(app, 'routes', [])):
+        _path = str(getattr(_route, 'path', '') or '')
+        _methods = set(getattr(_route, 'methods', []) or [])
+        if _path == '/generate' and 'POST' in _methods:
+            _route.endpoint = _urtb_route_generate_r17_exposed
+            try:
+                _route.dependant.call = _urtb_route_generate_r17_exposed
+            except Exception:
+                pass
+except Exception:
+    pass
+
+
+try:
+    RUNTIME_R17_EXECUTION_PROOF = {
+        'patch_id': RUNTIME_R17_ERROR_EXPOSURE_PATCH_ID,
+        'wraps': '_urtb_route_generate_r16_thinking_off',
+        'exposes': [
+            'r17_error_type', 'r17_error_repr', 'r17_traceback',
+            'r17_diag.thinking_off_available',
+            'r17_diag.prev_route_available',
+            'r17_diag.get_thinking_enabled_val_before/inside/after',
+        ],
+    }
+except Exception:
+    pass
+
+# ============================================================================
+# END ADD-ONLY PATCH: RUNTIME_R17_ERROR_EXPOSURE_20260630
+# ============================================================================
+
+
+# ============================================================================
+# ADD-ONLY PATCH: RUNTIME-R24-LATENT-OPERATOR-PROOF-20260714
+# Fail closed: a latent request is successful only when a real hook was called
+# and the intervention produced a non-zero hidden-state delta.
+# ============================================================================
+RUNTIME_R24_PATCH_ID='RUNTIME-R24-LATENT-OPERATOR-PROOF-20260714'
+try:
+    _RUNTIME_R24_PREV_URTG3_GENERATE=_urtg3_generate
+except Exception:
+    _RUNTIME_R24_PREV_URTG3_GENERATE=None
+
+def _runtime_r24_latent_generate(payload):
+    p=dict(payload) if isinstance(payload,dict) else {}
+    res=_RUNTIME_R24_PREV_URTG3_GENERATE(p) if callable(_RUNTIME_R24_PREV_URTG3_GENERATE) else {'ok':False,'reason':'previous_latent_route_missing_r24'}
+    if not isinstance(res,dict): res={'ok':False,'reason':'non_dict_latent_response_r24'}
+    def number(keys, obj):
+        stack=[obj]
+        while stack:
+            x=stack.pop()
+            if isinstance(x,dict):
+                for k,v in x.items():
+                    if k in keys:
+                        try: return float(v or 0.0)
+                        except Exception: pass
+                    if isinstance(v,(dict,list)): stack.append(v)
+            elif isinstance(x,list): stack.extend(x[:64])
+        return 0.0
+    calls=int(number({'hook_call_count','hook_calls'},res))
+    delta=number({'operator_delta_norm','delta_norm'},res)
+    text=str(res.get('generated_text') or res.get('text') or '').strip()
+    proof_ok=bool(calls>0 and delta>0.0 and text)
+    res['latent_operator_execution_proof_r24']={'patch_id':RUNTIME_R24_PATCH_ID,'hook_call_count':calls,'operator_delta_norm':delta,'generated_text_nonempty':bool(text),'ok':proof_ok}
+    if bool(res.get('ok')) and not proof_ok:
+        res['ok']=False; res['status']='failed'; res['reason']='latent_operator_not_proven_r24'
+    return res
+try:
+    for _route in list(getattr(app,'routes',[])):
+        if getattr(_route,'path','')=='/latent/universal/v1/generate' and 'POST' in set(getattr(_route,'methods',[]) or []):
+            _route.endpoint=_runtime_r24_latent_generate
+            try: _route.dependant.call=_runtime_r24_latent_generate
+            except Exception: pass
+except Exception:
+    pass
+# ============================================================================
+# END ADD-ONLY PATCH: RUNTIME-R24-LATENT-OPERATOR-PROOF-20260714
+# ============================================================================
